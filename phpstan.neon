@@ -1,0 +1,8 @@
+parameters:
+    level: 9
+    paths:
+        - src
+    tmpDir: .phpstan.cache
+    ignoreErrors:
+        # Explicit string casts from mixed are intentional type assertions
+        - identifier: cast.string

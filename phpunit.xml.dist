@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:noNamespaceSchemaLocation="vendor/phpunit/phpunit/phpunit.xsd"
+         bootstrap="vendor/autoload.php"
+         colors="true"
+         cacheDirectory=".phpunit.cache"
+         executionOrder="depends,defects"
+         requireCoverageMetadata="false"
+         beStrictAboutCoverageMetadata="false"
+         beStrictAboutOutputDuringTests="true"
+         failOnRisky="true"
+         failOnWarning="true">
+    <testsuites>
+        <testsuite name="Unit">
+            <directory>tests/Unit</directory>
+        </testsuite>
+        <testsuite name="Integration">
+            <directory>tests/Integration</directory>
+        </testsuite>
+        <testsuite name="Feature">
+            <directory>tests/Feature</directory>
+            <exclude>tests/Feature/Concerns</exclude>
+        </testsuite>
+    </testsuites>
+
+    <source>
+        <include>
+            <directory>src</directory>
+        </include>
+    </source>
+
+    <coverage>
+        <report>
+            <html outputDirectory="coverage"/>
+            <text outputFile="php://stdout"/>
+        </report>
+    </coverage>
+
+    <php>
+        <!-- MySQL Configuration -->
+        <env name="MYSQL_HOST" value="127.0.0.1"/>
+        <env name="MYSQL_PORT" value="3306"/>
+        <env name="MYSQL_DATABASE" value="pdo_wrapper_test"/>
+        <env name="MYSQL_USERNAME" value="root"/>
+        <env name="MYSQL_PASSWORD" value="root"/>
+
+        <!-- MariaDB Configuration -->
+        <env name="MARIADB_HOST" value="127.0.0.1"/>
+        <env name="MARIADB_PORT" value="3307"/>
+        <env name="MARIADB_DATABASE" value="pdo_wrapper_test"/>
+        <env name="MARIADB_USERNAME" value="root"/>
+        <env name="MARIADB_PASSWORD" value="root"/>
+
+        <!-- PostgreSQL Configuration -->
+        <env name="POSTGRES_HOST" value="127.0.0.1"/>
+        <env name="POSTGRES_PORT" value="5432"/>
+        <env name="POSTGRES_DATABASE" value="pdo_wrapper_test"/>
+        <env name="POSTGRES_USERNAME" value="postgres"/>
+        <env name="POSTGRES_PASSWORD" value="postgres"/>
+    </php>
+</phpunit>

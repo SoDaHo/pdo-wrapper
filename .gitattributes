@@ -1,0 +1,11 @@
+# Exclude from export (composer install / GitHub archive)
+/tests export-ignore
+/.github export-ignore
+/.gitignore export-ignore
+/.gitattributes export-ignore
+/.php-cs-fixer.dist.php export-ignore
+/phpstan.neon export-ignore
+/phpunit.xml.dist export-ignore
+/CHANGELOG.md export-ignore
+/CONTRIBUTING.md export-ignore
+/docker-compose.yml export-ignore
