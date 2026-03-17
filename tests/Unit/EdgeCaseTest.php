@@ -484,4 +484,103 @@ class EdgeCaseTest extends TestCase
 
         $this->assertSame(1, $affected);
     }
+
+    // =========================================================================
+    // WHERE NULL BUG FIX TEST
+    // Bug: where('column', null) generated "column = NULL" which is always false
+    // in SQL. Users must use whereNull()/whereNotNull() instead.
+    // =========================================================================
+
+    public function testWhereTwoArgNullThrowsException(): void
+    {
+        $db = Database::sqlite(':memory:');
+
+        $this->expectException(QueryException::class);
+
+        $db->table('users')->where('status', null);
+    }
+
+    public function testWhereThreeArgNullThrowsException(): void
+    {
+        $db = Database::sqlite(':memory:');
+
+        $this->expectException(QueryException::class);
+
+        $db->table('users')->where('status', '=', null);
+    }
+
+    public function testWhereArraySyntaxNullThrowsException(): void
+    {
+        $db = Database::sqlite(':memory:');
+
+        $this->expectException(QueryException::class);
+
+        $db->table('users')->where(['status' => null]);
+    }
+
+    public function testWhereNullExceptionSuggestsWhereNull(): void
+    {
+        $db = Database::sqlite(':memory:');
+
+        try {
+            $db->table('users')->where('status', null);
+            $this->fail('Expected QueryException was not thrown');
+        } catch (QueryException $e) {
+            $debug = $e->getDebugMessage() ?? '';
+            $this->assertStringContainsString('whereNull', $debug);
+            $this->assertStringContainsString('status', $debug);
+        }
+    }
+
+    public function testWhereThreeArgNullExceptionSuggestsWhereNull(): void
+    {
+        $db = Database::sqlite(':memory:');
+
+        try {
+            $db->table('users')->where('deleted_at', '=', null);
+            $this->fail('Expected QueryException was not thrown');
+        } catch (QueryException $e) {
+            $debug = $e->getDebugMessage() ?? '';
+            $this->assertStringContainsString('whereNull', $debug);
+            $this->assertStringContainsString('deleted_at', $debug);
+        }
+    }
+
+    public function testWhereIsNullThrowsExceptionSuggestsWhereNull(): void
+    {
+        $db = Database::sqlite(':memory:');
+
+        try {
+            $db->table('users')->where('deleted_at', 'IS', null);
+            $this->fail('Expected QueryException was not thrown');
+        } catch (QueryException $e) {
+            $debug = $e->getDebugMessage() ?? '';
+            $this->assertStringContainsString('whereNull', $debug);
+        }
+    }
+
+    public function testWhereIsNotNullThrowsExceptionSuggestsWhereNotNull(): void
+    {
+        $db = Database::sqlite(':memory:');
+
+        try {
+            $db->table('users')->where('deleted_at', 'IS NOT', null);
+            $this->fail('Expected QueryException was not thrown');
+        } catch (QueryException $e) {
+            $debug = $e->getDebugMessage() ?? '';
+            $this->assertStringContainsString('whereNotNull', $debug);
+        }
+    }
+
+    public function testWhereWithNonNullValuesStillWorks(): void
+    {
+        $db = Database::sqlite(':memory:');
+        $db->execute('CREATE TABLE users (id INTEGER PRIMARY KEY, status TEXT)');
+        $db->insert('users', ['status' => 'active']);
+
+        $result = $db->table('users')->where('status', 'active')->first();
+
+        $this->assertNotNull($result);
+        $this->assertSame('active', $result['status']);
+    }
 }

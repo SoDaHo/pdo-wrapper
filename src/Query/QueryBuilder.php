@@ -131,16 +131,46 @@ class QueryBuilder
         // Array syntax: where(['active' => 1, 'role' => 'admin'])
         if (is_array($column)) {
             foreach ($column as $col => $val) {
+                if ($val === null) {
+                    throw new QueryException(
+                        message: 'Query failed',
+                        debugMessage: sprintf(
+                            'Cannot use null value for column "%s" in where(). Use whereNull(\'%s\') or whereNotNull(\'%s\') instead.',
+                            $col,
+                            $col,
+                            $col
+                        )
+                    );
+                }
                 $this->where($col, '=', $val);
             }
             return $this;
         }
 
         // Must have at least 2 arguments for string column
+        // Also catches where('col', null) — 2-argument form with null value
         if ($operatorOrValue === null) {
             throw new QueryException(
                 message: 'Query failed',
-                debugMessage: 'where() requires at least 2 arguments: where(column, value) or where(column, operator, value)'
+                debugMessage: sprintf(
+                    'Cannot use null value in where(). SQL "column = NULL" is always false. Use whereNull(\'%s\') or whereNotNull(\'%s\') instead.',
+                    $column,
+                    $column
+                )
+            );
+        }
+
+        // 3-argument form: where('col', '=', null) — reject null values
+        // Detect by checking if $operatorOrValue looks like an operator
+        if ($value === null && in_array(strtoupper(trim((string) $operatorOrValue)), self::ALLOWED_OPERATORS, true)) {
+            throw new QueryException(
+                message: 'Query failed',
+                debugMessage: sprintf(
+                    'Cannot use null value in where(). SQL "column %s NULL" is always false. Use whereNull(\'%s\') or whereNotNull(\'%s\') instead.',
+                    strtoupper(trim((string) $operatorOrValue)),
+                    $column,
+                    $column
+                )
             );
         }
 
