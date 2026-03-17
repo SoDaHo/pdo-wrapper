@@ -583,4 +583,54 @@ class EdgeCaseTest extends TestCase
         $this->assertNotNull($result);
         $this->assertSame('active', $result['status']);
     }
+
+    // =========================================================================
+    // ESCAPE LIKE TESTS
+    // =========================================================================
+
+    public function testEscapeLikeEscapesPercent(): void
+    {
+        $this->assertSame('100\\%', Database::escapeLike('100%'));
+    }
+
+    public function testEscapeLikeEscapesUnderscore(): void
+    {
+        $this->assertSame('user\\_name', Database::escapeLike('user_name'));
+    }
+
+    public function testEscapeLikeEscapesBackslash(): void
+    {
+        $this->assertSame('path\\\\to', Database::escapeLike('path\\to'));
+    }
+
+    public function testEscapeLikeEscapesAllSpecialChars(): void
+    {
+        $this->assertSame('100\\% of\\_all\\\\data', Database::escapeLike('100% of_all\\data'));
+    }
+
+    public function testEscapeLikeLeavesNormalStringsUnchanged(): void
+    {
+        $this->assertSame('hello world', Database::escapeLike('hello world'));
+    }
+
+    public function testEscapeLikeWithEmptyString(): void
+    {
+        $this->assertSame('', Database::escapeLike(''));
+    }
+
+    public function testEscapeLikeEndToEndWithWhereLike(): void
+    {
+        $db = Database::sqlite(':memory:');
+        $db->execute('CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT)');
+        $db->insert('products', ['name' => 'Rabatt: 100%']);
+        $db->insert('products', ['name' => 'Rabatt: 1000 Euro']);
+
+        $search = Database::escapeLike('100%');
+        $results = $db->table('products')
+            ->whereLike('name', '%' . $search . '%')
+            ->get();
+
+        $this->assertCount(1, $results);
+        $this->assertSame('Rabatt: 100%', $results[0]['name']);
+    }
 }

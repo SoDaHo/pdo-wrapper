@@ -112,6 +112,29 @@ class Database
     }
 
     /**
+     * Escape LIKE wildcard characters in a value.
+     *
+     * Use this to safely include user input in LIKE patterns.
+     * Escapes %, _ and \ so they are treated as literal characters.
+     *
+     * @param string $value The value to escape
+     *
+     * @return string Escaped value safe for use in LIKE patterns
+     *
+     * @example
+     * $safe = Database::escapeLike($userInput); // "100%" → "100\%"
+     * $db->table('users')->whereLike('name', '%' . $safe . '%')->get();
+     */
+    public static function escapeLike(string $value): string
+    {
+        return str_replace(
+            ['\\', '%', '_'],
+            ['\\\\', '\\%', '\\_'],
+            $value
+        );
+    }
+
+    /**
      * Get environment variable value.
      *
      * Priority: $_ENV > getenv()

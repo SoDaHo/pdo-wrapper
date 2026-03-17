@@ -890,7 +890,13 @@ class QueryBuilder
             switch ($type) {
                 case 'basic':
                     $operator = (string)($where['operator'] ?? '=');
-                    $clauses[] = $this->quoteIdentifier($column) . ' ' . $operator . ' ?';
+                    $clause = $this->quoteIdentifier($column) . ' ' . $operator . ' ?';
+                    // MySQL uses \ as default LIKE escape character, no ESCAPE clause needed.
+                    // PostgreSQL and SQLite need an explicit ESCAPE clause.
+                    if (($operator === 'LIKE' || $operator === 'NOT LIKE') && $this->quoteChar !== '`') {
+                        $clause .= " ESCAPE '\\'";
+                    }
+                    $clauses[] = $clause;
                     $params[] = $where['value'] ?? null;
                     break;
 

@@ -107,7 +107,8 @@ $affected = $db->execute('UPDATE users SET active = ? WHERE id = ?', [1, 5]);
 // Get last insert ID
 $id = $db->lastInsertId();
 
-// Access underlying PDO
+// Access underlying PDO — for features not covered by the wrapper
+// (e.g., LOCK TABLES, driver-specific methods, passing PDO to third-party tools)
 $pdo = $db->getPdo();
 ```
 
@@ -516,6 +517,21 @@ $db->table('users')->orderBy($column)->get();
 
 This applies to `select()`, `orderBy()`, `groupBy()`, and `join()`.
 
+### LIKE Patterns with User Input
+
+Use `Database::escapeLike()` to prevent LIKE wildcards (`%`, `_`) in user input from being interpreted as wildcards:
+
+```php
+use Sodaho\PdoWrapper\Database;
+
+$search = Database::escapeLike($_GET['q']); // "100%" → "100\%"
+
+$db->table('products')
+    ->whereLike('name', '%' . $search . '%')
+    ->get();
+// Matches "Rabatt: 100%" but NOT "1000" or "10099"
+```
+
 ## Limitations
 
 This library is designed for simple, common use cases. The following features are **not supported**:
@@ -530,6 +546,16 @@ This library is designed for simple, common use cases. The following features ar
 - **Subqueries** - Use raw queries for subqueries in SELECT, WHERE, or FROM clauses.
 
 - **UNION** - Combine queries manually or use raw SQL.
+
+- **LIMIT/ORDER BY in update/delete** - `limit()`, `offset()`, and `orderBy()` are not supported with `update()` or `delete()` (not portable across databases). The QueryBuilder throws an exception if you try. Use a subquery instead:
+  ```php
+  // Delete the 10 oldest logs (works on all databases)
+  $db->execute(
+      'DELETE FROM logs WHERE id IN (SELECT id FROM logs ORDER BY created_at ASC LIMIT 10)'
+  );
+  ```
+
+- **NULL in where()** - `where('column', null)` throws an exception because `column = NULL` is always false in SQL. Use `whereNull()` or `whereNotNull()` instead.
 
 - **PostgreSQL primary key convention** - `insert()` assumes the primary key column is named `id`. For custom PK names, use raw query with `RETURNING`:
   ```php
