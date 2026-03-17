@@ -629,33 +629,26 @@ class QueryBuilder
 
     /**
      * Execute an aggregate function.
+     *
+     * Uses clone to avoid mutating the original builder state.
      */
     private function aggregate(string $function, string $column): mixed
     {
-        $originalColumns = $this->columns;
-        $originalLimit = $this->limit;
-        $originalOffset = $this->offset;
-        $originalOrderBy = $this->orderBy;
-
-        $this->limit = null;
-        $this->offset = null;
-        $this->orderBy = [];
+        $query = clone $this;
+        $query->limit = null;
+        $query->offset = null;
+        $query->orderBy = [];
 
         if ($column === '*') {
-            $this->columns = [new RawExpression("{$function}(*) as aggregate")];
+            $query->columns = [new RawExpression("{$function}(*) as aggregate")];
         } else {
-            $this->columns = [new RawExpression("{$function}({$this->quoteIdentifier($column)}) as aggregate")];
+            $query->columns = [new RawExpression("{$function}({$query->quoteIdentifier($column)}) as aggregate")];
         }
 
-        [$sql, $params] = $this->toSql();
+        [$sql, $params] = $query->toSql();
         $stmt = $this->db->query($sql, $params);
         /** @var array<string, mixed>|false $result */
         $result = $stmt->fetch(PDO::FETCH_ASSOC);
-
-        $this->columns = $originalColumns;
-        $this->limit = $originalLimit;
-        $this->offset = $originalOffset;
-        $this->orderBy = $originalOrderBy;
 
         // @codeCoverageIgnoreStart
         // Defensive: fetch() never returns false for aggregates (they always return one row)
