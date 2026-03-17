@@ -659,15 +659,19 @@ class QueryBuilder
      * Update rows matching the WHERE conditions.
      *
      * Requires at least one WHERE condition for safety.
+     * Does not support LIMIT, OFFSET, or ORDER BY (not portable across databases).
      *
      * @param array<string, mixed> $data Column => value pairs to update
      *
      * @throws QueryException When no WHERE conditions set (safety)
+     * @throws QueryException When limit(), offset(), or orderBy() is set (not supported)
      *
      * @return int Number of affected rows
      */
     public function update(array $data): int
     {
+        $this->guardAgainstSelectClauses('update');
+
         if (empty($this->wheres)) {
             throw new QueryException(
                 message: 'Update failed',
@@ -701,13 +705,17 @@ class QueryBuilder
      * Delete rows matching the WHERE conditions.
      *
      * Requires at least one WHERE condition for safety.
+     * Does not support LIMIT, OFFSET, or ORDER BY (not portable across databases).
      *
      * @throws QueryException When no WHERE conditions set (safety)
+     * @throws QueryException When limit(), offset(), or orderBy() is set (not supported)
      *
      * @return int Number of affected rows
      */
     public function delete(): int
     {
+        $this->guardAgainstSelectClauses('delete');
+
         if (empty($this->wheres)) {
             throw new QueryException(
                 message: 'Delete failed',
@@ -940,6 +948,43 @@ class QueryBuilder
         }
 
         return $this->quoteChar . str_replace($this->quoteChar, $escape, $identifier) . $this->quoteChar;
+    }
+
+    /**
+     * Guard against SELECT-only clauses (LIMIT, OFFSET, ORDER BY) in update/delete.
+     *
+     * These clauses are silently ignored by update()/delete() SQL generation,
+     * which could cause unintended data loss (e.g., deleting all rows instead of
+     * a limited subset). This guard makes the error explicit.
+     *
+     * @param string $operation Operation name for error message ('update' or 'delete')
+     *
+     * @throws QueryException When limit, offset, or orderBy is set
+     */
+    private function guardAgainstSelectClauses(string $operation): void
+    {
+        $unsupported = [];
+
+        if ($this->limit !== null) {
+            $unsupported[] = 'limit()';
+        }
+        if ($this->offset !== null) {
+            $unsupported[] = 'offset()';
+        }
+        if (!empty($this->orderBy)) {
+            $unsupported[] = 'orderBy()';
+        }
+
+        if (!empty($unsupported)) {
+            throw new QueryException(
+                message: ucfirst($operation) . ' failed',
+                debugMessage: sprintf(
+                    '%s does not support %s (not portable across databases). Use raw execute() for database-specific syntax.',
+                    $operation,
+                    implode(', ', $unsupported)
+                )
+            );
+        }
     }
 
     /**

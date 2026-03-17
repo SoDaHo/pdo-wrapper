@@ -362,4 +362,126 @@ class EdgeCaseTest extends TestCase
         $this->assertStringContainsString('LIMIT 10', $sql);
         $this->assertStringContainsString('OFFSET 5', $sql);
     }
+
+    // =========================================================================
+    // LIMIT/ORDERBY IN UPDATE/DELETE BUG FIX TEST
+    // Bug: limit() and orderBy() were silently ignored in update()/delete(),
+    // causing unintended data loss (e.g., deleting all rows instead of a subset)
+    // =========================================================================
+
+    public function testUpdateWithLimitThrowsException(): void
+    {
+        $db = Database::sqlite(':memory:');
+        $db->execute('CREATE TABLE logs (id INTEGER PRIMARY KEY, level TEXT)');
+
+        $this->expectException(QueryException::class);
+        $this->expectExceptionMessage('Update failed');
+
+        $db->table('logs')
+            ->where('level', 'info')
+            ->limit(10)
+            ->update(['level' => 'debug']);
+    }
+
+    public function testUpdateWithOrderByThrowsException(): void
+    {
+        $db = Database::sqlite(':memory:');
+        $db->execute('CREATE TABLE logs (id INTEGER PRIMARY KEY, level TEXT)');
+
+        $this->expectException(QueryException::class);
+        $this->expectExceptionMessage('Update failed');
+
+        $db->table('logs')
+            ->where('level', 'info')
+            ->orderBy('id', 'ASC')
+            ->update(['level' => 'debug']);
+    }
+
+    public function testUpdateWithOffsetThrowsException(): void
+    {
+        $db = Database::sqlite(':memory:');
+        $db->execute('CREATE TABLE logs (id INTEGER PRIMARY KEY, level TEXT)');
+
+        $this->expectException(QueryException::class);
+        $this->expectExceptionMessage('Update failed');
+
+        $db->table('logs')
+            ->where('level', 'info')
+            ->offset(5)
+            ->update(['level' => 'debug']);
+    }
+
+    public function testDeleteWithLimitThrowsException(): void
+    {
+        $db = Database::sqlite(':memory:');
+        $db->execute('CREATE TABLE logs (id INTEGER PRIMARY KEY, level TEXT)');
+
+        $this->expectException(QueryException::class);
+        $this->expectExceptionMessage('Delete failed');
+
+        $db->table('logs')
+            ->where('level', 'info')
+            ->limit(10)
+            ->delete();
+    }
+
+    public function testDeleteWithOrderByThrowsException(): void
+    {
+        $db = Database::sqlite(':memory:');
+        $db->execute('CREATE TABLE logs (id INTEGER PRIMARY KEY, level TEXT)');
+
+        $this->expectException(QueryException::class);
+        $this->expectExceptionMessage('Delete failed');
+
+        $db->table('logs')
+            ->where('level', 'info')
+            ->orderBy('id', 'ASC')
+            ->delete();
+    }
+
+    public function testDeleteWithLimitAndOrderByThrowsExceptionListingAll(): void
+    {
+        $db = Database::sqlite(':memory:');
+        $db->execute('CREATE TABLE logs (id INTEGER PRIMARY KEY, level TEXT)');
+
+        try {
+            $db->table('logs')
+                ->where('level', 'info')
+                ->orderBy('id')
+                ->limit(10)
+                ->delete();
+            $this->fail('Expected QueryException was not thrown');
+        } catch (QueryException $e) {
+            $debug = $e->getDebugMessage() ?? '';
+            $this->assertStringContainsString('limit()', $debug);
+            $this->assertStringContainsString('orderBy()', $debug);
+        }
+    }
+
+    public function testUpdateWithoutLimitOrOrderByStillWorks(): void
+    {
+        $db = Database::sqlite(':memory:');
+        $db->execute('CREATE TABLE logs (id INTEGER PRIMARY KEY, level TEXT)');
+        $db->insert('logs', ['level' => 'info']);
+        $db->insert('logs', ['level' => 'info']);
+
+        $affected = $db->table('logs')
+            ->where('level', 'info')
+            ->update(['level' => 'debug']);
+
+        $this->assertSame(2, $affected);
+    }
+
+    public function testDeleteWithoutLimitOrOrderByStillWorks(): void
+    {
+        $db = Database::sqlite(':memory:');
+        $db->execute('CREATE TABLE logs (id INTEGER PRIMARY KEY, level TEXT)');
+        $db->insert('logs', ['level' => 'info']);
+
+        $affected = $db->table('logs')
+            ->where('level', 'info')
+            ->delete();
+
+        $this->assertSame(1, $affected);
+    }
 }
