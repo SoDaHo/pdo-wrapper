@@ -4,8 +4,6 @@ declare(strict_types=1);
 
 namespace Sodaho\PdoWrapper\Traits;
 
-use Closure;
-
 /**
  * Provides event hook functionality for database operations.
  *
@@ -13,18 +11,20 @@ use Closure;
  */
 trait HasHooks
 {
-    /** @var array<string, Closure[]> */
+    /** @var array<string, array<callable>> */
     private array $hooks = [];
 
     /**
      * Register a callback for an event.
      *
      * @param string $event Event name
-     * @param Closure $callback Callback receiving event data array
+     * @param callable $callback Callback receiving event data array
      */
-    public function on(string $event, Closure $callback): void
+    public function on(string $event, callable $callback): static
     {
         $this->hooks[$event][] = $callback;
+
+        return $this;
     }
 
     /**

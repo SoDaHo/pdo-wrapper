@@ -85,9 +85,9 @@ interface DatabaseInterface
      * Events: 'query', 'error', 'transaction.begin', 'transaction.commit', 'transaction.rollback'
      *
      * @param string $event Event name
-     * @param Closure $callback Callback receiving event data array
+     * @param callable $callback Callback receiving event data array
      */
-    public function on(string $event, Closure $callback): void;
+    public function on(string $event, callable $callback): static;
 
     // =========================================================================
     // CRUD Helper
