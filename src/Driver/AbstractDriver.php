@@ -511,6 +511,15 @@ abstract class AbstractDriver implements DatabaseInterface
         $params = [];
 
         foreach ($where as $column => $value) {
+            if ($value === null) {
+                throw new QueryException(
+                    message: 'Query failed',
+                    debugMessage: sprintf(
+                        'NULL value for column "%s" in WHERE condition. Use whereNull() via the query builder, or a raw query with IS NULL.',
+                        $column
+                    )
+                );
+            }
             $clauses[] = $this->quoteIdentifier($column) . ' = ?';
             $params[] = $value;
         }

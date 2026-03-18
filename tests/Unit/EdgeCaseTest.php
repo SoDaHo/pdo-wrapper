@@ -219,6 +219,53 @@ class EdgeCaseTest extends TestCase
     }
 
     // =========================================================================
+    // NULL IN CRUD WHERE BUG FIX TEST
+    // Bug: buildWhereClause() generated "column = ?" with null, which is always false in SQL
+    // =========================================================================
+
+    public function testCrudUpdateWithNullWhereThrowsException(): void
+    {
+        $db = Database::sqlite(':memory:');
+        $db->execute('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, deleted_at TEXT)');
+        $db->insert('users', ['name' => 'Alice']);
+
+        $this->expectException(QueryException::class);
+
+        $db->update('users', ['name' => 'New'], ['deleted_at' => null]);
+    }
+
+    public function testCrudDeleteWithNullWhereThrowsException(): void
+    {
+        $db = Database::sqlite(':memory:');
+        $db->execute('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, deleted_at TEXT)');
+        $db->insert('users', ['name' => 'Alice']);
+
+        $this->expectException(QueryException::class);
+
+        $db->delete('users', ['deleted_at' => null]);
+    }
+
+    public function testCrudFindOneWithNullWhereThrowsException(): void
+    {
+        $db = Database::sqlite(':memory:');
+        $db->execute('CREATE TABLE users (id INTEGER PRIMARY KEY, deleted_at TEXT)');
+
+        $this->expectException(QueryException::class);
+
+        $db->findOne('users', ['deleted_at' => null]);
+    }
+
+    public function testCrudFindAllWithNullWhereThrowsException(): void
+    {
+        $db = Database::sqlite(':memory:');
+        $db->execute('CREATE TABLE users (id INTEGER PRIMARY KEY, deleted_at TEXT)');
+
+        $this->expectException(QueryException::class);
+
+        $db->findAll('users', ['deleted_at' => null]);
+    }
+
+    // =========================================================================
     // DIRECT QUERY BUILDER SCHEMA QUOTING TESTS
     // These test the QueryBuilder's quoteIdentifier directly
     // =========================================================================
