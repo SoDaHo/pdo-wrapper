@@ -42,7 +42,7 @@
 - **Exception hierarchy**: `DatabaseException`, `ConnectionException`, `QueryException`, `TransactionException`.
 - **PostgreSQL**: `insert()` uses `RETURNING id` for reliable ID retrieval.
 - **SQLite**: Foreign key constraints enabled by default.
-- **CI**: GitHub Actions with PHP 8.1-8.4, MySQL 8.0, MariaDB 10.11/11.4, PostgreSQL 15/16.
+- **CI**: GitHub Actions with PHP 8.2-8.5, MySQL 8.0/8.4, MariaDB 10.11/11.4, PostgreSQL 15/16/17.
 - **Quality**: PHPStan level 9, PHP-CS-Fixer (PSR-12).
 
 [Unreleased]: https://github.com/sodaho/pdo-wrapper/compare/v1.0.0...HEAD

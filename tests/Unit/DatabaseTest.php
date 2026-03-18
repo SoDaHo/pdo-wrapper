@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Sodaho\PdoWrapper\Tests\Unit;
 
+use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\TestCase;
 use Sodaho\PdoWrapper\Database;
 use Sodaho\PdoWrapper\Driver\MySqlDriver;
@@ -12,9 +13,7 @@ use Sodaho\PdoWrapper\Driver\SqliteDriver;
 
 class DatabaseTest extends TestCase
 {
-    /**
-     * @group mysql
-     */
+    #[Group('mysql')]
     public function testMysqlReturnsDriver(): void
     {
         $driver = Database::mysql([
@@ -28,9 +27,7 @@ class DatabaseTest extends TestCase
         $this->assertInstanceOf(MySqlDriver::class, $driver);
     }
 
-    /**
-     * @group postgres
-     */
+    #[Group('postgres')]
     public function testPostgresReturnsDriver(): void
     {
         $driver = Database::postgres([

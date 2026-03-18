@@ -4,13 +4,12 @@ declare(strict_types=1);
 
 namespace Sodaho\PdoWrapper\Tests\Integration\Driver;
 
+use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\TestCase;
 use Sodaho\PdoWrapper\Database;
 use Sodaho\PdoWrapper\Driver\MySqlDriver;
 
-/**
- * @group mysql
- */
+#[Group('mysql')]
 class MySqlCrudTest extends TestCase
 {
     private MySqlDriver $db;

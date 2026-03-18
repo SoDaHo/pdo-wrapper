@@ -4,16 +4,15 @@ declare(strict_types=1);
 
 namespace Sodaho\PdoWrapper\Tests\Feature;
 
+use PHPUnit\Framework\Attributes\Group;
 use Sodaho\PdoWrapper\Database;
 use Sodaho\PdoWrapper\DatabaseInterface;
 use Sodaho\PdoWrapper\Tests\Feature\Concerns\AbstractSecurityTest;
 
 /**
  * Security tests for PostgreSQL driver.
- *
- * @group postgres
  */
-
+#[Group('postgres')]
 class PostgresSecurityTest extends AbstractSecurityTest
 {
     protected function createDatabase(): DatabaseInterface

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Sodaho\PdoWrapper\Tests\Feature;
 
+use PHPUnit\Framework\Attributes\Group;
 use Sodaho\PdoWrapper\Database;
 use Sodaho\PdoWrapper\DatabaseInterface;
 use Sodaho\PdoWrapper\Exception\QueryException;
@@ -11,9 +12,8 @@ use Sodaho\PdoWrapper\Tests\Feature\Concerns\AbstractWorkflowTest;
 
 /**
  * Workflow tests for PostgreSQL driver.
- *
- * @group postgres
  */
+#[Group('postgres')]
 class PostgresWorkflowTest extends AbstractWorkflowTest
 {
     protected function createDatabase(): DatabaseInterface

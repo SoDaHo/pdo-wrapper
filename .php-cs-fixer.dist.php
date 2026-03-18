@@ -13,7 +13,7 @@ return (new PhpCsFixer\Config())
     ->setRiskyAllowed(true)
     ->setRules([
         '@PSR12' => true,
-        '@PHP81Migration' => true,
+        '@PHP82Migration' => true,
 
         // Strict
         'strict_param' => true,

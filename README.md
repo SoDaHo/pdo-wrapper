@@ -567,7 +567,7 @@ These limitations keep the QueryBuilder simple and predictable. For complex quer
 
 ## Requirements
 
-- PHP 8.1+
+- PHP 8.2+
 - PDO extension
 - Database-specific PDO driver (pdo_mysql, pdo_pgsql, pdo_sqlite)
 

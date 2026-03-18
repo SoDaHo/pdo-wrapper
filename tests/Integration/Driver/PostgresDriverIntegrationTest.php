@@ -6,15 +6,14 @@ namespace Sodaho\PdoWrapper\Tests\Integration\Driver;
 
 use PDO;
 use PDOStatement;
+use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\TestCase;
 use Sodaho\PdoWrapper\DatabaseInterface;
 use Sodaho\PdoWrapper\Driver\PostgresDriver;
 use Sodaho\PdoWrapper\Exception\ConnectionException;
 use Sodaho\PdoWrapper\Exception\QueryException;
 
-/**
- * @group postgres
- */
+#[Group('postgres')]
 class PostgresDriverIntegrationTest extends TestCase
 {
     private PostgresDriver $driver;

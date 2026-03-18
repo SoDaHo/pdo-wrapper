@@ -6,14 +6,13 @@ namespace Sodaho\PdoWrapper\Tests\Integration\Driver;
 
 use PDO;
 use PDOStatement;
+use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\TestCase;
 use Sodaho\PdoWrapper\DatabaseInterface;
 use Sodaho\PdoWrapper\Driver\MySqlDriver;
 use Sodaho\PdoWrapper\Exception\TransactionException;
 
-/**
- * @group mysql
- */
+#[Group('mysql')]
 class MySqlDriverIntegrationTest extends TestCase
 {
     private MySqlDriver $driver;
