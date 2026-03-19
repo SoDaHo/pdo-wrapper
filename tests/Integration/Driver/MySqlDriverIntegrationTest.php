@@ -96,7 +96,8 @@ class MySqlDriverIntegrationTest extends TestCase
     {
         $emulate = $this->driver->getPdo()->getAttribute(PDO::ATTR_EMULATE_PREPARES);
 
-        $this->assertFalse($emulate);
+        // PDO returns int(0) on PHP 8.2-8.4, bool(false) on PHP 8.5+
+        $this->assertEmpty($emulate);
     }
 
     public function testTransactionCommitWithoutBeginThrowsException(): void
