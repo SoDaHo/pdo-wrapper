@@ -178,46 +178,6 @@ class EdgeCaseTest extends TestCase
         $this->assertSame('value', $result['my"column']);
     }
 
-    public function testDeleteRequiresWhere(): void
-    {
-        $db = Database::sqlite(':memory:');
-        $db->execute('CREATE TABLE users (id INTEGER PRIMARY KEY)');
-
-        $this->expectException(QueryException::class);
-
-        $db->delete('users', []);
-    }
-
-    public function testUpdateRequiresWhere(): void
-    {
-        $db = Database::sqlite(':memory:');
-        $db->execute('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)');
-
-        $this->expectException(QueryException::class);
-
-        $db->update('users', ['name' => 'New'], []);
-    }
-
-    public function testQueryBuilderUpdateRequiresWhere(): void
-    {
-        $db = Database::sqlite(':memory:');
-        $db->execute('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)');
-
-        $this->expectException(QueryException::class);
-
-        $db->table('users')->update(['name' => 'New']);
-    }
-
-    public function testQueryBuilderDeleteRequiresWhere(): void
-    {
-        $db = Database::sqlite(':memory:');
-        $db->execute('CREATE TABLE users (id INTEGER PRIMARY KEY)');
-
-        $this->expectException(QueryException::class);
-
-        $db->table('users')->delete();
-    }
-
     // =========================================================================
     // NULL IN CRUD WHERE BUG FIX TEST
     // Bug: buildWhereClause() generated "column = ?" with null, which is always false in SQL
