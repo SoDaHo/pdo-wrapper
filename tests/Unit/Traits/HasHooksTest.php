@@ -68,10 +68,8 @@ class HasHooksTest extends TestCase
 
     public function testUnregisteredEventDoesNothing(): void
     {
-        // Should not throw
+        $this->expectNotToPerformAssertions();
         $this->subject->fireEvent('nonexistent', []);
-
-        $this->assertTrue(true);
     }
 
     public function testDifferentEventsAreSeparate(): void
