@@ -45,6 +45,9 @@ jobs:
       - name: Run Integration tests
         run: vendor/bin/phpunit --testsuite Integration --exclude-group mysql --exclude-group postgres --no-coverage
 
+      - name: Run Feature tests
+        run: vendor/bin/phpunit --testsuite Feature --exclude-group mysql --exclude-group postgres --no-coverage
+
   test-mysql:
     runs-on: ubuntu-latest
     name: MySQL ${{ matrix.mysql }} / PHP ${{ matrix.php }}
@@ -93,7 +96,7 @@ jobs:
         run: composer install --prefer-dist --no-progress
 
       - name: Run MySQL tests
-        run: vendor/bin/phpunit --testsuite Feature --group mysql --no-coverage
+        run: vendor/bin/phpunit --group mysql --no-coverage
         env:
           MYSQL_HOST: 127.0.0.1
           MYSQL_PORT: 3306
@@ -149,7 +152,7 @@ jobs:
         run: composer install --prefer-dist --no-progress
 
       - name: Run MariaDB tests
-        run: vendor/bin/phpunit --testsuite Feature --group mysql --no-coverage
+        run: vendor/bin/phpunit --group mysql --no-coverage
         env:
           MYSQL_HOST: 127.0.0.1
           MYSQL_PORT: 3307
@@ -206,7 +209,7 @@ jobs:
         run: composer install --prefer-dist --no-progress
 
       - name: Run PostgreSQL tests
-        run: vendor/bin/phpunit --testsuite Feature --group postgres --no-coverage
+        run: vendor/bin/phpunit --group postgres --no-coverage
         env:
           POSTGRES_HOST: 127.0.0.1
           POSTGRES_PORT: 5432
