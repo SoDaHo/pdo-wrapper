@@ -95,6 +95,8 @@ abstract class AbstractDriver implements DatabaseInterface
      *
      * @param string|null $name Sequence name (PostgreSQL) or null
      *
+     * @throws QueryException If PDO fails to retrieve the ID
+     *
      * @return string|false Last insert ID or false on failure
      */
     public function lastInsertId(?string $name = null): string|false

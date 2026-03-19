@@ -859,12 +859,12 @@ class QueryBuilder
             $sql .= ' ORDER BY ' . implode(', ', $orderClauses);
         }
 
-        // LIMIT (cast to int for security)
+        // LIMIT (typed as ?int, enforced by PHP's type system)
         if ($this->limit !== null) {
             $sql .= ' LIMIT ' . $this->limit;
         }
 
-        // OFFSET (cast to int for security)
+        // OFFSET (typed as ?int, enforced by PHP's type system)
         if ($this->offset !== null) {
             $sql .= ' OFFSET ' . $this->offset;
         }

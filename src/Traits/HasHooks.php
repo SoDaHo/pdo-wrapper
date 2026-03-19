@@ -7,6 +7,7 @@ namespace Sodaho\PdoWrapper\Traits;
 /**
  * Provides event hook functionality for database operations.
  *
+ * "Fail Hard" implementation: Exceptions in hooks bubble up to the caller.
  * Events: 'query', 'error', 'transaction.begin', 'transaction.commit', 'transaction.rollback'
  */
 trait HasHooks
