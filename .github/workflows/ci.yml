@@ -5,10 +5,12 @@ on:
     branches: [main, master]
   pull_request:
     branches: [main, master]
+  workflow_dispatch:
 
 jobs:
   test-sqlite:
     runs-on: ubuntu-latest
+    container: shivammathur/node:24.04
     name: PHP ${{ matrix.php }} (SQLite)
     strategy:
       fail-fast: false
@@ -16,7 +18,7 @@ jobs:
         php: ['8.2', '8.3', '8.4', '8.5']
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
@@ -30,7 +32,7 @@ jobs:
         run: echo "dir=$(composer config cache-files-dir)" >> $GITHUB_OUTPUT
 
       - name: Cache Composer dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ steps.composer-cache.outputs.dir }}
           key: ${{ runner.os }}-composer-${{ hashFiles('**/composer.lock') }}
@@ -50,6 +52,7 @@ jobs:
 
   test-mysql:
     runs-on: ubuntu-latest
+    container: shivammathur/node:24.04
     name: MySQL ${{ matrix.mysql }} / PHP ${{ matrix.php }}
     strategy:
       fail-fast: false
@@ -63,8 +66,6 @@ jobs:
         env:
           MYSQL_ROOT_PASSWORD: root
           MYSQL_DATABASE: pdo_wrapper_test
-        ports:
-          - 3306:3306
         options: >-
           --health-cmd="mysqladmin ping"
           --health-interval=10s
@@ -72,7 +73,7 @@ jobs:
           --health-retries=3
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
@@ -86,7 +87,7 @@ jobs:
         run: echo "dir=$(composer config cache-files-dir)" >> $GITHUB_OUTPUT
 
       - name: Cache Composer dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ steps.composer-cache.outputs.dir }}
           key: ${{ runner.os }}-composer-${{ hashFiles('**/composer.lock') }}
@@ -95,10 +96,18 @@ jobs:
       - name: Install dependencies
         run: composer install --prefer-dist --no-progress
 
+      - name: Wait for MySQL
+        run: |
+          for i in $(seq 1 90); do
+            mysql -h mysql -uroot -proot -e "SELECT 1" pdo_wrapper_test >/dev/null 2>&1 && exit 0
+            sleep 1
+          done
+          echo "MySQL not ready"; exit 1
+
       - name: Run MySQL tests
         run: vendor/bin/phpunit --group mysql --no-coverage
         env:
-          MYSQL_HOST: 127.0.0.1
+          MYSQL_HOST: mysql
           MYSQL_PORT: 3306
           MYSQL_DATABASE: pdo_wrapper_test
           MYSQL_USERNAME: root
@@ -106,6 +115,7 @@ jobs:
 
   test-mariadb:
     runs-on: ubuntu-latest
+    container: shivammathur/node:24.04
     name: MariaDB ${{ matrix.mariadb }} / PHP ${{ matrix.php }}
     strategy:
       fail-fast: false
@@ -119,8 +129,6 @@ jobs:
         env:
           MARIADB_ROOT_PASSWORD: root
           MARIADB_DATABASE: pdo_wrapper_test
-        ports:
-          - 3307:3306
         options: >-
           --health-cmd="healthcheck.sh --connect --innodb_initialized"
           --health-interval=10s
@@ -128,7 +136,7 @@ jobs:
           --health-retries=3
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
@@ -142,7 +150,7 @@ jobs:
         run: echo "dir=$(composer config cache-files-dir)" >> $GITHUB_OUTPUT
 
       - name: Cache Composer dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ steps.composer-cache.outputs.dir }}
           key: ${{ runner.os }}-composer-${{ hashFiles('**/composer.lock') }}
@@ -151,17 +159,26 @@ jobs:
       - name: Install dependencies
         run: composer install --prefer-dist --no-progress
 
+      - name: Wait for MariaDB
+        run: |
+          for i in $(seq 1 90); do
+            mysql -h mariadb -uroot -proot -e "SELECT 1" pdo_wrapper_test >/dev/null 2>&1 && exit 0
+            sleep 1
+          done
+          echo "MariaDB not ready"; exit 1
+
       - name: Run MariaDB tests
         run: vendor/bin/phpunit --group mysql --no-coverage
         env:
-          MYSQL_HOST: 127.0.0.1
-          MYSQL_PORT: 3307
+          MYSQL_HOST: mariadb
+          MYSQL_PORT: 3306
           MYSQL_DATABASE: pdo_wrapper_test
           MYSQL_USERNAME: root
           MYSQL_PASSWORD: root
 
   test-postgres:
     runs-on: ubuntu-latest
+    container: shivammathur/node:24.04
     name: PGSQL ${{ matrix.postgres }} / PHP ${{ matrix.php }}
     strategy:
       fail-fast: false
@@ -176,8 +193,6 @@ jobs:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: pdo_wrapper_test
-        ports:
-          - 5432:5432
         options: >-
           --health-cmd=pg_isready
           --health-interval=10s
@@ -185,7 +200,7 @@ jobs:
           --health-retries=3
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
@@ -199,7 +214,7 @@ jobs:
         run: echo "dir=$(composer config cache-files-dir)" >> $GITHUB_OUTPUT
 
       - name: Cache Composer dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ steps.composer-cache.outputs.dir }}
           key: ${{ runner.os }}-composer-${{ hashFiles('**/composer.lock') }}
@@ -208,10 +223,18 @@ jobs:
       - name: Install dependencies
         run: composer install --prefer-dist --no-progress
 
+      - name: Wait for Postgres
+        run: |
+          for i in $(seq 1 90); do
+            PGPASSWORD=postgres psql -h postgres -U postgres -d pdo_wrapper_test -c "SELECT 1" >/dev/null 2>&1 && exit 0
+            sleep 1
+          done
+          echo "Postgres not ready"; exit 1
+
       - name: Run PostgreSQL tests
         run: vendor/bin/phpunit --group postgres --no-coverage
         env:
-          POSTGRES_HOST: 127.0.0.1
+          POSTGRES_HOST: postgres
           POSTGRES_PORT: 5432
           POSTGRES_DATABASE: pdo_wrapper_test
           POSTGRES_USERNAME: postgres
@@ -219,10 +242,11 @@ jobs:
 
   analyse:
     runs-on: ubuntu-latest
+    container: shivammathur/node:24.04
     name: Static Analysis
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
@@ -235,7 +259,7 @@ jobs:
         run: echo "dir=$(composer config cache-files-dir)" >> $GITHUB_OUTPUT
 
       - name: Cache Composer dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ steps.composer-cache.outputs.dir }}
           key: ${{ runner.os }}-composer-${{ hashFiles('**/composer.lock') }}
@@ -249,10 +273,11 @@ jobs:
 
   code-style:
     runs-on: ubuntu-latest
+    container: shivammathur/node:24.04
     name: Code Style
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
@@ -265,7 +290,7 @@ jobs:
         run: echo "dir=$(composer config cache-files-dir)" >> $GITHUB_OUTPUT
 
       - name: Cache Composer dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ steps.composer-cache.outputs.dir }}
           key: ${{ runner.os }}-composer-${{ hashFiles('**/composer.lock') }}
