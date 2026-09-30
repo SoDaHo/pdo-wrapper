@@ -12,6 +12,7 @@
 
 ### Fixed
 - PostgreSQL: `insert()` inside a transaction on a table without a `{table}_id_seq` sequence (composite or UUID key, or an explicit `id`) aborted the transaction; the following `COMMIT` silently became a `ROLLBACK` and nothing was stored. The sequence probe now runs in a savepoint.
+- QueryBuilder: `update()` and `delete()` silently ignored `join()`, `groupBy()` and `having()`, so a delete narrowed down by a join hit every matching row of the base table. They now throw a `QueryException`, as for `limit()` and `orderBy()`.
 
 ## [1.1.0] - 2026-09-30
 

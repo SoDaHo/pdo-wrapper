@@ -465,6 +465,54 @@ class EdgeCaseTest extends TestCase
         }
     }
 
+    /**
+     * Regression test: update()/delete() never render joins, so a delete narrowed down by a join
+     * hit every matching row of the base table. join() is now rejected like limit()/orderBy().
+     */
+    public function testDeleteWithJoinThrowsExceptionAndDeletesNothing(): void
+    {
+        $db = Database::sqlite(':memory:');
+        $db->execute('CREATE TABLE users (id INTEGER PRIMARY KEY, status TEXT)');
+        $db->execute('CREATE TABLE orders (id INTEGER PRIMARY KEY, user_id INTEGER, status TEXT)');
+        foreach (['active', 'active', 'inactive'] as $status) {
+            $db->insert('users', ['status' => $status]);
+        }
+        $db->insert('orders', ['user_id' => 1, 'status' => 'active']);
+
+        try {
+            $db->table('users')
+                ->join('orders', 'users.id', '=', 'orders.user_id')
+                ->where('status', 'active')
+                ->delete();
+            $this->fail('Expected QueryException was not thrown');
+        } catch (QueryException $e) {
+            $this->assertSame('Delete failed', $e->getMessage());
+            $this->assertStringContainsString('join()', $e->getDebugMessage() ?? '');
+        }
+
+        $this->assertSame(3, $db->table('users')->count());
+    }
+
+    public function testUpdateWithGroupByAndHavingThrowsExceptionListingBoth(): void
+    {
+        $db = Database::sqlite(':memory:');
+        $db->execute('CREATE TABLE logs (id INTEGER PRIMARY KEY, level TEXT)');
+
+        try {
+            $db->table('logs')
+                ->where('level', 'info')
+                ->groupBy('level')
+                ->having(Database::raw('COUNT(*)'), '>', 1)
+                ->update(['level' => 'debug']);
+            $this->fail('Expected QueryException was not thrown');
+        } catch (QueryException $e) {
+            $this->assertSame('Update failed', $e->getMessage());
+            $debug = $e->getDebugMessage() ?? '';
+            $this->assertStringContainsString('groupBy()', $debug);
+            $this->assertStringContainsString('having()', $debug);
+        }
+    }
+
     public function testUpdateWithoutLimitOrOrderByStillWorks(): void
     {
         $db = Database::sqlite(':memory:');

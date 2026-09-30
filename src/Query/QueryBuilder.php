@@ -682,12 +682,12 @@ class QueryBuilder
      * Update rows matching the WHERE conditions.
      *
      * Requires at least one WHERE condition for safety.
-     * Does not support LIMIT, OFFSET, or ORDER BY (not portable across databases).
+     * Does not support LIMIT, OFFSET, ORDER BY, JOIN, GROUP BY or HAVING (not part of the generated statement).
      *
      * @param array<string, mixed> $data Column => value pairs to update
      *
      * @throws QueryException When no WHERE conditions set (safety)
-     * @throws QueryException When limit(), offset(), or orderBy() is set (not supported)
+     * @throws QueryException When limit(), offset(), orderBy(), join(), groupBy() or having() is set (not supported)
      *
      * @return int Number of affected rows
      */
@@ -728,10 +728,10 @@ class QueryBuilder
      * Delete rows matching the WHERE conditions.
      *
      * Requires at least one WHERE condition for safety.
-     * Does not support LIMIT, OFFSET, or ORDER BY (not portable across databases).
+     * Does not support LIMIT, OFFSET, ORDER BY, JOIN, GROUP BY or HAVING (not part of the generated statement).
      *
      * @throws QueryException When no WHERE conditions set (safety)
-     * @throws QueryException When limit(), offset(), or orderBy() is set (not supported)
+     * @throws QueryException When limit(), offset(), orderBy(), join(), groupBy() or having() is set (not supported)
      *
      * @return int Number of affected rows
      */
@@ -980,15 +980,15 @@ class QueryBuilder
     }
 
     /**
-     * Guard against SELECT-only clauses (LIMIT, OFFSET, ORDER BY) in update/delete.
+     * Guard against SELECT-only clauses (LIMIT, OFFSET, ORDER BY, JOIN, GROUP BY, HAVING) in update/delete.
      *
-     * These clauses are silently ignored by update()/delete() SQL generation,
-     * which could cause unintended data loss (e.g., deleting all rows instead of
-     * a limited subset). This guard makes the error explicit.
+     * None of these clauses is part of the SQL that update()/delete() generate. Ignoring them
+     * silently would change which rows are affected (a delete narrowed down by a join would hit
+     * every matching row of the base table). This guard makes the error explicit.
      *
      * @param string $operation Operation name for error message ('update' or 'delete')
      *
-     * @throws QueryException When limit, offset, or orderBy is set
+     * @throws QueryException When limit, offset, orderBy, join, groupBy or having is set
      */
     private function guardAgainstSelectClauses(string $operation): void
     {
@@ -1003,12 +1003,21 @@ class QueryBuilder
         if (!empty($this->orderBy)) {
             $unsupported[] = 'orderBy()';
         }
+        if (!empty($this->joins)) {
+            $unsupported[] = 'join()';
+        }
+        if (!empty($this->groupBy)) {
+            $unsupported[] = 'groupBy()';
+        }
+        if (!empty($this->having)) {
+            $unsupported[] = 'having()';
+        }
 
         if (!empty($unsupported)) {
             throw new QueryException(
                 message: ucfirst($operation) . ' failed',
                 debugMessage: sprintf(
-                    '%s does not support %s (not portable across databases). Use raw execute() for database-specific syntax.',
+                    '%s does not support %s (not part of the generated statement; the affected rows would silently differ). Use raw execute() for database-specific syntax.',
                     $operation,
                     implode(', ', $unsupported)
                 )

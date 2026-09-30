@@ -581,7 +581,7 @@ This library is designed for simple, common use cases. The following features ar
 
 - **UNION** - Combine queries manually or use raw SQL.
 
-- **LIMIT/ORDER BY in update/delete** - `limit()`, `offset()`, and `orderBy()` are not supported with `update()` or `delete()` (not portable across databases). The QueryBuilder throws an exception if you try. Use a subquery instead:
+- **LIMIT/ORDER BY/JOIN in update/delete** - `limit()`, `offset()`, `orderBy()`, `join()`, `groupBy()` and `having()` are not supported with `update()` or `delete()`: they are not part of the generated statement, and ignoring them would silently change the affected rows. The QueryBuilder throws an exception if you try. Use a subquery instead:
   ```php
   // Delete the 10 oldest logs (works on all databases)
   $db->execute(
