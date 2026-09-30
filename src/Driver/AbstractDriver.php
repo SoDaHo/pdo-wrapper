@@ -804,6 +804,17 @@ abstract class AbstractDriver implements DatabaseInterface
         return '"';
     }
 
+    /**
+     * Get the SQL dialect the query builder renders for (one of QueryBuilder::DIALECT_*).
+     *
+     * Override in driver. The ANSI default renders FOR UPDATE / FOR SHARE, IS [NOT] DISTINCT FROM
+     * and OFFSET without LIMIT as PostgreSQL does.
+     */
+    protected function getDialect(): string
+    {
+        return \Sodaho\PdoWrapper\Query\QueryBuilder::DIALECT_ANSI;
+    }
+
     // =========================================================================
     // Query Builder
     // =========================================================================
@@ -815,6 +826,6 @@ abstract class AbstractDriver implements DatabaseInterface
      */
     public function table(string $table): \Sodaho\PdoWrapper\Query\QueryBuilder
     {
-        return new \Sodaho\PdoWrapper\Query\QueryBuilder($this, $table, $this->getQuoteChar());
+        return new \Sodaho\PdoWrapper\Query\QueryBuilder($this, $table, $this->getQuoteChar(), $this->getDialect());
     }
 }

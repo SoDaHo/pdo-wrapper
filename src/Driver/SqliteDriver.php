@@ -7,6 +7,7 @@ namespace Sodaho\PdoWrapper\Driver;
 use PDO;
 use PDOException;
 use Sodaho\PdoWrapper\Exception\ConnectionException;
+use Sodaho\PdoWrapper\Query\QueryBuilder;
 use Sodaho\PdoWrapper\Query\RawExpression;
 
 /**
@@ -45,6 +46,11 @@ class SqliteDriver extends AbstractDriver
                 debugMessage: sprintf('SQLite connection failed: %s', $e->getMessage())
             );
         }
+    }
+
+    protected function getDialect(): string
+    {
+        return QueryBuilder::DIALECT_SQLITE;
     }
 
     /**

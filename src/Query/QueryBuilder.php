@@ -22,12 +22,21 @@ class QueryBuilder
     private const ALLOWED_OPERATORS = [
         '=', '!=', '<>', '<', '>', '<=', '>=',
         'LIKE', 'NOT LIKE',
-        'IS', 'IS NOT',
+        'IS', 'IS NOT', // null-safe equality, rendered per dialect (see comparison())
     ];
+
+    /**
+     * SQL dialects the builder renders for: row locks, IS / IS NOT and OFFSET without LIMIT differ.
+     */
+    public const DIALECT_ANSI = 'ansi';
+    public const DIALECT_MYSQL = 'mysql';
+    public const DIALECT_PGSQL = 'pgsql';
+    public const DIALECT_SQLITE = 'sqlite';
 
     private DatabaseInterface $db;
     private string $table;
     private string $quoteChar;
+    private string $dialect;
 
     /** @var array<int, string|RawExpression> */
     private array $columns = ['*'];
@@ -52,18 +61,30 @@ class QueryBuilder
 
     private bool $distinct = false;
 
+    /** Row lock requested for the SELECT: 'update', 'share' or null */
+    private ?string $lock = null;
+
     /**
      * Create a new query builder instance.
      *
      * @param DatabaseInterface $db Database connection
      * @param string $table Table name
      * @param string $quoteChar Quote character for identifiers (" or `)
+     * @param string|null $dialect One of the DIALECT_* constants; null derives it from the quote character (` = MySQL, otherwise ANSI)
+     *
+     * @throws \InvalidArgumentException When the dialect is unknown
      */
-    public function __construct(DatabaseInterface $db, string $table, string $quoteChar = '"')
+    public function __construct(DatabaseInterface $db, string $table, string $quoteChar = '"', ?string $dialect = null)
     {
+        $dialect ??= $quoteChar === '`' ? self::DIALECT_MYSQL : self::DIALECT_ANSI;
+        if (!in_array($dialect, [self::DIALECT_ANSI, self::DIALECT_MYSQL, self::DIALECT_PGSQL, self::DIALECT_SQLITE], true)) {
+            throw new \InvalidArgumentException(sprintf('Unknown SQL dialect "%s"', $dialect));
+        }
+
         $this->db = $db;
         $this->table = $table;
         $this->quoteChar = $quoteChar;
+        $this->dialect = $dialect;
     }
 
     // =========================================================================
@@ -104,6 +125,35 @@ class QueryBuilder
     public function distinct(): self
     {
         $this->distinct = true;
+        return $this;
+    }
+
+    // =========================================================================
+    // ROW LOCKS
+    // =========================================================================
+
+    /**
+     * Lock the selected rows for update (SELECT ... FOR UPDATE) until the transaction ends.
+     *
+     * MySQL/MariaDB and PostgreSQL render the clause; SQLite has no row locks and omits it (its
+     * write lock covers the whole database file). Aggregates (count() etc.) drop the lock, as
+     * PostgreSQL rejects FOR UPDATE with aggregates; exists() keeps it. Not allowed together with
+     * distinct(), groupBy() or having() (QueryException). Use inside a transaction, otherwise the
+     * lock ends with the statement.
+     */
+    public function lockForUpdate(): self
+    {
+        $this->lock = 'update';
+        return $this;
+    }
+
+    /**
+     * Lock the selected rows against updates by others while allowing concurrent reads:
+     * MySQL/MariaDB `LOCK IN SHARE MODE`, PostgreSQL `FOR SHARE`, SQLite omitted (see lockForUpdate()).
+     */
+    public function sharedLock(): self
+    {
+        $this->lock = 'share';
         return $this;
     }
 
@@ -152,19 +202,22 @@ class QueryBuilder
         }
 
         // Two arguments: where('id', 5) means equality, whatever the value looks like.
+        // where(column: 'id', value: 5) leaves the operator null: equality as well.
         if (func_num_args() < 3) {
             $value = $operatorOrValue;
+            $operator = '=';
+        } elseif ($operatorOrValue === null) {
             $operator = '=';
         } else {
             $operator = $this->validateOperator((string) $operatorOrValue);
         }
 
-        // where('col', null) and where('col', '=', null): "column = NULL" is always false
+        // where('col', null) and where('col', '=', null): a NULL comparison never matches by accident
         if ($value === null) {
             throw new QueryException(
                 message: 'Query failed',
                 debugMessage: sprintf(
-                    'Cannot use null value in where(). SQL "column %s NULL" is always false. Use whereNull(\'%s\') or whereNotNull(\'%s\') instead.',
+                    'Cannot use a null value in where() (operator "%s"). Use whereNull(\'%s\') or whereNotNull(\'%s\') instead.',
                     $operator,
                     $column,
                     $column
@@ -549,11 +602,35 @@ class QueryBuilder
     /**
      * Check if any records exist matching the query.
      *
+     * Runs `SELECT 1 ... LIMIT 1` and keeps a requested row lock (unlike count(), which must drop it)
+     * and an offset(), so `offset(50)->exists()` answers "is there a next page?". With distinct() the
+     * selected columns stay in place, so the answer refers to the distinct result rows (an aggregate
+     * projection yields a row even over an empty table). With having() but no groupBy() it is
+     * evaluated as `count() > 0` instead, which drops the offset as before.
+     *
+     * @throws QueryException When a row lock is combined with distinct(), groupBy() or having()
+     *
      * @return bool True if at least one record exists
      */
     public function exists(): bool
     {
-        return $this->count() > 0;
+        $this->assertLockIsPortable();
+
+        // HAVING without GROUP BY needs an aggregate projection (SQLite rejects "SELECT 1 ... HAVING",
+        // PostgreSQL would judge an empty overall group): keep the COUNT(*) evaluation there.
+        if (!empty($this->having) && empty($this->groupBy)) {
+            return $this->count() > 0;
+        }
+
+        $query = clone $this;
+        // DISTINCT keeps the original projection: "SELECT DISTINCT 1" would collapse every row into one
+        $query->columns = $this->distinct ? $this->columns : [new RawExpression('1')];
+        $query->orderBy = [];
+        $query->limit = 1;
+
+        [$sql, $params] = $query->toSql();
+
+        return $this->db->query($sql, $params)->fetch(PDO::FETCH_ASSOC) !== false;
     }
 
     /**
@@ -630,6 +707,7 @@ class QueryBuilder
         $query->limit = null;
         $query->offset = null;
         $query->orderBy = [];
+        $query->lock = null; // PostgreSQL rejects FOR UPDATE with aggregates
 
         if ($column === '*') {
             $query->columns = [new RawExpression("{$function}(*) as aggregate")];
@@ -825,12 +903,10 @@ class QueryBuilder
         // JOINS
         foreach ($this->joins as $join) {
             $sql .= sprintf(
-                ' %s JOIN %s ON %s %s %s',
+                ' %s JOIN %s ON %s',
                 $join['type'],
                 $this->quoteIdentifier($join['table']),
-                $this->quoteIdentifier($join['first']),
-                $join['operator'],
-                $this->quoteIdentifier($join['second'])
+                $this->comparison($this->quoteIdentifier($join['first']), $join['operator'], $this->quoteIdentifier($join['second']))
             );
         }
 
@@ -863,17 +939,89 @@ class QueryBuilder
             $sql .= ' ORDER BY ' . implode(', ', $orderClauses);
         }
 
-        // LIMIT (typed as ?int, enforced by PHP's type system)
+        // LIMIT / OFFSET (typed as ?int, enforced by PHP's type system); MySQL and SQLite need a
+        // LIMIT before an OFFSET, so an offset() without limit() gets the dialect's "no limit" value
         if ($this->limit !== null) {
             $sql .= ' LIMIT ' . $this->limit;
+        } elseif ($this->offset !== null) {
+            $sql .= $this->unlimitedLimit();
         }
 
-        // OFFSET (typed as ?int, enforced by PHP's type system)
         if ($this->offset !== null) {
             $sql .= ' OFFSET ' . $this->offset;
         }
 
+        if ($this->lock !== null) {
+            $this->assertLockIsPortable();
+            $sql .= $this->lockClause();
+        }
+
         return [$sql, $params];
+    }
+
+    /**
+     * PostgreSQL rejects row locks with DISTINCT, GROUP BY and HAVING; keep the builder portable.
+     *
+     * @throws QueryException When a row lock is combined with distinct(), groupBy() or having()
+     */
+    private function assertLockIsPortable(): void
+    {
+        if ($this->lock !== null && ($this->distinct || !empty($this->groupBy) || !empty($this->having))) {
+            throw new QueryException(
+                message: 'Query failed',
+                debugMessage: 'lockForUpdate()/sharedLock() cannot be combined with distinct(), groupBy() or having() (not portable across databases). Lock the rows with a plain select first.'
+            );
+        }
+    }
+
+    /**
+     * LIMIT that MySQL and SQLite need before an OFFSET without LIMIT (PostgreSQL needs none).
+     */
+    private function unlimitedLimit(): string
+    {
+        return match ($this->dialect) {
+            self::DIALECT_MYSQL => ' LIMIT 18446744073709551615',
+            self::DIALECT_SQLITE => ' LIMIT -1',
+            default => '',
+        };
+    }
+
+    /**
+     * Row lock clause for the SELECT in the dialect's syntax; SQLite has no row locks.
+     */
+    private function lockClause(): string
+    {
+        if ($this->dialect === self::DIALECT_SQLITE) {
+            return '';
+        }
+        if ($this->lock === 'share') {
+            return $this->dialect === self::DIALECT_MYSQL ? ' LOCK IN SHARE MODE' : ' FOR SHARE';
+        }
+
+        return ' FOR UPDATE';
+    }
+
+    /**
+     * Render a comparison. IS / IS NOT with a bound value mean null-safe equality and are rendered
+     * in the dialect's own syntax: SQLite `IS`, MySQL `<=>`, PostgreSQL/ANSI `IS NOT DISTINCT FROM`.
+     * With a raw right side (Database::raw('TRUE'), raw('NULL'), raw('UNKNOWN')) they are passed
+     * through unchanged: those truth tests were valid SQL before and keep their semantics.
+     *
+     * @param bool $rawRight True when $right is a RawExpression, not a placeholder
+     */
+    private function comparison(string $left, string $operator, string $right, bool $rawRight = false): string
+    {
+        if (($operator !== 'IS' && $operator !== 'IS NOT') || $rawRight) {
+            return sprintf('%s %s %s', $left, $operator, $right);
+        }
+
+        $negated = $operator === 'IS NOT';
+
+        return match ($this->dialect) {
+            self::DIALECT_SQLITE => sprintf('%s %s %s', $left, $operator, $right),
+            self::DIALECT_MYSQL => $negated ? sprintf('NOT (%s <=> %s)', $left, $right) : sprintf('%s <=> %s', $left, $right),
+            default => sprintf('%s %s %s', $left, $negated ? 'IS DISTINCT FROM' : 'IS NOT DISTINCT FROM', $right),
+        };
     }
 
     /**
@@ -897,11 +1045,12 @@ class QueryBuilder
                     $value = $where['value'] ?? null;
                     // A RawExpression value is inlined, never bound (SECURITY: never pass user input to Database::raw())
                     if ($value instanceof RawExpression) {
-                        $clause = $this->quoteIdentifier($column) . ' ' . $operator . ' ' . $value;
+                        $right = (string) $value;
                     } else {
-                        $clause = $this->quoteIdentifier($column) . ' ' . $operator . ' ?';
+                        $right = '?';
                         $params[] = $value;
                     }
+                    $clause = $this->comparison($this->quoteIdentifier($column), $operator, $right, $value instanceof RawExpression);
                     // MySQL uses \ as default LIKE escape character, no ESCAPE clause needed.
                     // PostgreSQL and SQLite need an explicit ESCAPE clause - for raw patterns too, so the
                     // pattern semantics do not depend on how the value was given.
@@ -972,10 +1121,10 @@ class QueryBuilder
                 ? (string) $h['column']
                 : $this->quoteIdentifier($h['column']);
             if ($h['value'] instanceof RawExpression) {
-                $clauses[] = $column . ' ' . $h['operator'] . ' ' . $h['value'];
+                $clauses[] = $this->comparison($column, $h['operator'], (string) $h['value'], true);
                 continue;
             }
-            $clauses[] = $column . ' ' . $h['operator'] . ' ?';
+            $clauses[] = $this->comparison($column, $h['operator'], '?');
             $params[] = $h['value'];
         }
 

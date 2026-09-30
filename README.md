@@ -257,6 +257,8 @@ $users = $db->table('users')
     ->get();
 ```
 
+`IS` and `IS NOT` with a bound value compare **null-safely**: `where('nick', 'IS NOT', 'anna')` also matches rows whose `nick` is NULL. The builder renders them in each database's own syntax (SQLite `IS`, MySQL/MariaDB `<=>`, PostgreSQL `IS NOT DISTINCT FROM`). With a raw value (`where('flag', 'IS', Database::raw('TRUE'))`) the SQL is passed through unchanged, so truth tests keep their database semantics. For a plain NULL test use `whereNull()` / `whereNotNull()`.
+
 ### Joins
 
 ```php
@@ -288,6 +290,21 @@ $users = $db->table('users')
     ->offset(20)
     ->get();
 ```
+
+`offset()` works without `limit()` on every driver (MySQL/MariaDB and SQLite get the "no limit" value they require).
+
+### Row Locks
+
+Inside a transaction, `lockForUpdate()` locks the selected rows until the commit; `sharedLock()` keeps others from updating them while still allowing reads:
+
+```php
+$db->transaction(function ($db) use ($id) {
+    $account = $db->table('accounts')->where('id', $id)->lockForUpdate()->first();
+    $db->update('accounts', ['balance' => $account['balance'] - 10], ['id' => $id]);
+});
+```
+
+MySQL/MariaDB render `FOR UPDATE` / `LOCK IN SHARE MODE`, PostgreSQL `FOR UPDATE` / `FOR SHARE`. SQLite has no row locks: the clause is omitted there (its write lock covers the whole database file). `exists()` keeps the lock (`SELECT 1 ... LIMIT 1`); aggregates such as `count()` drop it, because PostgreSQL rejects `FOR UPDATE` with aggregates. A lock combined with `distinct()`, `groupBy()` or `having()` throws a `QueryException` (not portable); PostgreSQL also rejects a lock on the nullable side of a `leftJoin()`/`rightJoin()` - use a raw query with `FOR UPDATE OF table` there.
 
 ### Group By, Having
 

@@ -7,6 +7,7 @@ namespace Sodaho\PdoWrapper\Driver;
 use PDO;
 use PDOException;
 use Sodaho\PdoWrapper\Exception\ConnectionException;
+use Sodaho\PdoWrapper\Query\QueryBuilder;
 use Sodaho\PdoWrapper\Query\RawExpression;
 
 /**
@@ -108,6 +109,11 @@ class MySqlDriver extends AbstractDriver
     protected function getQuoteChar(): string
     {
         return '`';
+    }
+
+    protected function getDialect(): string
+    {
+        return QueryBuilder::DIALECT_MYSQL;
     }
 
     /**

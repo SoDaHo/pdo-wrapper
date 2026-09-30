@@ -8,6 +8,7 @@ use PDO;
 use PDOException;
 use Sodaho\PdoWrapper\Exception\ConnectionException;
 use Sodaho\PdoWrapper\Exception\QueryException;
+use Sodaho\PdoWrapper\Query\QueryBuilder;
 use Sodaho\PdoWrapper\Query\RawExpression;
 
 /**
@@ -193,6 +194,11 @@ class PostgresDriver extends AbstractDriver
             $reason = is_string($info[2] ?? null) ? $info[2] : 'unknown error';
             throw new PDOException(sprintf('%s failed: %s', $sql, $reason));
         }
+    }
+
+    protected function getDialect(): string
+    {
+        return QueryBuilder::DIALECT_PGSQL;
     }
 
     /**
