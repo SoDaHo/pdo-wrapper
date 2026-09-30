@@ -16,7 +16,7 @@ interface DatabaseInterface
      * @param string $sql SQL query with placeholders
      * @param array<int|string, mixed> $params Parameters to bind
      *
-     * @throws Exception\QueryException
+     * @throws Exception\QueryException When the statement fails (also when PDO reports that without an exception), or when a 'query' listener threw a PDOException ('Query hook failed': the statement did run)
      */
     public function query(string $sql, array $params = []): PDOStatement;
 

@@ -36,12 +36,15 @@ abstract class AbstractDriver implements DatabaseInterface
     /**
      * Execute a SQL query and return the statement.
      *
-     * Triggers 'query' hook on success, 'error' hook on failure.
+     * Triggers 'query' hook on success, 'error' hook on failure. A failure that PDO reports by
+     * returning false (non-exception error mode) counts as a failure. A PDOException thrown by a
+     * 'query' hook is not a failed query: the statement ran, no 'error' hook fires, and it arrives
+     * as QueryException with the message 'Query hook failed'; other hook exceptions pass unchanged.
      *
      * @param string $sql SQL query with placeholders
      * @param array<int|string, mixed> $params Parameters to bind
      *
-     * @throws QueryException On query failure
+     * @throws QueryException On query failure, or when a 'query' hook threw a PDOException
      *
      * @return PDOStatement Executed statement
      */
@@ -51,16 +54,12 @@ abstract class AbstractDriver implements DatabaseInterface
 
         try {
             $stmt = $this->pdo->prepare($sql);
-            $stmt->execute($params);
-
-            $this->trigger('query', [
-                'sql' => $sql,
-                'params' => $params,
-                'duration' => microtime(true) - $start,
-                'rows' => $stmt->rowCount(),
-            ]);
-
-            return $stmt;
+            if ($stmt === false) {
+                throw $this->silentFailure('PDO::prepare() returned false', $this->pdo->errorInfo());
+            }
+            if ($stmt->execute($params) === false) {
+                throw $this->silentFailure('PDOStatement::execute() returned false', $stmt->errorInfo());
+            }
         } catch (PDOException $e) {
             $this->trigger('error', [
                 'sql' => $sql,
@@ -76,6 +75,45 @@ abstract class AbstractDriver implements DatabaseInterface
                 debugMessage: sprintf('%s | SQL: %s | Params: %s', $e->getMessage(), $sql, json_encode($params))
             );
         }
+
+        $rows = $stmt->rowCount();
+
+        // The statement ran: a hook failure must not look like a failed query, and 'error' must not fire.
+        try {
+            $this->trigger('query', [
+                'sql' => $sql,
+                'params' => $params,
+                'duration' => microtime(true) - $start,
+                'rows' => $rows,
+            ]);
+        } catch (PDOException $e) {
+            throw new QueryException(
+                message: 'Query hook failed',
+                code: (int)$e->getCode(),
+                previous: $e,
+                debugMessage: sprintf('%s | SQL: %s | Params: %s', $e->getMessage(), $sql, json_encode($params))
+            );
+        }
+
+        return $stmt;
+    }
+
+    /**
+     * The exception for a statement that PDO reported as failed by returning false (non-exception
+     * error mode): carries the driver's error code and the full errorInfo, like a thrown PDOException.
+     *
+     * @param array<int, mixed> $errorInfo PDO::errorInfo() or PDOStatement::errorInfo()
+     */
+    private function silentFailure(string $what, array $errorInfo): PDOException
+    {
+        $reason = is_string($errorInfo[2] ?? null) ? $errorInfo[2] : 'unknown error';
+        $state = is_string($errorInfo[0] ?? null) ? $errorInfo[0] : '';
+        $driverCode = is_int($errorInfo[1] ?? null) ? $errorInfo[1] : 0;
+
+        $e = new PDOException(sprintf('%s: %s (SQLSTATE %s)', $what, $reason, $state), $driverCode);
+        $e->errorInfo = $errorInfo;
+
+        return $e;
     }
 
     /**
