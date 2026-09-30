@@ -80,4 +80,18 @@ class SqliteWorkflowTest extends AbstractWorkflowTest
             FOREIGN KEY (tag_id) REFERENCES tags(id)
         )';
     }
+
+    protected function getCreateDeferredChildrenTableSql(): ?string
+    {
+        return 'CREATE TABLE IF NOT EXISTS deferred_children (
+            id INTEGER PRIMARY KEY,
+            user_id INTEGER REFERENCES users(id) DEFERRABLE INITIALLY DEFERRED
+        )';
+    }
+
+    protected function failedCommitKeepsTransactionOpen(): bool
+    {
+        // SQLite keeps the transaction open after a deferred foreign key fails at COMMIT.
+        return true;
+    }
 }

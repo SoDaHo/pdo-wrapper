@@ -350,6 +350,8 @@ $affected = $db->table('users')
 ## Transactions
 
 ```php
+use Sodaho\PdoWrapper\Exception\CommitHookException;
+
 // Automatic transaction with callback (auto-rollback on exception)
 $db->transaction(function ($db) {
     $db->insert('users', ['name' => 'John']);
@@ -389,11 +391,28 @@ $db->beginTransaction();
 try {
     $db->insert('users', ['name' => 'John']);
     $db->commit();
-} catch (Exception $e) {
-    $db->rollback();
+} catch (CommitHookException $e) {
+    throw $e; // Committed: never roll back
+} catch (Throwable $e) {
+    // Best effort: roll back only if still open, keep the original exception
+    try {
+        if ($db->getPdo()->inTransaction()) {
+            $db->rollback();
+        }
+    } catch (Throwable) {
+    }
     throw $e;
 }
 ```
+
+`transaction()` ends in one of these ways (`updateMultiple()` too, when it opens its own transaction):
+
+- **Success** - committed, the callback's return value is returned.
+- **The callback throws** - rollback attempted, the callback's exception is re-thrown unchanged. Best effort: if the rollback itself fails, the connection may still be in a transaction.
+- **The commit fails** - rollback attempted, `TransactionException` is thrown. The commit may or may not have taken effect (e.g. connection lost during `COMMIT`).
+- **A `transaction.commit` hook fails** (throws, or leaves the connection in a state that cannot be verified or cleaned up) - the data **is committed**, nothing is rolled back, `CommitHookException` is thrown (see [Hooks](#hooks)).
+
+With a manual `commit()`, a failing commit hook likewise throws `CommitHookException` after the commit - do not roll back or retry then.
 
 ## Hooks
 
@@ -414,10 +433,16 @@ $db->on('error', function (array $data) {
 });
 
 // Transaction hooks
-$db->on('transaction.begin', fn() => echo "Transaction started\n");
-$db->on('transaction.commit', fn() => echo "Transaction committed\n");
-$db->on('transaction.rollback', fn() => echo "Transaction rolled back\n");
+$db->on('transaction.begin', fn() => print "Transaction started\n");
+$db->on('transaction.commit', fn() => print "Transaction committed\n");
+$db->on('transaction.rollback', fn() => print "Transaction rolled back\n");
 ```
+
+For `query`, `error` and `transaction.begin`, a throwing hook stops the remaining hooks of its event and its exception reaches the caller. A throwing `transaction.rollback` hook does the same on a manual `rollback()`, but is ignored during the automatic rollback in `transaction()` and `updateMultiple()` (the original exception is re-thrown). `transaction.commit` hooks run after the commit and cannot undo it, so they work differently:
+
+- **All of them run**, even if one throws (only exception: see the last point). Keep them independent: steps that depend on each other belong in one hook.
+- **Failures are reported together** as `CommitHookException`: `getPrevious()` is the first failure, `$e->failures` lists all of them in hook order.
+- **A transaction a hook leaves open** is rolled back before the next hook runs - directly, without `transaction.rollback` hooks - and reported as a `LogicException`. If that rollback fails (or the connection state cannot be read), the remaining hooks are skipped, listed as failures, and the connection may still be in a transaction (`getPdo()->inTransaction()`).
 
 ## Exceptions
 
@@ -425,6 +450,7 @@ All exceptions extend `DatabaseException`, which extends PHP's base `Exception`:
 
 ```php
 use Sodaho\PdoWrapper\Exception\DatabaseException;
+use Sodaho\PdoWrapper\Exception\CommitHookException;
 use Sodaho\PdoWrapper\Exception\ConnectionException;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Exception\TransactionException;
@@ -433,7 +459,7 @@ use Sodaho\PdoWrapper\Exception\TransactionException;
 try {
     $db->query('...');
 } catch (DatabaseException $e) {
-    // Catches ConnectionException, QueryException, TransactionException
+    // Catches ConnectionException, QueryException, TransactionException, CommitHookException
 }
 
 try {
@@ -451,11 +477,19 @@ try {
 }
 
 try {
-    $db->transaction(fn() => throw new Exception('oops'));
+    $db->transaction(fn($db) => $db->insert('users', ['name' => 'John']));
+} catch (CommitHookException $e) {
+    // Committed, but a transaction.commit hook failed: do not retry
+    $hookError = $e->getPrevious();
 } catch (TransactionException $e) {
-    // Transaction failed
+    // Begin or commit failed; a failed commit may or may not have taken effect
 }
+// An exception thrown by the callback itself is re-thrown unchanged after the rollback.
 ```
+
+`CommitHookException` means the data is committed; a hook failed or the connection state could not be verified or cleaned up after a hook. It extends `DatabaseException`, not `TransactionException`: a broad `catch (DatabaseException)` also sees committed data, so catch `CommitHookException` first where that matters.
+
+**Upgrading from 1.0:** a failing `transaction.commit` hook used to surface as its own exception (a `PDOException` from a hook even as `TransactionException`); it now arrives as `CommitHookException` with the hook's exception as `getPrevious()`.
 
 ## Schema-Qualified Tables
 

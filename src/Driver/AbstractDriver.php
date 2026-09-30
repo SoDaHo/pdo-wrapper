@@ -5,10 +5,12 @@ declare(strict_types=1);
 namespace Sodaho\PdoWrapper\Driver;
 
 use Closure;
+use LogicException;
 use PDO;
 use PDOException;
 use PDOStatement;
 use Sodaho\PdoWrapper\DatabaseInterface;
+use Sodaho\PdoWrapper\Exception\CommitHookException;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Exception\TransactionException;
 use Sodaho\PdoWrapper\Traits\HasHooks;
@@ -150,15 +152,18 @@ abstract class AbstractDriver implements DatabaseInterface
     /**
      * Commit the current transaction.
      *
-     * Triggers 'transaction.commit' hook on success.
+     * Triggers 'transaction.commit' listeners after a successful commit. They cannot undo
+     * the commit, so every listener runs and their failures are reported together - unless
+     * a transaction left open by a listener cannot be rolled back (or the connection state
+     * cannot be read): the remaining listeners are then skipped and reported as failures.
      *
-     * @throws TransactionException On failure
+     * @throws TransactionException When the commit itself failed; it may or may not have taken effect
+     * @throws CommitHookException When committed, but a transaction.commit listener failed or the connection state after it could not be verified
      */
     public function commit(): void
     {
         try {
-            $this->pdo->commit();
-            $this->trigger('transaction.commit', []);
+            $committed = $this->pdo->commit();
         } catch (PDOException $e) {
             throw new TransactionException(
                 message: 'Failed to commit transaction',
@@ -167,6 +172,83 @@ abstract class AbstractDriver implements DatabaseInterface
                 debugMessage: $e->getMessage()
             );
         }
+
+        // Only reachable with a non-exception error mode (allowed via 'options').
+        if ($committed === false) {
+            throw new TransactionException(
+                message: 'Failed to commit transaction',
+                debugMessage: 'PDO::commit() returned false'
+            );
+        }
+
+        // Committed from here on: a listener error must not look like a failed commit.
+        $failures = $this->runCommitListeners();
+
+        if ($failures !== []) {
+            throw new CommitHookException($failures[0], $failures);
+        }
+    }
+
+    /**
+     * Run every transaction.commit listener and collect the failures in listener order.
+     *
+     * Listeners are independent: a failing listener does not stop the next one. A transaction
+     * a listener left open is rolled back before the next listener runs (best effort) - directly
+     * on PDO, because dispatching transaction.rollback here would tell rollback listeners that
+     * the committed transaction was rolled back. If that rollback fails, or inTransaction()
+     * itself fails, the connection state is unknown: the remaining listeners are skipped and
+     * the transaction may still be open. Nothing here throws: the commit has happened.
+     *
+     * Per listener: its own exception, then a LogicException if it left a transaction open
+     * (previous: the rollback error, if any) or if the state could not be read (previous: that
+     * error), then one LogicException per skipped listener.
+     *
+     * @return list<Throwable>
+     */
+    private function runCommitListeners(): array
+    {
+        $failures = [];
+        $cleanupError = null;
+
+        foreach ($this->hooks['transaction.commit'] ?? [] as $listener) {
+            if ($cleanupError !== null) {
+                $failures[] = new LogicException('listener skipped: connection left in transaction', previous: $cleanupError);
+                continue;
+            }
+
+            try {
+                $listener([]);
+            } catch (Throwable $e) {
+                $failures[] = $e;
+            }
+
+            try {
+                $open = $this->pdo->inTransaction();
+            } catch (Throwable $e) {
+                $cleanupError = $e;
+                $failures[] = new LogicException('connection state unknown after listener', previous: $e);
+                continue;
+            }
+
+            if (!$open) {
+                continue;
+            }
+
+            try {
+                if ($this->pdo->rollBack() === false) {
+                    $cleanupError = new TransactionException(
+                        message: 'Failed to rollback transaction',
+                        debugMessage: 'PDO::rollBack() returned false'
+                    );
+                }
+            } catch (Throwable $e) {
+                $cleanupError = $e;
+            }
+
+            $failures[] = new LogicException('listener left a transaction open', previous: $cleanupError);
+        }
+
+        return $failures;
     }
 
     /**
@@ -194,11 +276,17 @@ abstract class AbstractDriver implements DatabaseInterface
     /**
      * Execute a callback within a transaction.
      *
-     * Auto-commits on success, auto-rollback on exception.
+     * Auto-commits on success, auto-rollback on exception. Three outcomes on failure:
+     * - the callback threw: rollback attempted, the callback's exception is re-thrown
+     *   (best effort: if the rollback fails, the transaction may still be open);
+     * - the commit failed: rollback attempted, the TransactionException is re-thrown
+     *   (the commit may or may not have taken effect);
+     * - a transaction.commit listener failed: committed, no rollback, CommitHookException.
      *
      * @param Closure $callback Receives the driver instance
      *
-     * @throws Throwable Re-throws any exception after rollback
+     * @throws CommitHookException When committed, but a transaction.commit listener failed or the connection state after it could not be verified
+     * @throws Throwable Re-throws the callback or commit exception after rollback
      *
      * @return mixed Return value of the callback
      */
@@ -208,15 +296,47 @@ abstract class AbstractDriver implements DatabaseInterface
 
         try {
             $result = $callback($this);
-            $this->commit();
-            return $result;
         } catch (Throwable $e) {
-            try {
-                $this->rollback();
-            } catch (Throwable) {
-                // Rollback failed, but original exception is more important for debugging
-            }
+            $this->rollbackQuietly();
             throw $e;
+        }
+
+        $this->commitOwnTransaction();
+
+        return $result;
+    }
+
+    /**
+     * Commit a transaction this driver began, rolling back only if the commit itself failed.
+     *
+     * @throws CommitHookException When committed, but a transaction.commit listener failed or the connection state after it could not be verified
+     * @throws Throwable Re-throws the commit exception after rollback
+     */
+    private function commitOwnTransaction(): void
+    {
+        try {
+            $this->commit();
+        } catch (CommitHookException $e) {
+            // Committed: nothing to roll back. commit() already rolled back (best effort) what a listener left open.
+            throw $e;
+        } catch (Throwable $e) {
+            // The commit itself failed; some drivers (e.g. SQLite) keep the transaction open.
+            $this->rollbackQuietly();
+            throw $e;
+        }
+    }
+
+    /**
+     * Roll back if a transaction is open, ignoring failures: the original exception is more important for debugging.
+     */
+    private function rollbackQuietly(): void
+    {
+        try {
+            if ($this->pdo->inTransaction()) {
+                $this->rollback();
+            }
+        } catch (Throwable) {
+            // Rollback failed, but original exception is more important for debugging
         }
     }
 
@@ -411,13 +531,16 @@ abstract class AbstractDriver implements DatabaseInterface
     /**
      * Update multiple rows by their key column.
      *
-     * Each row must contain the key column for matching.
+     * Each row must contain the key column for matching. Without an active transaction, the
+     * rows are updated in an own transaction with the same outcomes as transaction().
      *
      * @param string $table Table name (supports schema.table format)
      * @param array<int, array<string, mixed>> $rows Array of rows, each with key column
      * @param string $keyColumn Column to match rows (default: 'id')
      *
      * @throws QueryException When a row is missing the key column
+     * @throws TransactionException When the own transaction's commit failed
+     * @throws CommitHookException When committed, but a transaction.commit listener failed or the connection state after it could not be verified
      *
      * @return int Total number of affected rows
      */
@@ -451,22 +574,18 @@ abstract class AbstractDriver implements DatabaseInterface
                     $affected += $this->update($table, $data, [$keyColumn => $keyValue]);
                 }
             }
-
-            if ($manageTransaction) {
-                $this->commit();
-            }
-
-            return $affected;
         } catch (Throwable $e) {
             if ($manageTransaction) {
-                try {
-                    $this->rollback();
-                } catch (Throwable) {
-                    // Rollback failed, but original exception is more important for debugging
-                }
+                $this->rollbackQuietly();
             }
             throw $e;
         }
+
+        if ($manageTransaction) {
+            $this->commitOwnTransaction();
+        }
+
+        return $affected;
     }
 
     // =========================================================================

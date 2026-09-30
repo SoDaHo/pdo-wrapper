@@ -4,12 +4,20 @@ declare(strict_types=1);
 
 namespace Sodaho\PdoWrapper\Tests\Integration;
 
+use Error;
 use Exception;
+use LogicException;
+use PDO;
+use PDOException;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
 use Sodaho\PdoWrapper\Database;
 use Sodaho\PdoWrapper\DatabaseInterface;
+use Sodaho\PdoWrapper\Driver\SqliteDriver;
+use Sodaho\PdoWrapper\Exception\CommitHookException;
 use Sodaho\PdoWrapper\Exception\QueryException;
+use Sodaho\PdoWrapper\Exception\TransactionException;
+use Throwable;
 
 class TransactionTest extends TestCase
 {
@@ -280,5 +288,559 @@ class TransactionTest extends TestCase
             ['id' => 1, 'name' => 'Updated'],
             ['name' => 'No ID'], // Missing key column - triggers error
         ]);
+    }
+
+    // =========================================================================
+    // Commit Phase Tests
+    // A transaction.commit listener runs after the commit: its failure must not
+    // look like a failed commit, and nothing committed may be rolled back.
+    // =========================================================================
+
+    public function testThrowingCommitHookKeepsCommittedDataWithoutRollback(): void
+    {
+        $db = $this->rollbackCountingDriver();
+        $events = [];
+        $hookError = new RuntimeException('hook failed');
+        $db->on('transaction.commit', static fn () => throw $hookError);
+        $db->on('transaction.rollback', static function () use (&$events): void {
+            $events[] = 'rollback';
+        });
+
+        try {
+            $db->transaction(static fn (DatabaseInterface $db) => $db->execute('INSERT INTO users (name) VALUES (?)', ['Max']));
+            $this->fail('Expected CommitHookException');
+        } catch (CommitHookException $e) {
+            $this->assertSame($hookError, $e->getPrevious());
+            $this->assertSame([$hookError], $e->failures);
+        }
+
+        $this->assertSame(1, $this->userCount($db));
+        $this->assertSame([], $events);
+        $this->assertSame(0, $db->rollbackCalls);
+        $this->assertFalse($db->getPdo()->inTransaction());
+    }
+
+    public function testCallbackErrorRollsBackWithoutCommitHook(): void
+    {
+        $events = [];
+        $this->db->on('transaction.commit', static function () use (&$events): void {
+            $events[] = 'commit';
+        });
+        $this->db->on('transaction.rollback', static function () use (&$events): void {
+            $events[] = 'rollback';
+        });
+        $original = new RuntimeException('callback');
+
+        try {
+            $this->db->transaction(static function (DatabaseInterface $db) use ($original): void {
+                $db->execute('INSERT INTO users (name) VALUES (?)', ['Max']);
+                throw $original;
+            });
+            $this->fail('Expected the callback exception');
+        } catch (RuntimeException $e) {
+            $this->assertSame($original, $e);
+        }
+
+        $this->assertSame(['rollback'], $events);
+        $this->assertSame(0, $this->userCount($this->db));
+    }
+
+    public function testManualCommitReportsHookPdoExceptionAsCommitHookException(): void
+    {
+        $hookError = new PDOException('hook query failed');
+        $this->db->on('transaction.commit', static fn () => throw $hookError);
+        $this->db->beginTransaction();
+        $this->db->execute('INSERT INTO users (name) VALUES (?)', ['Max']);
+
+        try {
+            $this->db->commit();
+            $this->fail('Expected CommitHookException');
+        } catch (TransactionException) {
+            $this->fail('A listener error must not be reported as a failed commit');
+        } catch (CommitHookException $e) {
+            $this->assertSame($hookError, $e->getPrevious());
+            $this->assertSame([$hookError], $e->failures);
+        }
+
+        $this->assertSame(1, $this->userCount($this->db));
+        $this->assertFalse($this->db->getPdo()->inTransaction());
+    }
+
+    public function testTransactionReturnsCallbackResultWithCommitListeners(): void
+    {
+        $calls = 0;
+        $this->db->on('transaction.commit', static function () use (&$calls): void {
+            $calls++;
+        });
+
+        $result = $this->db->transaction(static fn (DatabaseInterface $db) => $db->insert('users', ['name' => 'Max']));
+
+        $this->assertSame('1', (string) $result);
+        $this->assertSame(1, $calls);
+    }
+
+    public function testFailedPdoCommitIsRolledBackAndNotACommitHookException(): void
+    {
+        $this->createDeferredChildrenTable($this->db);
+        $events = [];
+        $this->db->on('transaction.commit', static function () use (&$events): void {
+            $events[] = 'commit';
+        });
+        $this->db->on('transaction.rollback', static function () use (&$events): void {
+            $events[] = 'rollback';
+        });
+
+        try {
+            $this->db->transaction(static fn (DatabaseInterface $db) => $db->execute('INSERT INTO children (id, user_id) VALUES (1, 99)'));
+            $this->fail('Expected TransactionException');
+        } catch (TransactionException $e) {
+            $this->assertSame('Failed to commit transaction', $e->getMessage());
+            $this->assertInstanceOf(PDOException::class, $e->getPrevious());
+        }
+
+        // SQLite keeps the transaction open after a rejected COMMIT; the wrapper rolls it back.
+        $this->assertSame(['rollback'], $events);
+        $this->assertFalse($this->db->getPdo()->inTransaction());
+        $this->assertSame(0, (int) $this->db->query('SELECT COUNT(*) AS c FROM children')->fetch()['c']);
+    }
+
+    public function testCommitReturningFalseIsATransactionException(): void
+    {
+        $this->createDeferredChildrenTable($this->db);
+        $this->db->getPdo()->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_SILENT);
+        $events = [];
+        $this->db->on('transaction.commit', static function () use (&$events): void {
+            $events[] = 'commit';
+        });
+        $this->db->on('transaction.rollback', static function () use (&$events): void {
+            $events[] = 'rollback';
+        });
+
+        try {
+            $this->db->transaction(static fn (DatabaseInterface $db) => $db->execute('INSERT INTO children (id, user_id) VALUES (1, 99)'));
+            $this->fail('Expected TransactionException');
+        } catch (TransactionException $e) {
+            $this->assertSame('PDO::commit() returned false', $e->getDebugMessage());
+        }
+
+        $this->assertSame(['rollback'], $events);
+        $this->assertFalse($this->db->getPdo()->inTransaction());
+        $this->assertSame(0, (int) $this->db->query('SELECT COUNT(*) AS c FROM children')->fetch()['c']);
+    }
+
+    public function testAllCommitListenersRunAndFailuresKeepListenerOrder(): void
+    {
+        $first = new RuntimeException('first');
+        $second = new LogicException('second');
+        $thirdRan = false;
+        $this->db->on('transaction.commit', static fn () => throw $first);
+        $this->db->on('transaction.commit', static fn () => throw $second);
+        $this->db->on('transaction.commit', static function () use (&$thirdRan): void {
+            $thirdRan = true;
+        });
+
+        try {
+            $this->db->transaction(static fn (DatabaseInterface $db) => $db->execute('INSERT INTO users (name) VALUES (?)', ['Max']));
+            $this->fail('Expected CommitHookException');
+        } catch (CommitHookException $e) {
+            $this->assertSame([$first, $second], $e->failures);
+            $this->assertSame($first, $e->getPrevious());
+        }
+
+        $this->assertTrue($thirdRan);
+        $this->assertSame(1, $this->userCount($this->db));
+    }
+
+    public function testTransactionLeftOpenByListenerIsRolledBackBeforeNextListener(): void
+    {
+        $events = [];
+        $first = new RuntimeException('first');
+        $second = new RuntimeException('second');
+        $this->db->on('transaction.rollback', static function () use (&$events): void {
+            $events[] = 'rollback';
+        });
+        $this->db->on('transaction.commit', function () use ($first): void {
+            $this->db->beginTransaction();
+            $this->db->execute('INSERT INTO users (name) VALUES (?)', ['from listener']);
+            throw $first;
+        });
+        $this->db->on('transaction.commit', function () use (&$events, $second): void {
+            $events[] = $this->db->getPdo()->inTransaction() ? 'still open' : 'closed';
+            throw $second;
+        });
+
+        try {
+            $this->db->transaction(static fn (DatabaseInterface $db) => $db->execute('INSERT INTO users (name) VALUES (?)', ['Max']));
+            $this->fail('Expected CommitHookException');
+        } catch (CommitHookException $e) {
+            $this->assertCount(3, $e->failures);
+            $this->assertSame($first, $e->failures[0]);
+            $this->assertInstanceOf(LogicException::class, $e->failures[1]);
+            $this->assertSame('listener left a transaction open', $e->failures[1]->getMessage());
+            $this->assertNull($e->failures[1]->getPrevious());
+            $this->assertSame($second, $e->failures[2]);
+        }
+
+        // Rolled back directly on PDO: rollback listeners never hear of it.
+        $this->assertSame(['closed'], $events);
+        $this->assertFalse($this->db->getPdo()->inTransaction());
+        $this->assertSame(1, $this->userCount($this->db));
+    }
+
+    public function testQuietListenerLeavingTransactionOpenIsReported(): void
+    {
+        $this->db->on('transaction.commit', function (): void {
+            $this->db->beginTransaction();
+        });
+
+        $this->db->beginTransaction();
+        $this->db->execute('INSERT INTO users (name) VALUES (?)', ['Max']);
+
+        try {
+            $this->db->commit();
+            $this->fail('Expected CommitHookException');
+        } catch (CommitHookException $e) {
+            $this->assertCount(1, $e->failures);
+            $this->assertSame('listener left a transaction open', $e->failures[0]->getMessage());
+        }
+
+        $this->assertFalse($this->db->getPdo()->inTransaction());
+        $this->assertSame(1, $this->userCount($this->db));
+    }
+
+    public function testErrorFromListenerIsCollectedAndNextListenerRuns(): void
+    {
+        $error = new Error('listener error');
+        $secondRan = false;
+        $this->db->on('transaction.commit', static fn () => throw $error);
+        $this->db->on('transaction.commit', static function () use (&$secondRan): void {
+            $secondRan = true;
+        });
+
+        try {
+            $this->db->transaction(static fn (DatabaseInterface $db) => $db->execute('INSERT INTO users (name) VALUES (?)', ['Max']));
+            $this->fail('Expected CommitHookException');
+        } catch (CommitHookException $e) {
+            $this->assertSame([$error], $e->failures);
+            $this->assertSame($error, $e->getPrevious());
+        }
+
+        $this->assertTrue($secondRan);
+        $this->assertFalse($this->db->getPdo()->inTransaction());
+        $this->assertSame(1, $this->userCount($this->db));
+    }
+
+    public function testFailedCleanupReturningFalseSkipsRemainingListeners(): void
+    {
+        $this->assertFailedCleanupSkipsRemainingListeners(null);
+    }
+
+    public function testFailedCleanupThrowingSkipsRemainingListeners(): void
+    {
+        $this->assertFailedCleanupSkipsRemainingListeners(new PDOException('rollback failed'));
+    }
+
+    public function testFailedCleanupThrowingErrorSkipsRemainingListeners(): void
+    {
+        $this->assertFailedCleanupSkipsRemainingListeners(new Error('rollback error'));
+    }
+
+    public function testUnreadableConnectionStateAfterListenerIsBundled(): void
+    {
+        $this->assertUnreadableStateIsBundled(new PDOException('connection lost'));
+    }
+
+    public function testConnectionStateErrorAfterListenerIsBundled(): void
+    {
+        $this->assertUnreadableStateIsBundled(new Error('state error'));
+    }
+
+    private function assertUnreadableStateIsBundled(Throwable $stateError): void
+    {
+        $pdo = new class ('sqlite::memory:', null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC]) extends PDO {
+            public ?Throwable $stateError = null;
+
+            public function inTransaction(): bool
+            {
+                if ($this->stateError !== null) {
+                    throw $this->stateError;
+                }
+
+                return parent::inTransaction();
+            }
+        };
+        $db = new class ($pdo) extends SqliteDriver {
+            public function __construct(PDO $pdo)
+            {
+                $this->pdo = $pdo;
+            }
+        };
+        $db->execute('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)');
+        $first = new RuntimeException('first');
+        $events = [];
+        $db->on('transaction.rollback', static function () use (&$events): void {
+            $events[] = 'rollback';
+        });
+        $db->on('transaction.commit', static function () use ($pdo, $stateError, $first): void {
+            $pdo->stateError = $stateError;
+            throw $first;
+        });
+        $db->on('transaction.commit', static function () use (&$events): void {
+            $events[] = 'second listener';
+        });
+
+        try {
+            $db->transaction(static fn (DatabaseInterface $db) => $db->execute('INSERT INTO users (name) VALUES (?)', ['Max']));
+            $this->fail('Expected CommitHookException');
+        } catch (CommitHookException $e) {
+            $this->assertCount(3, $e->failures);
+            $this->assertSame($first, $e->getPrevious());
+            $this->assertSame($first, $e->failures[0]);
+            $this->assertSame('connection state unknown after listener', $e->failures[1]->getMessage());
+            $this->assertSame($stateError, $e->failures[1]->getPrevious());
+            $this->assertSame('listener skipped: connection left in transaction', $e->failures[2]->getMessage());
+            $this->assertSame($stateError, $e->failures[2]->getPrevious());
+        }
+
+        $pdo->stateError = null;
+        $this->assertSame([], $events);
+        $this->assertFalse($pdo->inTransaction());
+        $this->assertSame(1, $this->userCount($db));
+    }
+
+    public function testCommitOverrideErrorInTransactionIsRolledBack(): void
+    {
+        $db = $this->failingCommitDriver();
+        $commitError = $db->commitError;
+
+        try {
+            $db->transaction(static fn (DatabaseInterface $db) => $db->execute('INSERT INTO users (name) VALUES (?)', ['Max']));
+            $this->fail('Expected the commit exception');
+        } catch (RuntimeException $e) {
+            $this->assertSame($commitError, $e);
+        }
+
+        $this->assertSame(1, $db->rollbackCalls);
+        $this->assertFalse($db->getPdo()->inTransaction());
+        $this->assertSame(0, $this->userCount($db));
+    }
+
+    public function testCommitOverrideErrorInUpdateMultipleIsRolledBack(): void
+    {
+        $db = $this->failingCommitDriver();
+        $db->insert('users', ['id' => 1, 'name' => 'Max']);
+        $commitError = $db->commitError;
+
+        try {
+            $db->updateMultiple('users', [['id' => 1, 'name' => 'Max Updated']]);
+            $this->fail('Expected the commit exception');
+        } catch (RuntimeException $e) {
+            $this->assertSame($commitError, $e);
+        }
+
+        $this->assertSame(1, $db->rollbackCalls);
+        $this->assertFalse($db->getPdo()->inTransaction());
+        $this->assertSame('Max', $db->findOne('users', ['id' => 1])['name'] ?? null);
+    }
+
+    public function testThrowingRollbackHookDoesNotMaskCallbackException(): void
+    {
+        $original = new RuntimeException('callback');
+        $this->db->on('transaction.rollback', static fn () => throw new RuntimeException('rollback hook'));
+
+        try {
+            $this->db->transaction(static function (DatabaseInterface $db) use ($original): void {
+                $db->execute('INSERT INTO users (name) VALUES (?)', ['Max']);
+                throw $original;
+            });
+            $this->fail('Expected the callback exception');
+        } catch (RuntimeException $e) {
+            $this->assertSame($original, $e);
+        }
+
+        $this->assertFalse($this->db->getPdo()->inTransaction());
+        $this->assertSame(0, $this->userCount($this->db));
+    }
+
+    public function testUpdateMultipleReportsCommitHookErrorWithoutRollback(): void
+    {
+        $db = $this->rollbackCountingDriver();
+        $db->insert('users', ['id' => 1, 'name' => 'Max']);
+        $hookError = new RuntimeException('hook');
+        $db->on('transaction.commit', static fn () => throw $hookError);
+
+        try {
+            $db->updateMultiple('users', [['id' => 1, 'name' => 'Max Updated']]);
+            $this->fail('Expected CommitHookException');
+        } catch (CommitHookException $e) {
+            $this->assertSame($hookError, $e->getPrevious());
+        }
+
+        $this->assertSame('Max Updated', $db->findOne('users', ['id' => 1])['name'] ?? null);
+        $this->assertSame(0, $db->rollbackCalls);
+        $this->assertFalse($db->getPdo()->inTransaction());
+    }
+
+    public function testCommitListenerRunningItsOwnTransaction(): void
+    {
+        $db = $this->rollbackCountingDriver();
+        $innerError = new RuntimeException('inner listener');
+        $nested = false;
+        $thrown = false;
+        $db->on('transaction.commit', static function () use ($db, &$nested): void {
+            if (!$nested) {
+                $nested = true;
+                $db->transaction(static fn (DatabaseInterface $db) => $db->execute('INSERT INTO users (name) VALUES (?)', ['inner']));
+            }
+        });
+        $db->on('transaction.commit', static function () use ($innerError, &$nested, &$thrown): void {
+            if ($nested && !$thrown) {
+                $thrown = true;
+                throw $innerError;
+            }
+        });
+
+        try {
+            $db->transaction(static fn (DatabaseInterface $db) => $db->execute('INSERT INTO users (name) VALUES (?)', ['outer']));
+            $this->fail('Expected CommitHookException');
+        } catch (CommitHookException $e) {
+            $this->assertCount(1, $e->failures);
+            $inner = $e->getPrevious();
+            $this->assertInstanceOf(CommitHookException::class, $inner);
+            $this->assertSame($innerError, $inner->getPrevious());
+        }
+
+        $this->assertSame(2, $this->userCount($db));
+        $this->assertSame(0, $db->rollbackCalls);
+        $this->assertFalse($db->getPdo()->inTransaction());
+    }
+
+    /**
+     * A listener throws and leaves a transaction open; the raw rollback returns false (null) or throws $rollbackError.
+     */
+    private function assertFailedCleanupSkipsRemainingListeners(?Throwable $rollbackError): void
+    {
+        $pdo = new class ('sqlite::memory:', null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC]) extends PDO {
+            public ?Throwable $rollBackError = null;
+            public bool $failRollBack = false;
+            public int $rollBackCalls = 0;
+
+            public function rollBack(): bool
+            {
+                if (!$this->failRollBack) {
+                    return parent::rollBack();
+                }
+                $this->rollBackCalls++;
+                if ($this->rollBackError !== null) {
+                    throw $this->rollBackError;
+                }
+
+                return false;
+            }
+        };
+        // Same pattern as a driver built around an existing connection: no parent constructor.
+        $db = new class ($pdo) extends SqliteDriver {
+            public function __construct(PDO $pdo)
+            {
+                $this->pdo = $pdo;
+            }
+        };
+        $db->execute('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)');
+        $pdo->rollBackError = $rollbackError;
+        $events = [];
+        $first = new RuntimeException('first');
+        $db->on('transaction.rollback', static function () use (&$events): void {
+            $events[] = 'rollback';
+        });
+        $db->on('transaction.commit', static function () use ($db, $pdo, $first): void {
+            $pdo->failRollBack = true;
+            $db->beginTransaction();
+            throw $first;
+        });
+        $db->on('transaction.commit', static function () use (&$events): void {
+            $events[] = 'second listener';
+        });
+
+        try {
+            $db->transaction(static fn (DatabaseInterface $db) => $db->execute('INSERT INTO users (name) VALUES (?)', ['Max']));
+            $this->fail('Expected CommitHookException');
+        } catch (CommitHookException $e) {
+            $this->assertCount(3, $e->failures);
+            $this->assertSame($first, $e->failures[0]);
+            $this->assertSame($first, $e->getPrevious());
+            $this->assertSame('listener left a transaction open', $e->failures[1]->getMessage());
+            $this->assertSame('listener skipped: connection left in transaction', $e->failures[2]->getMessage());
+            $cleanupError = $e->failures[1]->getPrevious();
+            if ($rollbackError !== null) {
+                $this->assertSame($rollbackError, $cleanupError);
+            } else {
+                $this->assertInstanceOf(TransactionException::class, $cleanupError);
+                $this->assertSame('PDO::rollBack() returned false', $cleanupError->getDebugMessage());
+            }
+            $this->assertSame($cleanupError, $e->failures[2]->getPrevious());
+        }
+
+        // No further rollback attempt: the connection is left as the failed cleanup left it.
+        $this->assertSame([], $events);
+        $this->assertSame(1, $pdo->rollBackCalls);
+        $this->assertTrue($pdo->inTransaction());
+    }
+
+    /**
+     * SQLite driver counting rollback() calls: after a successful commit there must be none.
+     */
+    private function rollbackCountingDriver(): SqliteDriver
+    {
+        $db = new class () extends SqliteDriver {
+            public int $rollbackCalls = 0;
+
+            public function rollback(): void
+            {
+                $this->rollbackCalls++;
+                parent::rollback();
+            }
+        };
+        $db->execute('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)');
+
+        return $db;
+    }
+
+    /**
+     * Driver whose commit() override fails without committing (an allowed override), counting rollback() calls.
+     */
+    private function failingCommitDriver(): SqliteDriver
+    {
+        $db = new class () extends SqliteDriver {
+            public int $rollbackCalls = 0;
+            public RuntimeException $commitError;
+
+            public function commit(): void
+            {
+                throw $this->commitError;
+            }
+
+            public function rollback(): void
+            {
+                $this->rollbackCalls++;
+                parent::rollback();
+            }
+        };
+        $db->commitError = new RuntimeException('commit override failed');
+        $db->execute('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)');
+
+        return $db;
+    }
+
+    /**
+     * Table whose foreign key is only checked at COMMIT, so SQLite can reject the COMMIT itself.
+     */
+    private function createDeferredChildrenTable(DatabaseInterface $db): void
+    {
+        $db->execute('CREATE TABLE children (id INTEGER PRIMARY KEY, user_id INTEGER REFERENCES users(id) DEFERRABLE INITIALLY DEFERRED)');
+    }
+
+    private function userCount(DatabaseInterface $db): int
+    {
+        return (int) $db->query('SELECT COUNT(*) AS c FROM users')->fetch()['c'];
     }
 }

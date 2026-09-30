@@ -56,7 +56,13 @@ interface DatabaseInterface
     /**
      * Commit the current transaction.
      *
-     * @throws Exception\TransactionException
+     * After a successful commit, all 'transaction.commit' listeners run; their failures are
+     * reported together in a CommitHookException (not a TransactionException: the data is committed).
+     * Exception: if a transaction left open by a listener cannot be rolled back (or the connection
+     * state cannot be read), the remaining listeners are skipped and reported as failures.
+     *
+     * @throws Exception\TransactionException When the commit itself failed; it may or may not have taken effect
+     * @throws Exception\CommitHookException When committed, but a transaction.commit listener failed or the connection state after it could not be verified
      */
     public function commit(): void;
 
@@ -71,9 +77,17 @@ interface DatabaseInterface
      * Execute a callback within a transaction.
      * Auto-commits on success, auto-rollback on exception.
      *
+     * Three outcomes on failure:
+     * - the callback threw: rollback attempted, the callback's exception is re-thrown
+     *   (best effort: if the rollback fails, the transaction may still be open);
+     * - the commit failed: rollback attempted, TransactionException re-thrown
+     *   (the commit may or may not have taken effect);
+     * - a transaction.commit listener failed: committed, no rollback, CommitHookException.
+     *
      * @param Closure $callback Receives the driver instance
      *
-     * @throws \Throwable Re-throws any exception after rollback
+     * @throws Exception\CommitHookException When committed, but a transaction.commit listener failed or the connection state after it could not be verified
+     * @throws \Throwable Re-throws the callback or commit exception after rollback
      *
      * @return mixed Return value of the callback
      */
@@ -83,6 +97,12 @@ interface DatabaseInterface
      * Register a hook callback for an event.
      *
      * Events: 'query', 'error', 'transaction.begin', 'transaction.commit', 'transaction.rollback'
+     *
+     * A throwing hook stops the remaining hooks of its event, except for 'transaction.commit':
+     * those listeners are independent, all of them run after the commit, and their failures
+     * arrive together in a CommitHookException. Dependent steps belong in one listener.
+     * Only if a transaction left open by a listener cannot be rolled back (or the connection
+     * state cannot be read) are the remaining commit listeners skipped (listed as failures).
      *
      * @param string $event Event name
      * @param callable $callback Callback receiving event data array
@@ -157,11 +177,16 @@ interface DatabaseInterface
     /**
      * Update multiple rows by their key column.
      *
+     * Without an active transaction, the rows are updated in an own transaction
+     * with the same outcomes as transaction().
+     *
      * @param string $table Table name
      * @param array<int, array<string, mixed>> $rows Array of rows with key column
      * @param string $keyColumn Column to match rows (default: 'id')
      *
      * @throws Exception\QueryException
+     * @throws Exception\TransactionException When the own transaction's commit failed
+     * @throws Exception\CommitHookException When committed, but a transaction.commit listener failed or the connection state after it could not be verified
      *
      * @return int Number of affected rows
      */

@@ -80,6 +80,20 @@ class PostgresWorkflowTest extends AbstractWorkflowTest
         )';
     }
 
+    protected function getCreateDeferredChildrenTableSql(): ?string
+    {
+        return 'CREATE TABLE IF NOT EXISTS deferred_children (
+            id INTEGER PRIMARY KEY,
+            user_id INTEGER REFERENCES users(id) DEFERRABLE INITIALLY DEFERRED
+        )';
+    }
+
+    protected function failedCommitKeepsTransactionOpen(): bool
+    {
+        // PostgreSQL ends the transaction itself when it rejects a COMMIT.
+        return false;
+    }
+
     /**
      * Test schema-qualified table names (PostgreSQL specific).
      * This tests that "public.users" is properly quoted as "public"."users".

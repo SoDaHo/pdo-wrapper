@@ -4,9 +4,13 @@ declare(strict_types=1);
 
 namespace Sodaho\PdoWrapper\Tests\Feature;
 
+use PDO;
+use PDOException;
 use PHPUnit\Framework\Attributes\Group;
 use Sodaho\PdoWrapper\Database;
 use Sodaho\PdoWrapper\DatabaseInterface;
+use Sodaho\PdoWrapper\Driver\MySqlDriver;
+use Sodaho\PdoWrapper\Exception\TransactionException;
 use Sodaho\PdoWrapper\Tests\Feature\Concerns\AbstractWorkflowTest;
 
 /**
@@ -82,6 +86,63 @@ class MySqlWorkflowTest extends AbstractWorkflowTest
             FOREIGN KEY (post_id) REFERENCES posts(id),
             FOREIGN KEY (tag_id) REFERENCES tags(id)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4';
+    }
+
+    protected function getCreateDeferredChildrenTableSql(): ?string
+    {
+        // MySQL and MariaDB check foreign keys immediately: no deferred constraints.
+        return null;
+    }
+
+    protected function failedCommitKeepsTransactionOpen(): bool
+    {
+        // Not used: the database cannot reject a COMMIT here (see the PDO subclass test below).
+        return false;
+    }
+
+    /**
+     * MySQL and MariaDB cannot be made to reject a COMMIT in a test. A PDO subclass fails
+     * commit() and keeps the transaction open: this covers the wrapper's branch (rollback,
+     * TransactionException), not how MySQL or MariaDB behave.
+     */
+    public function testFailedCommitWrapperBranchWithPdoSubclass(): void
+    {
+        $pdo = new class (
+            sprintf('mysql:host=%s;port=%d;dbname=%s;charset=utf8mb4', $_ENV['MYSQL_HOST'] ?? '127.0.0.1', (int) ($_ENV['MYSQL_PORT'] ?? 3306), $_ENV['MYSQL_DATABASE'] ?? 'pdo_wrapper_test'),
+            $_ENV['MYSQL_USERNAME'] ?? 'root',
+            $_ENV['MYSQL_PASSWORD'] ?? 'root',
+            [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC],
+        ) extends PDO {
+            public function commit(): bool
+            {
+                throw new PDOException('Simulated commit failure');
+            }
+        };
+        $db = new class ($pdo) extends MySqlDriver {
+            public function __construct(PDO $pdo)
+            {
+                $this->pdo = $pdo;
+            }
+        };
+        $events = [];
+        $db->on('transaction.commit', static function () use (&$events) {
+            $events[] = 'commit';
+        });
+        $db->on('transaction.rollback', static function () use (&$events) {
+            $events[] = 'rollback';
+        });
+
+        try {
+            $db->transaction(fn () => $db->insert('users', ['email' => 'pdo-subclass@test.com', 'name' => 'PDO Subclass']));
+            $this->fail('Expected TransactionException');
+        } catch (TransactionException $e) {
+            $this->assertSame('Failed to commit transaction', $e->getMessage());
+            $this->assertSame('Simulated commit failure', $e->getPrevious()?->getMessage());
+        }
+
+        $this->assertSame(['rollback'], $events);
+        $this->assertFalse($pdo->inTransaction());
+        $this->assertNull($this->db->table('users')->where('email', 'pdo-subclass@test.com')->first());
     }
 
     /**

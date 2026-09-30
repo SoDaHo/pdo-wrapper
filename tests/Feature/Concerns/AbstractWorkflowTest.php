@@ -6,7 +6,9 @@ namespace Sodaho\PdoWrapper\Tests\Feature\Concerns;
 
 use PHPUnit\Framework\TestCase;
 use Sodaho\PdoWrapper\DatabaseInterface;
+use Sodaho\PdoWrapper\Exception\CommitHookException;
 use Sodaho\PdoWrapper\Exception\QueryException;
+use Sodaho\PdoWrapper\Exception\TransactionException;
 
 /**
  * Abstract base class for workflow tests.
@@ -22,6 +24,17 @@ abstract class AbstractWorkflowTest extends TestCase
     abstract protected function getCreateCommentsTableSql(): string;
     abstract protected function getCreateTagsTableSql(): string;
     abstract protected function getCreatePostTagsTableSql(): string;
+
+    /**
+     * Table "deferred_children" whose foreign key to users is checked at COMMIT,
+     * or null where the database has no deferred constraints.
+     */
+    abstract protected function getCreateDeferredChildrenTableSql(): ?string;
+
+    /**
+     * Whether the transaction is still open after the database rejected a COMMIT.
+     */
+    abstract protected function failedCommitKeepsTransactionOpen(): bool;
 
     protected function setUp(): void
     {
@@ -40,7 +53,13 @@ abstract class AbstractWorkflowTest extends TestCase
 
     protected function tearDown(): void
     {
+        // A transaction left open by a failing test must not block the DROPs (the job would hang, not fail).
+        if ($this->db->getPdo()->inTransaction()) {
+            $this->db->getPdo()->rollBack();
+        }
+
         // Clean up tables in reverse order (due to foreign keys)
+        $this->db->execute('DROP TABLE IF EXISTS deferred_children');
         $this->db->execute('DROP TABLE IF EXISTS post_tags');
         $this->db->execute('DROP TABLE IF EXISTS tags');
         $this->db->execute('DROP TABLE IF EXISTS comments');
@@ -250,6 +269,235 @@ abstract class AbstractWorkflowTest extends TestCase
         // User should NOT exist due to rollback
         $user = $this->db->table('users')->where('email', 'rollback@test.com')->first();
         $this->assertNull($user);
+    }
+
+    // =========================================================================
+    // COMMIT PHASE WORKFLOW
+    // =========================================================================
+
+    public function testCommitHookFailureKeepsCommittedData(): void
+    {
+        $events = [];
+        $hookError = new \RuntimeException('Simulated hook error');
+        $this->db->on('transaction.commit', static fn () => throw $hookError);
+        $this->db->on('transaction.rollback', static function () use (&$events) {
+            $events[] = 'rollback';
+        });
+
+        try {
+            $this->db->transaction(function () {
+                $this->db->insert('users', ['email' => 'hook@test.com', 'name' => 'Hook User']);
+            });
+            $this->fail('Expected CommitHookException');
+        } catch (CommitHookException $e) {
+            $this->assertSame($hookError, $e->getPrevious());
+            $this->assertSame([$hookError], $e->failures);
+        }
+
+        $this->assertSame([], $events);
+        $this->assertFalse($this->db->getPdo()->inTransaction());
+        $this->assertNotNull($this->db->table('users')->where('email', 'hook@test.com')->first());
+    }
+
+    public function testCallbackFailureRunsNoCommitHook(): void
+    {
+        $events = [];
+        $original = new \RuntimeException('Simulated error');
+        $this->db->on('transaction.commit', static function () use (&$events) {
+            $events[] = 'commit';
+        });
+
+        try {
+            $this->db->transaction(function () use ($original) {
+                $this->db->insert('users', ['email' => 'callback@test.com', 'name' => 'Callback User']);
+                throw $original;
+            });
+            $this->fail('Expected the callback exception');
+        } catch (\RuntimeException $e) {
+            $this->assertSame($original, $e);
+        }
+
+        $this->assertSame([], $events);
+        $this->assertNull($this->db->table('users')->where('email', 'callback@test.com')->first());
+    }
+
+    public function testManualCommitReportsCommitHookFailure(): void
+    {
+        $this->db->on('transaction.commit', static fn () => throw new \LogicException('Simulated hook error'));
+        $this->db->beginTransaction();
+        $this->db->insert('users', ['email' => 'manual@test.com', 'name' => 'Manual User']);
+
+        try {
+            $this->db->commit();
+            $this->fail('Expected CommitHookException');
+        } catch (CommitHookException $e) {
+            $this->assertCount(1, $e->failures);
+        }
+
+        $this->assertFalse($this->db->getPdo()->inTransaction());
+        $this->assertNotNull($this->db->table('users')->where('email', 'manual@test.com')->first());
+    }
+
+    public function testTransactionReturnValueWithCommitListener(): void
+    {
+        $calls = 0;
+        $this->db->on('transaction.commit', static function () use (&$calls) {
+            $calls++;
+        });
+
+        $result = $this->db->transaction(fn () => $this->db->insert('users', ['email' => 'result@test.com', 'name' => 'Result User']));
+
+        $user = $this->db->table('users')->where('email', 'result@test.com')->first();
+        $this->assertSame((string) $user['id'], (string) $result);
+        $this->assertSame(1, $calls);
+    }
+
+    public function testFailedCommitIsATransactionException(): void
+    {
+        $sql = $this->getCreateDeferredChildrenTableSql();
+
+        if ($sql === null) {
+            $this->markTestSkipped('No deferred constraints: the database cannot reject a COMMIT here (see the PDO subclass test of this driver).');
+        }
+
+        $this->db->execute($sql);
+        $events = [];
+        $this->db->on('transaction.commit', static function () use (&$events) {
+            $events[] = 'commit';
+        });
+        $this->db->on('transaction.rollback', static function () use (&$events) {
+            $events[] = 'rollback';
+        });
+
+        try {
+            $this->db->transaction(fn () => $this->db->execute('INSERT INTO deferred_children (id, user_id) VALUES (1, 999999)'));
+            $this->fail('Expected TransactionException');
+        } catch (TransactionException $e) {
+            $this->assertSame('Failed to commit transaction', $e->getMessage());
+        }
+
+        // A rollback (and its hook) only where the driver keeps the rejected transaction open.
+        $this->assertSame($this->failedCommitKeepsTransactionOpen() ? ['rollback'] : [], $events);
+        $this->assertFalse($this->db->getPdo()->inTransaction());
+        $this->assertSame(0, $this->db->table('deferred_children')->count());
+    }
+
+    public function testAllCommitListenersRun(): void
+    {
+        $first = new \RuntimeException('first');
+        $second = new \RuntimeException('second');
+        $this->db->on('transaction.commit', static fn () => throw $first);
+        $this->db->on('transaction.commit', static fn () => throw $second);
+
+        try {
+            $this->db->transaction(function () {
+                $this->db->insert('users', ['email' => 'all@test.com', 'name' => 'All Listeners']);
+            });
+            $this->fail('Expected CommitHookException');
+        } catch (CommitHookException $e) {
+            $this->assertSame([$first, $second], $e->failures);
+            $this->assertSame($first, $e->getPrevious());
+        }
+
+        $this->assertNotNull($this->db->table('users')->where('email', 'all@test.com')->first());
+    }
+
+    public function testTransactionLeftOpenByCommitListenerIsRolledBack(): void
+    {
+        $events = [];
+        $this->db->on('transaction.rollback', static function () use (&$events) {
+            $events[] = 'rollback';
+        });
+        $this->db->on('transaction.commit', function () {
+            $this->db->beginTransaction();
+            $this->db->insert('users', ['email' => 'listener@test.com', 'name' => 'Listener User']);
+        });
+
+        try {
+            $this->db->transaction(function () {
+                $this->db->insert('users', ['email' => 'owner@test.com', 'name' => 'Owner User']);
+            });
+            $this->fail('Expected CommitHookException');
+        } catch (CommitHookException $e) {
+            $this->assertCount(1, $e->failures);
+            $this->assertSame('listener left a transaction open', $e->failures[0]->getMessage());
+        }
+
+        $this->assertSame([], $events);
+        $this->assertFalse($this->db->getPdo()->inTransaction());
+        $this->assertNotNull($this->db->table('users')->where('email', 'owner@test.com')->first());
+        $this->assertNull($this->db->table('users')->where('email', 'listener@test.com')->first());
+    }
+
+    public function testThrowingRollbackHookKeepsCallbackException(): void
+    {
+        $original = new \RuntimeException('Simulated error');
+        $this->db->on('transaction.rollback', static fn () => throw new \RuntimeException('Simulated rollback hook error'));
+
+        try {
+            $this->db->transaction(function () use ($original) {
+                $this->db->insert('users', ['email' => 'rollbackhook@test.com', 'name' => 'Rollback Hook']);
+                throw $original;
+            });
+            $this->fail('Expected the callback exception');
+        } catch (\RuntimeException $e) {
+            $this->assertSame($original, $e);
+        }
+
+        $this->assertFalse($this->db->getPdo()->inTransaction());
+        $this->assertNull($this->db->table('users')->where('email', 'rollbackhook@test.com')->first());
+    }
+
+    public function testUpdateMultipleReportsCommitHookFailure(): void
+    {
+        $id = $this->db->insert('users', ['email' => 'bulk@test.com', 'name' => 'Before']);
+        $this->db->on('transaction.commit', static fn () => throw new \RuntimeException('Simulated hook error'));
+
+        try {
+            $this->db->updateMultiple('users', [['id' => $id, 'name' => 'After']]);
+            $this->fail('Expected CommitHookException');
+        } catch (CommitHookException $e) {
+            $this->assertCount(1, $e->failures);
+        }
+
+        $this->assertFalse($this->db->getPdo()->inTransaction());
+        $this->assertSame('After', $this->db->findOne('users', ['id' => $id])['name'] ?? null);
+    }
+
+    public function testCommitListenerRunningItsOwnTransaction(): void
+    {
+        $events = [];
+        $innerError = new \RuntimeException('inner listener');
+        $nested = false;
+        $thrown = false;
+        $this->db->on('transaction.rollback', static function () use (&$events) {
+            $events[] = 'rollback';
+        });
+        $this->db->on('transaction.commit', function () use (&$nested) {
+            if (!$nested) {
+                $nested = true;
+                $this->db->transaction(fn () => $this->db->insert('users', ['email' => 'inner@test.com', 'name' => 'Inner']));
+            }
+        });
+        $this->db->on('transaction.commit', static function () use ($innerError, &$nested, &$thrown) {
+            if ($nested && !$thrown) {
+                $thrown = true;
+                throw $innerError;
+            }
+        });
+
+        try {
+            $this->db->transaction(fn () => $this->db->insert('users', ['email' => 'outer@test.com', 'name' => 'Outer']));
+            $this->fail('Expected CommitHookException');
+        } catch (CommitHookException $e) {
+            $inner = $e->getPrevious();
+            $this->assertInstanceOf(CommitHookException::class, $inner);
+            $this->assertSame($innerError, $inner->getPrevious());
+        }
+
+        $this->assertSame([], $events);
+        $this->assertFalse($this->db->getPdo()->inTransaction());
+        $this->assertSame(2, $this->db->table('users')->whereIn('email', ['inner@test.com', 'outer@test.com'])->count());
     }
 
     // =========================================================================
