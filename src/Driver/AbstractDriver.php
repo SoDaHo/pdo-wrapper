@@ -880,12 +880,17 @@ abstract class AbstractDriver implements DatabaseInterface
     /**
      * Get the SQL dialect the query builder renders for (one of QueryBuilder::DIALECT_*).
      *
-     * Override in driver. The ANSI default renders FOR UPDATE / FOR SHARE, IS [NOT] DISTINCT FROM
-     * and OFFSET without LIMIT as PostgreSQL does.
+     * The bundled drivers override it. The default derives it from the quote character, as the
+     * builder did before it knew dialects: a backtick means MySQL (a custom driver that only
+     * overrides getQuoteChar() keeps MySQL's LIKE escaping and lock syntax), anything else ANSI,
+     * which renders FOR UPDATE / FOR SHARE, IS [NOT] DISTINCT FROM and OFFSET without LIMIT as
+     * PostgreSQL does.
      */
     protected function getDialect(): string
     {
-        return \Sodaho\PdoWrapper\Query\QueryBuilder::DIALECT_ANSI;
+        return $this->getQuoteChar() === '`'
+            ? \Sodaho\PdoWrapper\Query\QueryBuilder::DIALECT_MYSQL
+            : \Sodaho\PdoWrapper\Query\QueryBuilder::DIALECT_ANSI;
     }
 
     // =========================================================================

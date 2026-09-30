@@ -41,6 +41,19 @@ class AggregateTest extends TestCase
         $this->assertSame(3, $this->db->table('users')->select(['users.*'])->groupBy('country')->count(), 'wildcards are dropped');
         $this->assertSame(3, $this->db->table('users')->select([Database::raw('COUNT(*)'), Database::raw('COUNT(*)')])->groupBy('country')->count(), 'unaliased raw entries are dropped (they would repeat a column name)');
         $this->assertSame(2, $this->db->table('users')->select([Database::raw('COUNT(*) AS n'), Database::raw('MAX(score) AS N')])->groupBy('country')->having('n', '>', Database::raw('1'))->count(), 'one entry per alias');
+        $this->assertSame(2, $this->db->table('users')->select([Database::raw('COUNT(*) AS `n`')])->groupBy('country')->having('n', '>', Database::raw('1'))->count(), 'a quoted alias counts as an alias');
+        $this->assertSame(2, $this->db->table('users')->select([Database::raw('COUNT(*) AS "n"')])->groupBy('country')->having('n', '>', Database::raw('1'))->count());
+        $this->assertTrue($this->db->table('users')->select([Database::raw('COUNT(*) AS `n`')])->groupBy('country')->having('n', '>', Database::raw('1'))->exists());
+    }
+
+    public function testGroupedExistsKeepsAliasedSelectEntriesForHaving(): void
+    {
+        $grouped = fn (string $min) => $this->db->table('users')->select(['country', Database::raw('COUNT(*) AS n')])->groupBy('country')->having('n', '>', Database::raw($min));
+
+        $this->assertTrue($grouped('1')->exists(), 'DE and AT have two rows');
+        $this->assertFalse($grouped('5')->exists());
+        $this->assertTrue($this->db->table('users')->groupBy('country')->exists(), 'no alias: SELECT 1 per group');
+        $this->assertFalse($this->db->table('users')->select([Database::raw('COUNT(*) AS n')])->where('id', 999)->exists(), 'without groupBy() the aggregate alias is not kept: no row, not one row with n = 0');
     }
 
     public function testDistinctCountOverAJoinNeedsNamedColumns(): void
@@ -55,14 +68,30 @@ class AggregateTest extends TestCase
         $this->assertSame(3, $join()->groupBy(['users.id', 'orders.id'])->count(), 'groups over a join with clashing names');
         $this->assertSame(3, $join()->select(['users.*', 'orders.*'])->groupBy(['users.id', 'orders.id'])->count(), 'wildcards are dropped from the grouped select');
 
-        foreach ([['*'], [3 => '*'], ['users.*', 'orders.*'], ['*', 'orders.status'], ['users.*', 'users.id']] as $columns) {
+        foreach ([['*'], [3 => '*'], ['users.*', 'orders.*'], ['*', 'orders.status'], ['users.*', 'users.id'], ['users.id', 'orders.id'], ['users.id', 'orders.user_id as id']] as $columns) {
             try {
                 $join()->select($columns)->distinct()->count();
                 $this->fail('Expected QueryException was not thrown for ' . implode(', ', $columns));
             } catch (QueryException $e) {
-                $this->assertStringContainsString('needs explicit select() columns', $e->getDebugMessage() ?? '');
+                $this->assertStringContainsString('needs unique output names', $e->getDebugMessage() ?? '');
             }
         }
+        $this->assertSame(3, $join()->select(['users.id', 'orders.id as order_id'])->distinct()->count(), 'aliased apart: three user/order pairs');
+        $this->assertSame(3, $join()->select('users.id, orders.id as order_id')->distinct()->count(), 'string form');
+    }
+
+    public function testDistinctCountWithoutAJoinStillNeedsUniqueOutputNames(): void
+    {
+        foreach ([['id', 'users.id'], ['users.*', 'score'], ['*', 'score']] as $columns) {
+            try {
+                $this->db->table('users')->select($columns)->distinct()->count();
+                $this->fail('Expected QueryException was not thrown for ' . implode(', ', $columns));
+            } catch (QueryException $e) {
+                $this->assertStringContainsString('needs unique output names', $e->getDebugMessage() ?? '');
+            }
+        }
+        $this->assertSame(5, $this->db->table('users')->select(['*'])->distinct()->count(), 'a bare "*" without a join is fine');
+        $this->assertSame(5, $this->db->table('users')->select(['users.*'])->distinct()->count());
     }
 
     /**

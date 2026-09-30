@@ -648,8 +648,9 @@ class QueryBuilder
      * Runs `SELECT 1 ... LIMIT 1` and keeps a requested row lock (unlike count(), which must drop it)
      * and an offset(), so `offset(50)->exists()` answers "is there a next page?". With distinct() the
      * selected columns stay in place, so the answer refers to the distinct result rows (an aggregate
-     * projection yields a row even over an empty table). With having() but no groupBy() it is
-     * evaluated as `count() > 0` instead, which drops the offset as before.
+     * projection yields a row even over an empty table). With groupBy() the aliased select() entries
+     * stay, so having() may refer to them. With having() but no groupBy() it is evaluated as
+     * `count() > 0` instead, which drops the offset as before.
      *
      * @throws QueryException When a row lock is combined with distinct(), groupBy() or having()
      *
@@ -666,8 +667,14 @@ class QueryBuilder
         }
 
         $query = clone $this;
-        // DISTINCT keeps the original projection: "SELECT DISTINCT 1" would collapse every row into one
-        $query->columns = $this->distinct ? $this->columns : [new RawExpression('1')];
+        // DISTINCT keeps the original projection ("SELECT DISTINCT 1" would collapse every row into one);
+        // a grouped query keeps its aliased entries, so that having() may refer to them; otherwise a
+        // constant (an aggregate alias without groupBy() would yield a row over an empty table)
+        $query->columns = match (true) {
+            $this->distinct => $this->columns,
+            !empty($this->groupBy) => $this->aliasedColumns() ?: [new RawExpression('1')],
+            default => [new RawExpression('1')],
+        };
         $query->orderBy = [];
         $query->limit = 1;
 
@@ -677,12 +684,86 @@ class QueryBuilder
     }
 
     /**
+     * The aliased select() entries ("col as x", raw('COUNT(*) AS n'), raw('COUNT(*) AS "n"')), one
+     * per alias: what a grouped query keeps so that having() and groupBy() may refer to the aliases.
+     *
+     * @return array<int, string|RawExpression>
+     */
+    private function aliasedColumns(): array
+    {
+        $aliased = [];
+        foreach ($this->columns as $entry) {
+            $key = $this->aliasKey($entry);
+            if ($key !== null) {
+                $aliased[$key] ??= $entry;
+            }
+        }
+
+        return array_values($aliased);
+    }
+
+    /**
+     * The alias of a select() entry as a comparison key, or null: a trailing `AS name`. In a string
+     * entry the name is bare (that is what quoteIdentifier() renders); in a raw expression it may
+     * also be double-quoted or backtick-quoted, which PostgreSQL treats case-sensitively, so only
+     * bare names are folded to lower case.
+     */
+    private function aliasKey(string|RawExpression $entry): ?string
+    {
+        if ($entry instanceof RawExpression) {
+            if (preg_match('/\s+as\s+(["`]?)(\w+)\1$/i', (string) $entry, $match) === 1) {
+                return $match[1] === '' ? strtolower($match[2]) : $match[1] . $match[2];
+            }
+
+            return null;
+        }
+
+        return preg_match('/\s+as\s+(\w+)$/i', $entry, $match) === 1 ? strtolower($match[1]) : null;
+    }
+
+    /**
+     * Why the select() would repeat an output name in a derived table, or null: two string entries
+     * with the same alias or column name (the last dot segment), a wildcard next to other entries,
+     * a bare "*" over a join (the joined tables repeat names). Raw entries are not inspected.
+     */
+    private function distinctOutputNameConflict(): ?string
+    {
+        $names = [];
+        foreach ($this->columns as $entry) {
+            if (!is_string($entry)) {
+                continue;
+            }
+            if ($entry === '*' || str_ends_with($entry, '.*')) {
+                if ($entry === '*' && !empty($this->joins)) {
+                    return 'a bare "*" over a join repeats the joined tables\' column names';
+                }
+                if (count($this->columns) > 1) {
+                    return sprintf('the wildcard "%s" next to other entries may repeat a column name', $entry);
+                }
+                continue;
+            }
+            $name = $this->aliasKey($entry);
+            if ($name === null) {
+                $dot = strrpos($entry, '.');
+                $name = strtolower($dot === false ? $entry : substr($entry, $dot + 1));
+            }
+            if (isset($names[$name])) {
+                return sprintf('"%s" appears twice as an output name', $name);
+            }
+            $names[$name] = true;
+        }
+
+        return null;
+    }
+
+    /**
      * Get the count of matching records.
      *
      * With distinct(): the number of distinct rows of the selected columns (or COUNT(DISTINCT col)
-     * for a column). Over a join the select() must not repeat column names (MySQL rejects them in the
-     * counted derived table): a bare "*" or a wildcard next to other entries throws a QueryException,
-     * a single "table.*" is allowed, raw() entries are not inspected.
+     * for a column). The select() must yield unique output names (MySQL rejects repeated ones in the
+     * counted derived table): two entries with the same column name or alias, a wildcard next to other
+     * entries, or a bare "*" over a join throw a QueryException; alias the columns. A single "table.*"
+     * is allowed, raw() entries are not inspected.
      *
      * With groupBy(): the number of groups, having() included; the column argument is irrelevant then.
      * Only aliased select() entries ("col as x", raw('COUNT(*) AS n'); scalar or aggregate expressions,
@@ -789,25 +870,19 @@ class QueryBuilder
                 );
             }
             $query->distinct = false;
-            $aliased = [];
-            foreach ($this->columns as $entry) {
-                if (preg_match('/\s+as\s+(\w+)$/i', (string) $entry, $match) === 1) {
-                    $aliased[strtolower($match[1])] ??= $entry;
-                }
-            }
-            $query->columns = array_values($aliased) ?: [new RawExpression('1 as g')];
+            $query->columns = $this->aliasedColumns() ?: [new RawExpression('1 as g')];
             [$innerSql, $params] = $query->toSql();
             $sql = sprintf('SELECT COUNT(*) as aggregate FROM (%s) as grouped', $innerSql);
         } elseif ($this->distinct && $column === '*' && empty($this->having)) {
             // count() of the distinct rows: count the distinct select itself (with having() but no
             // groupBy() the whole set is one group: that case takes the plain aggregate path below).
-            // Over a join, a wildcard next to other entries (or a bare "*") would repeat column names in
-            // the derived table, which MySQL rejects; a single "table.*" is fine. Raw entries are not parsed.
-            $wildcards = array_filter($this->columns, static fn (string|RawExpression $c): bool => $c === '*' || (is_string($c) && str_ends_with($c, '.*')));
-            if (!empty($this->joins) && $wildcards !== [] && (in_array('*', $wildcards, true) || count($this->columns) > 1)) {
+            // The derived table needs unique output names (MySQL rejects repeated ones): what is
+            // statically visible is checked, raw entries are not inspected.
+            $conflict = $this->distinctOutputNameConflict();
+            if ($conflict !== null) {
                 throw new QueryException(
                     message: 'Query failed',
-                    debugMessage: 'distinct()->count() over a join needs explicit select() columns: no bare "*", and a "table.*" only on its own (repeated column names fail in the derived table). Name the columns, or count one column with count(\'column\').'
+                    debugMessage: sprintf('distinct()->count() counts a derived table, which needs unique output names: %s. Alias the columns, or count one column with count(\'column\').', $conflict)
                 );
             }
             [$innerSql, $params] = $query->toSql();

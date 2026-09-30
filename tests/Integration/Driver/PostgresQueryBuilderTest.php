@@ -129,6 +129,9 @@ class PostgresQueryBuilderTest extends TestCase
         $this->assertSame(4, $this->db->table('qb_test')->leftJoin('qb_profiles', 'qb_test.id', '=', 'qb_profiles.user_id')->select(['qb_test.*'])->distinct()->count(), 'one wildcard over a join: four users, distinct by id');
         $this->assertSame(4, $this->db->table('qb_test')->leftJoin('qb_profiles', 'qb_test.id', '=', 'qb_profiles.user_id')->select(['qb_test.*', 'qb_profiles.*'])->groupBy(['qb_test.id', 'qb_profiles.id'])->count(), 'wildcards dropped from the grouped select');
         $this->assertSame(2, $this->db->table('qb_test')->select([Database::raw('LOWER(name) AS ln')])->groupBy('ln')->count(), 'groupBy() on a select alias');
+        // quoted aliases are case-sensitive on PostgreSQL: "l" and "L" are two aliases, both must stay for GROUP BY
+        $this->assertSame(2, $this->db->table('qb_test')->select([Database::raw('LOWER(name) AS "l"'), Database::raw('UPPER(name) AS "L"')])->groupBy(['l', 'L'])->count());
+        $this->assertTrue($this->db->table('qb_test')->select([Database::raw('LOWER(name) AS "l"'), Database::raw('UPPER(name) AS "L"')])->groupBy(['l', 'L'])->exists());
         // PostgreSQL rejects a select alias in HAVING; the aggregate itself works
         $this->assertSame(1, $this->db->table('qb_test')->select(['name', Database::raw('COUNT(*) AS n')])->groupBy('name')->having(Database::raw('COUNT(*)'), '>', 1)->count());
     }

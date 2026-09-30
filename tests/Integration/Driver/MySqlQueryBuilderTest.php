@@ -90,6 +90,14 @@ class MySqlQueryBuilderTest extends TestCase
         $this->assertSame(1, $this->db->table('qb_test')->whereRaw('age BETWEEN ? AND ?', [26, 35])->count());
     }
 
+    public function testGroupedExistsWithHavingOnASelectAlias(): void
+    {
+        $this->db->insert('qb_test', ['name' => 'Max', 'age' => 40]);
+
+        $this->assertTrue($this->db->table('qb_test')->select(['name', Database::raw('COUNT(*) AS n')])->groupBy('name')->having('n', '>', 1)->exists());
+        $this->assertFalse($this->db->table('qb_test')->select(['name', Database::raw('COUNT(*) AS n')])->groupBy('name')->having('n', '>', 5)->exists());
+    }
+
     public function testRowLocksExecuteInsideATransaction(): void
     {
         $this->db->beginTransaction();
@@ -155,6 +163,13 @@ class MySqlQueryBuilderTest extends TestCase
         $this->assertSame(2, $this->db->table('qb_test')->leftJoin('qb_profiles', 'qb_test.id', '=', 'qb_profiles.user_id')->groupBy('qb_test.name')->count());
         $this->assertSame(4, $this->db->table('qb_test')->leftJoin('qb_profiles', 'qb_test.id', '=', 'qb_profiles.user_id')->groupBy(['qb_test.id', 'qb_profiles.id'])->count());
         $this->assertSame(2, $this->db->table('qb_test')->leftJoin('qb_profiles', 'qb_test.id', '=', 'qb_profiles.user_id')->select(['qb_test.name'])->distinct()->count());
+        $this->assertSame(4, $this->db->table('qb_test')->leftJoin('qb_profiles', 'qb_test.id', '=', 'qb_profiles.user_id')->select(['qb_test.id', 'qb_profiles.id as profile_id'])->distinct()->count(), 'same column names aliased apart');
+        try {
+            $this->db->table('qb_test')->leftJoin('qb_profiles', 'qb_test.id', '=', 'qb_profiles.user_id')->select(['qb_test.id', 'qb_profiles.id'])->distinct()->count();
+            $this->fail('Expected QueryException for repeated output names');
+        } catch (QueryException $e) {
+            $this->assertStringContainsString('"id" appears twice', $e->getDebugMessage() ?? '');
+        }
         $this->assertSame(4, $this->db->table('qb_test')->leftJoin('qb_profiles', 'qb_test.id', '=', 'qb_profiles.user_id')->select(['qb_test.*'])->distinct()->count(), 'one wildcard over a join: four users, distinct by id');
         // clashing names in an explicit select() are dropped from the grouped select (MySQL rejects them in a derived table)
         $this->assertSame(4, $this->db->table('qb_test')->leftJoin('qb_profiles', 'qb_test.id', '=', 'qb_profiles.user_id')->select(['qb_test.*', 'qb_profiles.*'])->groupBy(['qb_test.id', 'qb_profiles.id'])->count());

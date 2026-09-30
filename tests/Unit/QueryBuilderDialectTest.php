@@ -7,6 +7,8 @@ namespace Sodaho\PdoWrapper\Tests\Unit;
 use InvalidArgumentException;
 use PHPUnit\Framework\TestCase;
 use Sodaho\PdoWrapper\Database;
+use Sodaho\PdoWrapper\Driver\AbstractDriver;
+use Sodaho\PdoWrapper\Driver\SqliteDriver;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Query\QueryBuilder;
 
@@ -18,6 +20,41 @@ class QueryBuilderDialectTest extends TestCase
     private function builder(string $dialect, string $quoteChar = '"'): QueryBuilder
     {
         return new QueryBuilder(Database::sqlite(), 'users', $quoteChar, $dialect);
+    }
+
+    /**
+     * A custom driver that overrides only getQuoteChar() keeps the dialect it had before the builder
+     * knew dialects: a backtick means MySQL (no LIKE escape clause, MySQL lock syntax), anything else ANSI.
+     */
+    public function testACustomDriverGetsItsDialectFromTheQuoteCharacter(): void
+    {
+        $backtick = new class () extends SqliteDriver {
+            protected function getQuoteChar(): string
+            {
+                return '`';
+            }
+
+            protected function getDialect(): string
+            {
+                return AbstractDriver::getDialect(); // the default, not SQLite's override
+            }
+        };
+        $ansi = new class () extends SqliteDriver {
+            protected function getQuoteChar(): string
+            {
+                return '"';
+            }
+
+            protected function getDialect(): string
+            {
+                return AbstractDriver::getDialect();
+            }
+        };
+
+        [$sql] = $backtick->table('users')->whereLike('name', 'a%')->sharedLock()->toSql();
+        $this->assertSame('SELECT * FROM `users` WHERE `name` LIKE ? LOCK IN SHARE MODE', $sql);
+        [$sql] = $ansi->table('users')->whereLike('name', 'a%')->sharedLock()->toSql();
+        $this->assertSame('SELECT * FROM "users" WHERE "name" LIKE ? ESCAPE \'\\\' FOR SHARE', $sql);
     }
 
     public function testIsAndIsNotAreNullSafeEqualityPerDialect(): void
