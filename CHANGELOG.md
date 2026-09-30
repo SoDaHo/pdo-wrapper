@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+- Weekly dependency scan of `composer.lock` with osv-scanner (`dep-cve-scan.yml`).
+- `SECURITY.md` with the private reporting channel.
+
+### Changed
+- CI: every action is pinned to a commit SHA and the job container to its image digest; the job token is read-only.
+- `composer.lock` is committed, resolved for PHP 8.2 (`config.platform.php`), so CI installs and caches a fixed set of dev dependencies.
+
 ## [1.1.0] - 2026-09-30
 
 ### Added
@@ -16,6 +24,11 @@
 - `transaction()` and `updateMultiple()` attempted a rollback after a successful commit when a commit hook threw (firing `transaction.rollback` if the hook had left its own transaction open).
 - A `PDOException` thrown by a commit hook was reported as "Failed to commit transaction".
 - `commit()` ignored `PDO::commit()` returning `false` (non-exception error mode) and ran the commit hooks; it now throws `TransactionException`.
+
+## [1.0.1] - 2026-06-01
+
+### Changed
+- CI: jobs run in `shivammathur/node` containers; `actions/checkout` and `actions/cache` updated. No library changes.
 
 ## [1.0.0] - 2026-03-15
 
@@ -55,11 +68,12 @@
   - Identifier quoting with proper escaping.
   - Safety checks preventing UPDATE/DELETE without WHERE.
 - **Exception hierarchy**: `DatabaseException`, `ConnectionException`, `QueryException`, `TransactionException`.
-- **PostgreSQL**: `insert()` uses `RETURNING id` for reliable ID retrieval.
+- **PostgreSQL**: `insert()` reads the new ID from the `{table}_id_seq` sequence and returns 0 for tables without one (composite or UUID keys).
 - **SQLite**: Foreign key constraints enabled by default.
 - **CI**: GitHub Actions with PHP 8.2-8.5, MySQL 8.0/8.4, MariaDB 10.11/11.4, PostgreSQL 15/16/17.
 - **Quality**: PHPStan level 9, PHP-CS-Fixer (PSR-12).
 
 [Unreleased]: https://github.com/sodaho/pdo-wrapper/compare/v1.1.0...HEAD
 [1.1.0]: https://github.com/sodaho/pdo-wrapper/compare/v1.0.1...v1.1.0
+[1.0.1]: https://github.com/sodaho/pdo-wrapper/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/sodaho/pdo-wrapper/releases/tag/v1.0.0
