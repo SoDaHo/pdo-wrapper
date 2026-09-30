@@ -162,6 +162,14 @@ abstract class AbstractDriver implements DatabaseInterface
         return $this->pdo;
     }
 
+    /**
+     * Whether the connection is inside a transaction.
+     */
+    public function inTransaction(): bool
+    {
+        return $this->pdo->inTransaction();
+    }
+
     // =========================================================================
     // Transactions
     // =========================================================================

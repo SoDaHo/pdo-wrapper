@@ -439,7 +439,7 @@ try {
 } catch (Throwable $e) {
     // Best effort: roll back only if still open, keep the original exception
     try {
-        if ($db->getPdo()->inTransaction()) {
+        if ($db->inTransaction()) {
             $db->rollback();
         }
     } catch (Throwable) {
@@ -486,7 +486,7 @@ For `query`, `error` and `transaction.begin`, a throwing hook stops the remainin
 
 - **All of them run**, even if one throws (only exception: see the last point). Keep them independent: steps that depend on each other belong in one hook.
 - **Failures are reported together** as `CommitHookException`: `getPrevious()` is the first failure, `$e->failures` lists all of them in hook order.
-- **A transaction a hook leaves open** is rolled back before the next hook runs - directly, without `transaction.rollback` hooks - and reported as a `LogicException`. If that rollback fails (or the connection state cannot be read), the remaining hooks are skipped, listed as failures, and the connection may still be in a transaction (`getPdo()->inTransaction()`).
+- **A transaction a hook leaves open** is rolled back before the next hook runs - directly, without `transaction.rollback` hooks - and reported as a `LogicException`. If that rollback fails (or the connection state cannot be read), the remaining hooks are skipped, listed as failures, and the connection may still be in a transaction (`$db->inTransaction()`).
 
 ## Exceptions
 
@@ -556,6 +556,7 @@ This library protects against SQL injection through:
 - **Prepared statements** for all values (WHERE, INSERT, UPDATE) - the one exception is a `Database::raw()` expression given as a value, which is inlined by design
 - **Identifier quoting** for all column and table names
 - **Operator whitelist** validation (only `=`, `!=`, `<>`, `<`, `>`, `<=`, `>=`, `LIKE`, `NOT LIKE`, `IS`, `IS NOT`)
+- **Connection values that cannot redirect the connection**: `host`, `database` and (MySQL) `charset` are rejected with a `ConnectionException` before connecting if they contain a `;` (PDO's DSN separator) or NUL; PostgreSQL values are additionally quoted the libpq way, because libpq would otherwise treat a space inside a value (`app host=evil`) as the start of another parameter
 
 ### Raw Expressions
 

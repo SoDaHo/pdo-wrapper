@@ -22,6 +22,31 @@ class PostgresDriverTest extends TestCase
         putenv('DB_PORT');
     }
 
+    /**
+     * A ";" in a DSN value is PDO's separator, NUL truncates the DSN. Both are rejected before any
+     * connection attempt, without echoing the value. Whitespace is handled by libpq quoting (integration test).
+     */
+    public function testRejectsSemicolonAndNulInConnectionValuesBeforeConnecting(): void
+    {
+        $base = ['host' => '127.0.0.1', 'database' => 'app', 'username' => 'postgres', 'password' => 'x'];
+        $cases = [
+            ['host', '127.0.0.1;port=5433'],
+            ['database', 'app;host=evil'],
+            ['host', "127.0.0.1\0"],
+            ['database', "app\0 host=evil"],
+        ];
+
+        foreach ($cases as [$key, $value]) {
+            try {
+                new PostgresDriver([$key => $value] + $base);
+                $this->fail("Expected ConnectionException for {$key}");
+            } catch (ConnectionException $e) {
+                $this->assertSame('Database connection failed', $e->getMessage());
+                $this->assertSame(sprintf('Invalid character in config value "%s"', $key), $e->getDebugMessage());
+            }
+        }
+    }
+
     public function testThrowsExceptionWhenHostMissing(): void
     {
         $this->expectException(ConnectionException::class);

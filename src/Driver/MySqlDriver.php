@@ -50,6 +50,17 @@ class MySqlDriver extends AbstractDriver
             );
         }
 
+        // A ";" would append further DSN keys and could redirect the connection, credentials included;
+        // NUL would truncate the DSN and drop the keys after it. pdo_mysql splits on ";" only.
+        foreach (['host' => $host, 'database' => $database, 'charset' => $charset] as $key => $value) {
+            if (str_contains((string) $value, ';') || str_contains((string) $value, "\0")) {
+                throw new ConnectionException(
+                    message: 'Database connection failed',
+                    debugMessage: sprintf('Invalid character in config value "%s"', $key)
+                );
+            }
+        }
+
         $dsn = sprintf(
             'mysql:host=%s;port=%d;dbname=%s;charset=%s',
             $host,

@@ -47,6 +47,11 @@ interface DatabaseInterface
     public function getPdo(): PDO;
 
     /**
+     * Whether the connection is inside a transaction (PDO::inTransaction()).
+     */
+    public function inTransaction(): bool;
+
+    /**
      * Current date and time of the database in local time at statement time, to the second, as a
      * raw SQL expression for insert()/update()/where() values: MySQL `NOW()`, PostgreSQL
      * `CAST(statement_timestamp() AS TIMESTAMP(0))`, SQLite `datetime('now', 'localtime')`.

@@ -22,6 +22,33 @@ class MySqlDriverTest extends TestCase
         putenv('DB_PORT');
     }
 
+    /**
+     * A ";" in a DSN value appends further keys (a later host=/port= would redirect the connection),
+     * NUL truncates the DSN. Both are rejected before any connection attempt, without echoing the value.
+     */
+    public function testRejectsSemicolonAndNulInConnectionValuesBeforeConnecting(): void
+    {
+        $base = ['host' => '127.0.0.1', 'database' => 'app', 'username' => 'root', 'password' => 'x'];
+        $cases = [
+            ['host', '127.0.0.1;port=3307'],
+            ['database', 'app;host=evil'],
+            ['charset', 'utf8mb4;host=evil'],
+            ['host', "127.0.0.1\0"],
+            ['database', "app\0"],
+            ['charset', "utf8mb4\0"],
+        ];
+
+        foreach ($cases as [$key, $value]) {
+            try {
+                new MySqlDriver([$key => $value] + $base);
+                $this->fail("Expected ConnectionException for {$key}");
+            } catch (ConnectionException $e) {
+                $this->assertSame('Database connection failed', $e->getMessage());
+                $this->assertSame(sprintf('Invalid character in config value "%s"', $key), $e->getDebugMessage());
+            }
+        }
+    }
+
     public function testThrowsExceptionWhenHostMissing(): void
     {
         $this->expectException(ConnectionException::class);

@@ -248,6 +248,34 @@ class PostgresDriverIntegrationTest extends TestCase
         $this->assertSame(1, $this->driver->table('test_raw_serial')->whereNotNull('seen_at')->count());
     }
 
+    /**
+     * libpq splits an unquoted connection string on whitespace: "x host=evil" used to redirect the
+     * connection. With quoted values it is just a database name that does not exist.
+     */
+    public function testWhitespaceInTheDatabaseNameCannotRedirectTheConnection(): void
+    {
+        try {
+            new PostgresDriver(['database' => 'x host=evil.invalid'] + self::getConfig());
+            $this->fail('Expected ConnectionException was not thrown');
+        } catch (ConnectionException $e) {
+            $this->assertStringContainsString('database "x host=evil.invalid" does not exist', (string) $e->getDebugMessage());
+        }
+    }
+
+    public function testDatabaseNamesWithSpacesAndApostrophesConnect(): void
+    {
+        foreach (['pdo wrapper', "pdo'wrapper"] as $name) {
+            $exists = $this->driver->query('SELECT 1 FROM pg_database WHERE datname = ?', [$name])->fetchColumn();
+            if ($exists === false) {
+                $this->driver->execute('CREATE DATABASE "' . str_replace('"', '""', $name) . '"');
+            }
+
+            $other = new PostgresDriver(['database' => $name] + self::getConfig());
+
+            $this->assertSame($name, $other->query('SELECT current_database()')->fetchColumn());
+        }
+    }
+
     public function testConnectionExceptionHasDebugMessage(): void
     {
         try {

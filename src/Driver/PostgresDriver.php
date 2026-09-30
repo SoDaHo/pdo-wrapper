@@ -49,11 +49,23 @@ class PostgresDriver extends AbstractDriver
             );
         }
 
+        // PDO hands the DSN to libpq, which also splits on whitespace: a "host=evil" inside a value would
+        // redirect the connection, credentials included. The values are therefore quoted the libpq way
+        // ('...', with \ and ' escaped); ";" (PDO's own separator) and NUL (truncates the DSN) are rejected.
+        foreach (['host' => $host, 'database' => $database] as $key => $value) {
+            if (str_contains((string) $value, ';') || str_contains((string) $value, "\0")) {
+                throw new ConnectionException(
+                    message: 'Database connection failed',
+                    debugMessage: sprintf('Invalid character in config value "%s"', $key)
+                );
+            }
+        }
+
         $dsn = sprintf(
-            'pgsql:host=%s;port=%d;dbname=%s',
-            $host,
+            "pgsql:host='%s';port=%d;dbname='%s'",
+            self::quoteForLibpq((string) $host),
             $port,
-            $database
+            self::quoteForLibpq((string) $database)
         );
 
         $defaultOptions = [
@@ -199,6 +211,15 @@ class PostgresDriver extends AbstractDriver
     protected function getDialect(): string
     {
         return QueryBuilder::DIALECT_PGSQL;
+    }
+
+    /**
+     * Escape a value for a single-quoted libpq connection parameter: backslash and apostrophe are
+     * prefixed with a backslash, everything else (spaces, "=", newlines) is then literal.
+     */
+    private static function quoteForLibpq(string $value): string
+    {
+        return str_replace(['\\', "'"], ['\\\\', "\\'"], $value);
     }
 
     /**

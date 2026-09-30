@@ -277,6 +277,25 @@ class TransactionTest extends TestCase
         $this->assertSame(1, $this->userCount($this->db));
     }
 
+    public function testInTransactionReflectsTheConnectionState(): void
+    {
+        $this->assertFalse($this->db->inTransaction());
+
+        $this->db->beginTransaction();
+        $this->assertTrue($this->db->inTransaction());
+        $this->db->commit();
+        $this->assertFalse($this->db->inTransaction());
+
+        $this->db->beginTransaction();
+        $this->db->rollback();
+        $this->assertFalse($this->db->inTransaction());
+
+        $this->db->transaction(function (DatabaseInterface $db): void {
+            $this->assertTrue($db->inTransaction());
+        });
+        $this->assertFalse($this->db->inTransaction());
+    }
+
     /**
      * Regression test: updateMultiple must rollback all changes on failure.
      *
