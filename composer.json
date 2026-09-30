@@ -29,6 +29,11 @@
       "Sodaho\\PdoWrapper\\Tests\\": "tests/"
     }
   },
+  "config": {
+    "platform": {
+      "php": "8.2.0"
+    }
+  },
   "scripts": {
     "test": "vendor/bin/phpunit",
     "test:sqlite": "vendor/bin/phpunit --exclude-group mysql --exclude-group postgres",

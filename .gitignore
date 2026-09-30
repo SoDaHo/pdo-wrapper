@@ -4,7 +4,6 @@
 .phpunit.result.cache
 .phpstan.cache/
 .php-cs-fixer.cache
-composer.lock
 .env
 .DS_Store
 .idea/
