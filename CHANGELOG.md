@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-09-30
+
 ### Added
 - Weekly dependency scan of `composer.lock` with osv-scanner (`dep-cve-scan.yml`).
 - `SECURITY.md` with the private reporting channel.
@@ -79,7 +81,8 @@
 - **CI**: GitHub Actions with PHP 8.2-8.5, MySQL 8.0/8.4, MariaDB 10.11/11.4, PostgreSQL 15/16/17.
 - **Quality**: PHPStan level 9, PHP-CS-Fixer (PSR-12).
 
-[Unreleased]: https://github.com/sodaho/pdo-wrapper/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/sodaho/pdo-wrapper/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/sodaho/pdo-wrapper/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/sodaho/pdo-wrapper/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/sodaho/pdo-wrapper/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/sodaho/pdo-wrapper/releases/tag/v1.0.0
