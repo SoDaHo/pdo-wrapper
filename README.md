@@ -293,7 +293,7 @@ $users = $db->table('users')
     ->whereRaw('LOWER(email) = ?', [$email])
     ->whereRaw('score > ? OR created_at < ?', [100, $cutoff])
     ->get();
-// SELECT * FROM "users" WHERE "status" = ? AND (LOWER(email) = ?) AND (score > ? OR created_at < ?)
+// SELECT * FROM "users" WHERE "status" = ? AND (LOWER(email) = ?) AND (score > ? OR created_at < ?)   (PostgreSQL quoting; backticks on MySQL/MariaDB and SQLite)
 ```
 
 ### Joins
@@ -374,7 +374,7 @@ $authors   = $db->table('posts')->groupBy('user_id')->having(Database::raw('COUN
 $revenue   = $db->table('orders')->distinct()->sum('amount');                      // SUM(DISTINCT amount)
 ```
 
-`sum()`, `avg()`, `min()` and `max()` combined with `groupBy()` throw a `QueryException`: one value per group is ambiguous, select the aggregate explicitly with `Database::raw()` and `get()` instead. `distinct()->count()` over a join needs named `select()` columns (or `count('column')`): a bare `*` or a wildcard next to other entries throws a `QueryException`, because the counted derived table would repeat column names (MySQL rejects that); a single `table.*` is fine, `Database::raw()` entries are not inspected. With `groupBy()`, only aliased `select()` entries (`'country as c'`, `Database::raw('LOWER(name) AS ln')`, `Database::raw('COUNT(*) AS n')`) stay in the counted query, so `groupBy('ln')` works everywhere and `having('n', '>', 1)` where the database accepts select aliases in `HAVING` (MySQL/MariaDB and SQLite, not PostgreSQL). `having()` without `groupBy()` treats the whole result as one group: `count()` returns its row count, and `distinct()` only applies to `count('column')` then.
+`sum()`, `avg()`, `min()` and `max()` combined with `groupBy()` throw a `QueryException`: one value per group is ambiguous, select the aggregate explicitly with `Database::raw()` and `get()` instead. `distinct()->count()` counts a derived table, which needs unique output names (MySQL rejects repeated ones): two columns named alike (`users.id`, `orders.id`), a wildcard next to other entries, or a bare `*` over a join throw a `QueryException` - alias the columns (`orders.id as order_id`) or use `count('column')`; a single `table.*` is fine, `Database::raw()` entries are not inspected. With `groupBy()`, only aliased `select()` entries (`'country as c'`, `Database::raw('LOWER(name) AS ln')`, `Database::raw('COUNT(*) AS n')`) stay in the counted query, so `groupBy('ln')` works everywhere and `having('n', '>', 1)` where the database accepts select aliases in `HAVING` (MySQL/MariaDB and SQLite, not PostgreSQL). `having()` without `groupBy()` treats the whole result as one group: `count()` returns its row count, and `distinct()` only applies to `count('column')` then.
 
 ### Insert, Update, Delete via Query Builder
 
@@ -404,7 +404,7 @@ $affected = $db->table('users')
     ->orderBy('name')
     ->toSql();
 
-// $sql = 'SELECT * FROM "users" WHERE "active" = ? ORDER BY "name" ASC'
+// $sql = 'SELECT * FROM "users" WHERE "active" = ? ORDER BY "name" ASC'   (PostgreSQL; MySQL/MariaDB and SQLite quote with backticks)
 // $params = [1]
 ```
 
@@ -425,7 +425,7 @@ $db->table('sessions')->where('expires_at', '<', $db->now())->delete();
 
 "Local" is the database session's time zone; SQLite takes it from the operating system, not from PHP's `date.timezone`. When PHP and the database may run in different zones, `utcNow()` is the unambiguous choice. Both are **zoneless** values, meant for `DATETIME`, `TIMESTAMP WITHOUT TIME ZONE` or `TEXT` columns: a zone-aware column (PostgreSQL `TIMESTAMPTZ`, MySQL `TIMESTAMP`) would interpret `utcNow()` in the session's time zone and store a shifted instant unless the session runs in UTC.
 
-Any `Database::raw()` expression works the same way as a **value** in `insert()`, `update()`, `where()`, `whereIn()`, `whereBetween()` and `having()`, in the CRUD methods and in the query builder alike. It is inlined into the SQL instead of being bound, which allows expressions on the row itself (for `LIKE` on PostgreSQL and SQLite the automatic `ESCAPE '\'` clause applies to raw patterns too):
+Any `Database::raw()` expression works the same way as a **value** in `insert()`, `update()`, `where()`, `whereIn()`, `whereBetween()` and `having()`, in the CRUD methods and in the query builder alike. It is inlined into the SQL instead of being bound, which allows expressions on the row itself (in `where()`, the automatic `ESCAPE '\'` clause of `LIKE` on PostgreSQL and SQLite applies to raw patterns too):
 
 ```php
 $db->update('counters', ['hits' => Database::raw('hits + 1')], ['id' => $id]);
@@ -616,7 +616,7 @@ $db->table('users')
 
 // Regular column names are automatically quoted and safe
 $db->table('users')
-    ->select(['id', 'name', 'email'])  // Becomes: "id", "name", "email"
+    ->select(['id', 'name', 'email'])  // Becomes: "id", "name", "email" (PostgreSQL) or `id`, `name`, `email` (MySQL/MariaDB, SQLite)
     ->get();
 ```
 
@@ -659,12 +659,13 @@ $db->table('products')
 
 This library is designed for simple, common use cases. The following features are **not supported**:
 
-- **OR conditions** - All `where()` calls are joined with AND. For OR conditions, use raw queries:
+- **Dedicated OR methods** - All `where*()` calls are joined with AND. An OR group goes into `whereRaw()` (values bound) or into a raw query:
   ```php
+  $db->table('users')->whereRaw('role = ? OR role = ?', ['admin', 'moderator'])->get();
   $db->query('SELECT * FROM users WHERE role = ? OR role = ?', ['admin', 'moderator']);
   ```
 
-- **Nested WHERE groups** - Complex conditions like `(A AND B) OR (C AND D)` require raw queries.
+- **Nested WHERE groups** - Complex conditions like `(A AND B) OR (C AND D)` go into one `whereRaw()` condition or a raw query.
 
 - **Subqueries** - Use raw queries for subqueries in SELECT, WHERE, or FROM clauses.
 
