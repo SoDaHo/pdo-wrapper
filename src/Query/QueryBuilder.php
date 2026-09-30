@@ -195,7 +195,7 @@ class QueryBuilder
      * Add a WHERE IN condition.
      *
      * @param string $column Column name
-     * @param array<int, mixed> $values Values to match
+     * @param array<array-key, mixed> $values Values to match (a RawExpression element is inlined)
      *
      * @throws QueryException When $values is empty
      */
@@ -222,7 +222,7 @@ class QueryBuilder
      * Add a WHERE NOT IN condition.
      *
      * @param string $column Column name
-     * @param array<int, mixed> $values Values to exclude
+     * @param array<array-key, mixed> $values Values to exclude (a RawExpression element is inlined)
      *
      * @throws QueryException When $values is empty
      */
@@ -249,7 +249,7 @@ class QueryBuilder
      * Add a WHERE BETWEEN condition.
      *
      * @param string $column Column name
-     * @param array<int, mixed> $values [min, max] values
+     * @param array<array-key, mixed> $values [min, max] values (a RawExpression bound is inlined)
      *
      * @throws QueryException When $values doesn't have exactly 2 elements
      */
@@ -276,7 +276,7 @@ class QueryBuilder
      * Add a WHERE NOT BETWEEN condition.
      *
      * @param string $column Column name
-     * @param array<int, mixed> $values [min, max] values to exclude
+     * @param array<array-key, mixed> $values [min, max] values to exclude (a RawExpression bound is inlined)
      *
      * @throws QueryException When $values doesn't have exactly 2 elements
      */

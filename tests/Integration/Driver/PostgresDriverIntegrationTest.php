@@ -211,6 +211,25 @@ class PostgresDriverIntegrationTest extends TestCase
     }
 
     /**
+     * now()/utcNow() are statement time, not transaction time: two statements a second apart in the
+     * same open transaction must differ (NOW()/LOCALTIMESTAMP would return the same value twice).
+     */
+    public function testNowIsStatementTimeNotTransactionTime(): void
+    {
+        $this->driver->execute('CREATE TEMPORARY TABLE test_stmt (id SERIAL PRIMARY KEY, local_at TIMESTAMP, utc_at TIMESTAMP)');
+        $this->driver->beginTransaction();
+        $first = $this->driver->insert('test_stmt', ['local_at' => $this->driver->now(), 'utc_at' => $this->driver->utcNow()]);
+        usleep(1100000);
+        $second = $this->driver->insert('test_stmt', ['local_at' => $this->driver->now(), 'utc_at' => $this->driver->utcNow()]);
+        $rows = $this->driver->findAll('test_stmt');
+        $this->driver->rollback();
+
+        $this->assertSame([1, 2], [$first, $second]);
+        $this->assertGreaterThan((string) $rows[0]['local_at'], (string) $rows[1]['local_at']);
+        $this->assertGreaterThan((string) $rows[0]['utc_at'], (string) $rows[1]['utc_at']);
+    }
+
+    /**
      * Raw values in insert() go through the same savepoint probe: both rows must be committed.
      */
     public function testRawInsertValuesInsideTransactionAreCommitted(): void
