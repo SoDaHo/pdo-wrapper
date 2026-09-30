@@ -899,35 +899,52 @@ class QueryBuilder
                     $value = $where['value'] ?? null;
                     // A RawExpression value is inlined, never bound (SECURITY: never pass user input to Database::raw())
                     if ($value instanceof RawExpression) {
-                        $clauses[] = $this->quoteIdentifier($column) . ' ' . $operator . ' ' . $value;
-                        break;
+                        $clause = $this->quoteIdentifier($column) . ' ' . $operator . ' ' . $value;
+                    } else {
+                        $clause = $this->quoteIdentifier($column) . ' ' . $operator . ' ?';
+                        $params[] = $value;
                     }
-                    $clause = $this->quoteIdentifier($column) . ' ' . $operator . ' ?';
                     // MySQL uses \ as default LIKE escape character, no ESCAPE clause needed.
-                    // PostgreSQL and SQLite need an explicit ESCAPE clause.
+                    // PostgreSQL and SQLite need an explicit ESCAPE clause - for raw patterns too, so the
+                    // pattern semantics do not depend on how the value was given.
                     if (($operator === 'LIKE' || $operator === 'NOT LIKE') && $this->quoteChar !== '`') {
                         $clause .= " ESCAPE '\\'";
                     }
                     $clauses[] = $clause;
-                    $params[] = $value;
                     break;
 
                 case 'in':
+                    // array_values(): string keys would be renumbered by the later merge and could shadow each other
                     /** @var array<int, mixed> $values */
-                    $values = is_array($where['values'] ?? null) ? $where['values'] : [];
-                    $placeholders = implode(', ', array_fill(0, count($values), '?'));
+                    $values = is_array($where['values'] ?? null) ? array_values($where['values']) : [];
+                    $slots = [];
+                    foreach ($values as $item) {
+                        if ($item instanceof RawExpression) {
+                            $slots[] = (string) $item;
+                            continue;
+                        }
+                        $slots[] = '?';
+                        $params[] = $item;
+                    }
                     $inOperator = ($where['not'] ?? false) ? 'NOT IN' : 'IN';
-                    $clauses[] = $this->quoteIdentifier($column) . " {$inOperator} ({$placeholders})";
-                    $params = array_merge($params, $values);
+                    $clauses[] = $this->quoteIdentifier($column) . " {$inOperator} (" . implode(', ', $slots) . ')';
                     break;
 
                 case 'between':
                     $betweenOperator = ($where['not'] ?? false) ? 'NOT BETWEEN' : 'BETWEEN';
+                    // array_values(): ['min' => 1, 'max' => 2] must not silently become NULL AND NULL
                     /** @var array<int, mixed> $betweenValues */
-                    $betweenValues = is_array($where['values'] ?? null) ? $where['values'] : [null, null];
-                    $clauses[] = $this->quoteIdentifier($column) . " {$betweenOperator} ? AND ?";
-                    $params[] = $betweenValues[0] ?? null;
-                    $params[] = $betweenValues[1] ?? null;
+                    $betweenValues = is_array($where['values'] ?? null) ? array_values($where['values']) : [null, null];
+                    $bounds = [];
+                    foreach ([$betweenValues[0] ?? null, $betweenValues[1] ?? null] as $bound) {
+                        if ($bound instanceof RawExpression) {
+                            $bounds[] = (string) $bound;
+                            continue;
+                        }
+                        $bounds[] = '?';
+                        $params[] = $bound;
+                    }
+                    $clauses[] = $this->quoteIdentifier($column) . " {$betweenOperator} {$bounds[0]} AND {$bounds[1]}";
                     break;
 
                 case 'null':

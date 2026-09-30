@@ -83,6 +83,25 @@ class MySqlDriverIntegrationTest extends TestCase
         $this->assertSame(1, $this->driver->table('test_now')->where('utc_at', '<=', $this->driver->utcNow())->count());
     }
 
+    /**
+     * now() follows the session's time zone, utcNow() does not: with the session two hours ahead
+     * of UTC they must differ by exactly that offset (a now() that secretly returns UTC would fail here).
+     */
+    public function testNowFollowsTheSessionTimeZoneAndUtcNowDoesNot(): void
+    {
+        $this->driver->execute("SET time_zone = '+02:00'");
+        $this->driver->execute('CREATE TEMPORARY TABLE test_tz (id INT AUTO_INCREMENT PRIMARY KEY, local_at DATETIME, utc_at DATETIME)');
+
+        $id = $this->driver->insert('test_tz', ['local_at' => $this->driver->now(), 'utc_at' => $this->driver->utcNow()]);
+        $row = $this->driver->findOne('test_tz', ['id' => $id]);
+
+        $this->assertNotNull($row);
+        $local = (int) strtotime((string) $row['local_at'] . ' UTC');
+        $utc = (int) strtotime((string) $row['utc_at'] . ' UTC');
+        $this->assertEqualsWithDelta(7200, $local - $utc, 2);
+        $this->assertEqualsWithDelta(time(), $utc, 5);
+    }
+
     public function testConnectionUsesUtf8mb4(): void
     {
         $stmt = $this->driver->query("SHOW VARIABLES LIKE 'character_set_client'");

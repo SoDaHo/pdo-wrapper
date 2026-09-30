@@ -3,10 +3,13 @@
 ## [Unreleased]
 
 ### Added
-- `now()` and `utcNow()` on every driver and in `DatabaseInterface`: the database's current local or UTC timestamp as a raw expression in the driver's dialect (MySQL `NOW()`/`UTC_TIMESTAMP()`, PostgreSQL `LOCALTIMESTAMP(0)`/`CAST(NOW() AT TIME ZONE 'UTC' AS TIMESTAMP(0))`, SQLite `datetime('now', 'localtime')`/`datetime('now')`), for use as a value in `insert()`, `update()` and `where()` (#1).
+- `now()` and `utcNow()` on every driver and in `DatabaseInterface`: the database's current local or UTC timestamp at statement time, to the second, as a raw expression in the driver's dialect (MySQL `NOW()`/`UTC_TIMESTAMP()`, PostgreSQL `CAST(statement_timestamp() AS TIMESTAMP(0))`/`CAST(statement_timestamp() AT TIME ZONE 'UTC' AS TIMESTAMP(0))`, SQLite `datetime('now', 'localtime')`/`datetime('now')`), for use as a value in `insert()`, `update()` and `where()` (#1). Both are zoneless values: use them with `DATETIME`/`TIMESTAMP WITHOUT TIME ZONE`/`TEXT` columns; a zone-aware column (PostgreSQL `TIMESTAMPTZ`, MySQL `TIMESTAMP`) interprets `utcNow()` in the session's time zone. Migration note for the rare direct implementation of `DatabaseInterface`: it must add both methods (drivers extending `AbstractDriver` inherit them).
 
 ### Changed
-- A `Database::raw()` expression given as a **value** in `insert()`, `update()`, `where()` or `having()` (drivers and query builder) is inlined into the SQL instead of being bound as a string. Before, such a value was stored or compared literally as text; `raw()` in `select()` lists is unchanged. As with every raw expression: never build it from user input.
+- A `Database::raw()` expression given as a **value** in `insert()`, `update()`, `where()`, `whereIn()`, `whereBetween()` or `having()` (drivers and query builder) is inlined into the SQL instead of being bound as a string. Before, such a value was stored or compared literally as text; `raw()` in `select()` lists is unchanged. The automatic `ESCAPE '\'` clause of `LIKE` on PostgreSQL and SQLite applies to raw patterns too. As with every raw expression: never build it from user input.
+
+### Fixed
+- `whereIn()` and `whereBetween()` with string-keyed arrays (e.g. `['min' => 1, 'max' => 5]`): the keys were renumbered or read as index 0/1, so `whereBetween()` silently matched nothing and `whereIn()` could bind the wrong values.
 
 ## [1.1.1] - 2026-09-30
 

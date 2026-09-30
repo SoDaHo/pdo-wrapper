@@ -47,16 +47,20 @@ interface DatabaseInterface
     public function getPdo(): PDO;
 
     /**
-     * Current date and time of the database in local time, as a raw SQL expression for
-     * insert()/update()/where() values: MySQL `NOW()`, PostgreSQL `LOCALTIMESTAMP(0)`,
-     * SQLite `datetime('now', 'localtime')`. "Local" is the session's or server's time zone
-     * (SQLite: the operating system's), not PHP's date.timezone.
+     * Current date and time of the database in local time at statement time, to the second, as a
+     * raw SQL expression for insert()/update()/where() values: MySQL `NOW()`, PostgreSQL
+     * `CAST(statement_timestamp() AS TIMESTAMP(0))`, SQLite `datetime('now', 'localtime')`.
+     * "Local" is the session's or server's time zone (SQLite: the operating system's), not PHP's
+     * date.timezone. A zoneless value: meant for DATETIME / TIMESTAMP WITHOUT TIME ZONE / TEXT columns.
      */
     public function now(): Query\RawExpression;
 
     /**
-     * Current UTC date and time as a raw SQL expression: MySQL `UTC_TIMESTAMP()`, PostgreSQL
-     * `CAST(NOW() AT TIME ZONE 'UTC' AS TIMESTAMP(0))`, SQLite `datetime('now')`.
+     * Current UTC date and time at statement time, to the second, as a raw SQL expression:
+     * MySQL `UTC_TIMESTAMP()`, PostgreSQL `CAST(statement_timestamp() AT TIME ZONE 'UTC' AS TIMESTAMP(0))`,
+     * SQLite `datetime('now')`. A zoneless value: a zone-aware column (PostgreSQL TIMESTAMPTZ,
+     * MySQL TIMESTAMP) would interpret it in the session's time zone; use DATETIME / TIMESTAMP
+     * WITHOUT TIME ZONE / TEXT columns, or a UTC session.
      */
     public function utcNow(): Query\RawExpression;
 

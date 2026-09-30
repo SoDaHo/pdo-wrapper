@@ -190,6 +190,45 @@ class PostgresDriverIntegrationTest extends TestCase
         $this->assertSame(1, $this->driver->table('test_now')->where('utc_at', '<=', $this->driver->utcNow())->count());
     }
 
+    /**
+     * now() follows the session's time zone, utcNow() does not: with the session two hours ahead
+     * of UTC they must differ by exactly that offset (a now() that secretly returns UTC would fail here).
+     */
+    public function testNowFollowsTheSessionTimeZoneAndUtcNowDoesNot(): void
+    {
+        // INTERVAL form: ISO sign (east positive). A bare '+02:00' would be read POSIX-style, i.e. west of UTC.
+        $this->driver->execute("SET TIME ZONE INTERVAL '+02:00' HOUR TO MINUTE");
+        $this->driver->execute('CREATE TEMPORARY TABLE test_tz (id SERIAL PRIMARY KEY, local_at TIMESTAMP, utc_at TIMESTAMP)');
+
+        $id = $this->driver->insert('test_tz', ['local_at' => $this->driver->now(), 'utc_at' => $this->driver->utcNow()]);
+        $row = $this->driver->findOne('test_tz', ['id' => $id]);
+
+        $this->assertNotNull($row);
+        $local = (int) strtotime((string) $row['local_at'] . ' UTC');
+        $utc = (int) strtotime((string) $row['utc_at'] . ' UTC');
+        $this->assertEqualsWithDelta(7200, $local - $utc, 2);
+        $this->assertEqualsWithDelta(time(), $utc, 5);
+    }
+
+    /**
+     * Raw values in insert() go through the same savepoint probe: both rows must be committed.
+     */
+    public function testRawInsertValuesInsideTransactionAreCommitted(): void
+    {
+        $this->driver->execute('CREATE TEMPORARY TABLE test_raw_serial (id SERIAL PRIMARY KEY, seen_at TIMESTAMP)');
+        $this->driver->execute('CREATE TEMPORARY TABLE test_raw_tokens (token TEXT PRIMARY KEY, seen_at TIMESTAMP)');
+
+        $ids = $this->driver->transaction(fn (DatabaseInterface $db): array => [
+            $db->insert('test_raw_tokens', ['token' => 'tok', 'seen_at' => $db->utcNow()]),
+            $db->insert('test_raw_serial', ['seen_at' => $db->now()]),
+        ]);
+
+        $this->assertSame([0, 1], $ids);
+        $this->assertFalse($this->driver->getPdo()->inTransaction());
+        $this->assertSame(1, $this->driver->table('test_raw_tokens')->whereNotNull('seen_at')->count());
+        $this->assertSame(1, $this->driver->table('test_raw_serial')->whereNotNull('seen_at')->count());
+    }
+
     public function testConnectionExceptionHasDebugMessage(): void
     {
         try {

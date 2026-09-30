@@ -196,18 +196,21 @@ class PostgresDriver extends AbstractDriver
     }
 
     /**
-     * Current date and time in the session's time zone, to the second: `LOCALTIMESTAMP(0)`.
+     * Current date and time in the session's time zone at statement time, to the second.
+     *
+     * statement_timestamp() rather than NOW()/LOCALTIMESTAMP: those return the transaction's start
+     * time, which would drift from MySQL and SQLite inside long transactions.
      */
     public function now(): RawExpression
     {
-        return new RawExpression('LOCALTIMESTAMP(0)');
+        return new RawExpression('CAST(statement_timestamp() AS TIMESTAMP(0))');
     }
 
     /**
-     * Current UTC date and time, to the second.
+     * Current UTC date and time at statement time, to the second, as a zoneless value.
      */
     public function utcNow(): RawExpression
     {
-        return new RawExpression("CAST(NOW() AT TIME ZONE 'UTC' AS TIMESTAMP(0))");
+        return new RawExpression("CAST(statement_timestamp() AT TIME ZONE 'UTC' AS TIMESTAMP(0))");
     }
 }

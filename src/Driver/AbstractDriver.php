@@ -768,9 +768,9 @@ abstract class AbstractDriver implements DatabaseInterface
     /**
      * Current date and time as a raw SQL expression for insert()/update()/where() values.
      *
-     * The shipped drivers return their dialect's expression (MySQL `NOW()`, PostgreSQL
-     * `LOCALTIMESTAMP(0)`, SQLite `datetime('now', 'localtime')`); this default is the SQL
-     * standard `CURRENT_TIMESTAMP`. Override in a custom driver.
+     * The shipped drivers return their dialect's statement-time expression (MySQL `NOW()`,
+     * PostgreSQL `CAST(statement_timestamp() AS TIMESTAMP(0))`, SQLite `datetime('now', 'localtime')`);
+     * this default is the SQL standard `CURRENT_TIMESTAMP`. Override in a custom driver.
      */
     public function now(): RawExpression
     {
@@ -778,11 +778,12 @@ abstract class AbstractDriver implements DatabaseInterface
     }
 
     /**
-     * Current UTC date and time as a raw SQL expression.
+     * Current UTC date and time as a raw SQL expression (a zoneless value).
      *
      * The shipped drivers return their dialect's expression (MySQL `UTC_TIMESTAMP()`, PostgreSQL
-     * `CAST(NOW() AT TIME ZONE 'UTC' AS TIMESTAMP(0))`, SQLite `datetime('now')`); this default is
-     * `CURRENT_TIMESTAMP`, which is UTC only where the server runs in UTC. Override in a custom driver.
+     * `CAST(statement_timestamp() AT TIME ZONE 'UTC' AS TIMESTAMP(0))`, SQLite `datetime('now')`);
+     * this default is `CURRENT_TIMESTAMP`, which is UTC only when the dialect evaluates it in UTC
+     * and the session's time zone is UTC. Override in a custom driver.
      */
     public function utcNow(): RawExpression
     {

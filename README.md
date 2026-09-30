@@ -349,7 +349,7 @@ $affected = $db->table('users')
 
 ## Timestamps and Raw Values
 
-`now()` and `utcNow()` return the database's current time as a raw SQL expression, so every driver uses its own dialect and the clock of the database server, not PHP's:
+`now()` and `utcNow()` return the database's current time (at statement time, to the second) as a raw SQL expression, so every driver uses its own dialect and the clock of the database server, not PHP's:
 
 ```php
 $db->insert('logs', ['message' => 'started', 'created_at' => $db->utcNow()]);
@@ -359,12 +359,12 @@ $db->table('sessions')->where('expires_at', '<', $db->now())->delete();
 | Driver | `now()` (local time) | `utcNow()` |
 |---|---|---|
 | MySQL / MariaDB | `NOW()` | `UTC_TIMESTAMP()` |
-| PostgreSQL | `LOCALTIMESTAMP(0)` | `CAST(NOW() AT TIME ZONE 'UTC' AS TIMESTAMP(0))` |
+| PostgreSQL | `CAST(statement_timestamp() AS TIMESTAMP(0))` | `CAST(statement_timestamp() AT TIME ZONE 'UTC' AS TIMESTAMP(0))` |
 | SQLite | `datetime('now', 'localtime')` | `datetime('now')` |
 
-"Local" is the database session's time zone; SQLite takes it from the operating system, not from PHP's `date.timezone`. When PHP and the database may run in different zones, `utcNow()` is the unambiguous choice.
+"Local" is the database session's time zone; SQLite takes it from the operating system, not from PHP's `date.timezone`. When PHP and the database may run in different zones, `utcNow()` is the unambiguous choice. Both are **zoneless** values, meant for `DATETIME`, `TIMESTAMP WITHOUT TIME ZONE` or `TEXT` columns: a zone-aware column (PostgreSQL `TIMESTAMPTZ`, MySQL `TIMESTAMP`) would interpret `utcNow()` in the session's time zone and store a shifted instant unless the session runs in UTC.
 
-Any `Database::raw()` expression works the same way as a **value** in `insert()`, `update()`, `where()` and `having()`, in the CRUD methods and in the query builder alike. It is inlined into the SQL instead of being bound, which allows expressions on the row itself:
+Any `Database::raw()` expression works the same way as a **value** in `insert()`, `update()`, `where()`, `whereIn()`, `whereBetween()` and `having()`, in the CRUD methods and in the query builder alike. It is inlined into the SQL instead of being bound, which allows expressions on the row itself (for `LIKE` on PostgreSQL and SQLite the automatic `ESCAPE '\'` clause applies to raw patterns too):
 
 ```php
 $db->update('counters', ['hits' => Database::raw('hits + 1')], ['id' => $id]);
@@ -536,7 +536,7 @@ $db->table('mydb.users')->where('id', 1)->first();
 
 This library protects against SQL injection through:
 
-- **Prepared statements** for all values (WHERE, INSERT, UPDATE)
+- **Prepared statements** for all values (WHERE, INSERT, UPDATE) - the one exception is a `Database::raw()` expression given as a value, which is inlined by design
 - **Identifier quoting** for all column and table names
 - **Operator whitelist** validation (only `=`, `!=`, `<>`, `<`, `>`, `<=`, `>=`, `LIKE`, `NOT LIKE`, `IS`, `IS NOT`)
 

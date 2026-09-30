@@ -44,6 +44,65 @@ class RawValueTest extends TestCase
         $this->assertCount(1, $this->db->table('counters')->where('hits', '>', Database::raw('1 + 1'))->get());
     }
 
+    public function testBuilderWhereInAndWhereBetweenInlineRawValues(): void
+    {
+        [$sql, $params] = $this->db->table('counters')
+            ->whereIn('hits', [1, Database::raw('2 + 3'), 9])
+            ->whereBetween('hits', [Database::raw('0'), 7])
+            ->toSql();
+
+        $this->assertSame('SELECT * FROM "counters" WHERE "hits" IN (?, 2 + 3, ?) AND "hits" BETWEEN 0 AND ?', $sql);
+        $this->assertSame([1, 9, 7], $params);
+        $this->assertSame(2, $this->db->table('counters')->whereIn('hits', [1, Database::raw('2 + 3'), 9])->count());
+        $this->assertSame(1, $this->db->table('counters')->whereBetween('hits', [Database::raw('2'), 9])->count());
+    }
+
+    /**
+     * Regression test: string keys in whereIn()/whereBetween() values were renumbered (or read as
+     * index 0/1 and became NULL), so whereBetween(['min' => 1, 'max' => 5]) silently matched nothing.
+     */
+    public function testBuilderWhereInAndWhereBetweenAcceptStringKeys(): void
+    {
+        $this->assertSame(2, $this->db->table('counters')->whereBetween('hits', ['min' => 1, 'max' => 5])->count());
+        $this->assertSame(2, $this->db->table('counters')->whereIn('hits', ['a' => 1, 'b' => 5])->count());
+    }
+
+    /**
+     * Bound params must keep their SQL order when raw values are mixed in: SET before WHERE, WHERE before HAVING.
+     */
+    public function testMixedRawAndBoundValuesKeepParameterOrder(): void
+    {
+        [$sql, $params] = $this->db->table('counters')
+            ->select(['name', Database::raw('SUM(hits) AS total')])
+            ->where('hits', '>', Database::raw('0'))
+            ->where('name', 'b')
+            ->groupBy('name')
+            ->having(Database::raw('SUM(hits)'), '>=', 5)
+            ->toSql();
+        $this->assertSame('SELECT "name", SUM(hits) AS total FROM "counters" WHERE "hits" > 0 AND "name" = ? GROUP BY "name" HAVING SUM(hits) >= ?', $sql);
+        $this->assertSame(['b', 5], $params);
+
+        $affected = $this->db->update('counters', ['hits' => Database::raw('hits + 1'), 'name' => 'z'], ['id' => 2]);
+        $this->assertSame(1, $affected);
+        $this->assertSame(['id' => 2, 'name' => 'z', 'hits' => 6, 'seen_at' => null], $this->db->findOne('counters', ['id' => 2]));
+
+        $affected = $this->db->table('counters')->where('name', 'z')->update(['hits' => Database::raw('hits * 2'), 'name' => 'y']);
+        $this->assertSame(1, $affected);
+        $this->assertSame(12, $this->db->findOne('counters', ['name' => 'y'])['hits'] ?? null);
+    }
+
+    public function testRawLikePatternKeepsTheEscapeClause(): void
+    {
+        [$sql, $params] = $this->db->table('counters')->whereLike('name', '100%')->toSql();
+        $this->assertSame('SELECT * FROM "counters" WHERE "name" LIKE ? ESCAPE \'\\\'', $sql);
+        $this->assertSame(['100%'], $params);
+
+        [$sql, $params] = $this->db->table('counters')->where('name', 'LIKE', Database::raw("'a' || '%'"))->toSql();
+        $this->assertSame('SELECT * FROM "counters" WHERE "name" LIKE \'a\' || \'%\' ESCAPE \'\\\'', $sql);
+        $this->assertSame([], $params);
+        $this->assertSame(1, $this->db->table('counters')->where('name', 'LIKE', Database::raw("'a' || '%'"))->count());
+    }
+
     public function testBuilderHavingInlinesRawValue(): void
     {
         $rows = $this->db->table('counters')
