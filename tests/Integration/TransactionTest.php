@@ -126,6 +126,75 @@ class TransactionTest extends TestCase
     }
 
     /**
+     * Regression test: a throwing 'transaction.begin' hook left the transaction it was told about open.
+     * It is now rolled back on raw PDO, without 'transaction.rollback' hooks, and the hook's exception
+     * reaches the caller unchanged.
+     */
+    public function testThrowingBeginHookRollsBackTheOpenedTransaction(): void
+    {
+        $rollbackHookCalls = 0;
+        $this->db->on('transaction.begin', function (): void {
+            throw new RuntimeException('begin hook failed');
+        });
+        $this->db->on('transaction.rollback', function () use (&$rollbackHookCalls): void {
+            $rollbackHookCalls++;
+        });
+
+        try {
+            $this->db->transaction(function (DatabaseInterface $db): void {
+                $db->execute('INSERT INTO users (name) VALUES (?)', ['Max']);
+            });
+            $this->fail('Expected RuntimeException was not thrown');
+        } catch (RuntimeException $e) {
+            $this->assertSame('begin hook failed', $e->getMessage());
+        }
+
+        $this->assertFalse($this->db->getPdo()->inTransaction());
+        $this->assertSame(0, $rollbackHookCalls);
+        $this->assertSame(0, $this->userCount($this->db));
+    }
+
+    public function testBeginHookPdoExceptionIsStillATransactionExceptionAndRollsBack(): void
+    {
+        $this->db->on('transaction.begin', function (): void {
+            throw new PDOException('begin hook pdo failure');
+        });
+
+        try {
+            $this->db->beginTransaction();
+            $this->fail('Expected TransactionException was not thrown');
+        } catch (TransactionException $e) {
+            $this->assertSame('Failed to begin transaction', $e->getMessage());
+            $this->assertInstanceOf(PDOException::class, $e->getPrevious());
+        }
+
+        $this->assertFalse($this->db->getPdo()->inTransaction());
+    }
+
+    public function testConnectionIsUsableAfterThrowingBeginHook(): void
+    {
+        $attempts = 0;
+        $this->db->on('transaction.begin', function () use (&$attempts): void {
+            if (++$attempts === 1) {
+                throw new RuntimeException('begin hook failed once');
+            }
+        });
+
+        try {
+            $this->db->beginTransaction();
+        } catch (RuntimeException) {
+            // Expected on the first attempt
+        }
+
+        $this->db->beginTransaction();
+        $this->db->execute('INSERT INTO users (name) VALUES (?)', ['Max']);
+        $this->db->commit();
+
+        $this->assertSame(2, $attempts);
+        $this->assertSame(1, $this->userCount($this->db));
+    }
+
+    /**
      * Regression test: updateMultiple must rollback all changes on failure.
      *
      * Previously, updateMultiple had no transaction wrapper, causing partial

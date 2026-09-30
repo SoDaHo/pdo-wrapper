@@ -49,7 +49,11 @@ interface DatabaseInterface
     /**
      * Begin a transaction.
      *
-     * @throws Exception\TransactionException
+     * A throwing 'transaction.begin' listener does not leave the new transaction open: it is rolled
+     * back directly (without 'transaction.rollback' listeners) and the listener's exception is re-thrown.
+     *
+     * @throws Exception\TransactionException When the transaction cannot be started, or a listener threw a PDOException
+     * @throws \Throwable Re-throws any other exception of a 'transaction.begin' listener
      */
     public function beginTransaction(): void;
 
@@ -98,9 +102,10 @@ interface DatabaseInterface
      *
      * Events: 'query', 'error', 'transaction.begin', 'transaction.commit', 'transaction.rollback'
      *
-     * A throwing hook stops the remaining hooks of its event, except for 'transaction.commit':
-     * those listeners are independent, all of them run after the commit, and their failures
-     * arrive together in a CommitHookException. Dependent steps belong in one listener.
+     * A throwing hook stops the remaining hooks of its event (for 'transaction.begin' the new
+     * transaction is rolled back first), except for 'transaction.commit': those listeners are
+     * independent, all of them run after the commit, and their failures arrive together in a
+     * CommitHookException. Dependent steps belong in one listener.
      * Only if a transaction left open by a listener cannot be rolled back (or the connection
      * state cannot be read) are the remaining commit listeners skipped (listed as failures).
      *

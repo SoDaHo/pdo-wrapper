@@ -130,7 +130,9 @@ abstract class AbstractDriver implements DatabaseInterface
     /**
      * Begin a transaction.
      *
-     * Triggers 'transaction.begin' hook on success.
+     * Triggers 'transaction.begin' hook on success. A throwing hook must not leave the transaction
+     * it was told about open: it is rolled back on raw PDO (no 'transaction.rollback' hooks, nothing
+     * was written) and the hook's exception reaches the caller, a PDOException as TransactionException.
      *
      * @throws TransactionException On failure
      */
@@ -138,7 +140,6 @@ abstract class AbstractDriver implements DatabaseInterface
     {
         try {
             $this->pdo->beginTransaction();
-            $this->trigger('transaction.begin', []);
         } catch (PDOException $e) {
             throw new TransactionException(
                 message: 'Failed to begin transaction',
@@ -146,6 +147,36 @@ abstract class AbstractDriver implements DatabaseInterface
                 previous: $e,
                 debugMessage: $e->getMessage()
             );
+        }
+
+        try {
+            $this->trigger('transaction.begin', []);
+        } catch (PDOException $e) {
+            $this->rollbackRawQuietly();
+            throw new TransactionException(
+                message: 'Failed to begin transaction',
+                code: (int)$e->getCode(),
+                previous: $e,
+                debugMessage: $e->getMessage()
+            );
+        } catch (Throwable $e) {
+            $this->rollbackRawQuietly();
+            throw $e;
+        }
+    }
+
+    /**
+     * Roll back on raw PDO if a transaction is open, without 'transaction.rollback' hooks and ignoring
+     * failures: the exception that caused this is more important for debugging.
+     */
+    private function rollbackRawQuietly(): void
+    {
+        try {
+            if ($this->pdo->inTransaction()) {
+                $this->pdo->rollBack();
+            }
+        } catch (Throwable) {
+            // Rollback failed, but the original exception is more important for debugging
         }
     }
 

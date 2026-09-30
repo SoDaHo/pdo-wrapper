@@ -438,7 +438,7 @@ $db->on('transaction.commit', fn() => print "Transaction committed\n");
 $db->on('transaction.rollback', fn() => print "Transaction rolled back\n");
 ```
 
-For `query`, `error` and `transaction.begin`, a throwing hook stops the remaining hooks of its event and its exception reaches the caller. A throwing `transaction.rollback` hook does the same on a manual `rollback()`, but is ignored during the automatic rollback in `transaction()` and `updateMultiple()` (the original exception is re-thrown). `transaction.commit` hooks run after the commit and cannot undo it, so they work differently:
+For `query`, `error` and `transaction.begin`, a throwing hook stops the remaining hooks of its event and its exception reaches the caller; a throwing `transaction.begin` hook also rolls the transaction it was told about back first (directly, without `transaction.rollback` hooks). A throwing `transaction.rollback` hook does the same on a manual `rollback()`, but is ignored during the automatic rollback in `transaction()` and `updateMultiple()` (the original exception is re-thrown). `transaction.commit` hooks run after the commit and cannot undo it, so they work differently:
 
 - **All of them run**, even if one throws (only exception: see the last point). Keep them independent: steps that depend on each other belong in one hook.
 - **Failures are reported together** as `CommitHookException`: `getPrevious()` is the first failure, `$e->failures` lists all of them in hook order.

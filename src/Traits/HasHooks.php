@@ -8,7 +8,8 @@ namespace Sodaho\PdoWrapper\Traits;
  * Provides event hook functionality for database operations.
  *
  * "Fail Hard" implementation: Exceptions in hooks bubble up to the caller; the first failing
- * hook stops the remaining ones. Exception: 'transaction.commit' listeners run after the commit,
+ * hook stops the remaining ones (a failing 'transaction.begin' hook also rolls the new transaction
+ * back, see AbstractDriver). Exception: 'transaction.commit' listeners run after the commit,
  * so all of them run and their failures arrive together in a CommitHookException - unless a
  * transaction left open by a listener cannot be rolled back (or the connection state cannot be
  * read); the remaining listeners are then skipped and listed as failures (see AbstractDriver).
