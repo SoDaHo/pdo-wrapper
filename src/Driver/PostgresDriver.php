@@ -78,12 +78,13 @@ class PostgresDriver extends AbstractDriver
      * Insert a row and return the last insert ID.
      *
      * Uses PostgreSQL sequence naming convention ({table}_id_seq) for reliable
-     * ID retrieval. Returns 0 for tables without auto-increment (composite PKs, UUIDs).
+     * ID retrieval. Returns 0 for tables without auto-increment (composite PKs, UUIDs)
+     * and for rows inserted with an explicit id (the sequence was not used).
      *
      * @param string $table Table name (supports schema.table format)
      * @param array<string, mixed> $data Column => value pairs
      *
-     * @throws QueryException When $data is empty or query fails
+     * @throws QueryException When $data is empty, the query fails, or the savepoint around the ID probe fails
      *
      * @return int|string Last insert ID, or 0 if table has no serial column
      */
@@ -111,15 +112,57 @@ class PostgresDriver extends AbstractDriver
         // Strip schema prefix for sequence name (e.g. "public.users" -> "users")
         $baseTable = str_contains($table, '.') ? substr($table, strrpos($table, '.') + 1) : $table;
 
-        try {
-            $id = $this->pdo->lastInsertId($baseTable . '_id_seq');
-            if ($id !== false && $id !== '' && $id !== '0') {
-                return (int) $id;
+        return $this->sequenceValue($baseTable . '_id_seq');
+    }
+
+    /**
+     * Read the sequence's current value, or 0 if the probe fails: no such sequence (composite or
+     * UUID key) or nextval() not called in this session (explicit id).
+     *
+     * A failing currval() aborts the surrounding transaction, and the later COMMIT would silently
+     * become a ROLLBACK. Inside a transaction the probe therefore runs in a savepoint - on raw PDO,
+     * so that no 'query' hook sees the savepoint statements.
+     *
+     * @throws QueryException When the savepoint cannot be set, rolled back or released
+     */
+    private function sequenceValue(string $sequence): int
+    {
+        if (!$this->pdo->inTransaction()) {
+            try {
+                return $this->currentValue($sequence);
+            } catch (PDOException) {
+                return 0;
             }
-        } catch (\PDOException) {
-            // No sequence for this table (composite PK, UUID PK, etc.)
         }
 
-        return 0;
+        try {
+            $this->pdo->exec('SAVEPOINT pdo_wrapper_insert_id');
+            try {
+                $id = $this->currentValue($sequence);
+            } catch (PDOException) {
+                $this->pdo->exec('ROLLBACK TO SAVEPOINT pdo_wrapper_insert_id');
+                $id = 0;
+            }
+            $this->pdo->exec('RELEASE SAVEPOINT pdo_wrapper_insert_id');
+        } catch (PDOException $e) {
+            throw new QueryException(
+                message: 'Insert failed',
+                code: (int)$e->getCode(),
+                previous: $e,
+                debugMessage: 'Savepoint around the insert ID probe failed: ' . $e->getMessage()
+            );
+        }
+
+        return $id;
+    }
+
+    /**
+     * @throws PDOException When the sequence does not exist or has no current value in this session
+     */
+    private function currentValue(string $sequence): int
+    {
+        $id = $this->pdo->lastInsertId($sequence);
+
+        return ($id !== false && $id !== '' && $id !== '0') ? (int) $id : 0;
     }
 }

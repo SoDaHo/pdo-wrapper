@@ -123,6 +123,42 @@ class PostgresDriverIntegrationTest extends TestCase
         $this->assertSame(0, $id);
     }
 
+    /**
+     * Regression test: the failing currval() probe for a table without {table}_id_seq aborted the
+     * surrounding transaction, so the later COMMIT silently became a ROLLBACK and nothing was stored.
+     */
+    public function testInsertWithoutSequenceInsideTransactionKeepsTheTransaction(): void
+    {
+        $this->driver->execute('CREATE TEMPORARY TABLE test_tx_tokens (token TEXT PRIMARY KEY, name TEXT)');
+        $this->driver->execute('CREATE TEMPORARY TABLE test_tx_serial (id SERIAL PRIMARY KEY, name TEXT)');
+
+        $ids = $this->driver->transaction(fn (DatabaseInterface $db): array => [
+            $db->insert('test_tx_tokens', ['token' => 'tok', 'name' => 'first']),
+            $db->insert('test_tx_serial', ['name' => 'second']),
+        ]);
+
+        $this->assertSame([0, 1], $ids);
+        $this->assertFalse($this->driver->getPdo()->inTransaction());
+        $this->assertSame(1, $this->driver->table('test_tx_tokens')->count());
+        $this->assertSame(1, $this->driver->table('test_tx_serial')->count());
+    }
+
+    /**
+     * currval() is undefined until nextval() ran in this session: an explicit id skips the sequence,
+     * the probe fails, and the row must still be committed.
+     */
+    public function testInsertWithExplicitIdInsideTransactionKeepsTheTransaction(): void
+    {
+        $this->driver->execute('CREATE TEMPORARY TABLE test_tx_explicit (id SERIAL PRIMARY KEY, name TEXT)');
+
+        $id = $this->driver->transaction(
+            fn (DatabaseInterface $db): int|string => $db->insert('test_tx_explicit', ['id' => 1000, 'name' => 'explicit'])
+        );
+
+        $this->assertSame(0, $id);
+        $this->assertNotNull($this->driver->findOne('test_tx_explicit', ['id' => 1000]));
+    }
+
     public function testConnectionExceptionHasDebugMessage(): void
     {
         try {

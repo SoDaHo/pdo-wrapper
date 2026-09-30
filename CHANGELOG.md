@@ -10,6 +10,9 @@
 - CI: every action is pinned to a commit SHA and the job container to its image digest; the job token is read-only.
 - `composer.lock` is committed, resolved for PHP 8.2 (`config.platform.php`), so CI installs and caches a fixed set of dev dependencies.
 
+### Fixed
+- PostgreSQL: `insert()` inside a transaction on a table without a `{table}_id_seq` sequence (composite or UUID key, or an explicit `id`) aborted the transaction; the following `COMMIT` silently became a `ROLLBACK` and nothing was stored. The sequence probe now runs in a savepoint.
+
 ## [1.1.0] - 2026-09-30
 
 ### Added
