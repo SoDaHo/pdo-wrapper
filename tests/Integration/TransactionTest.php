@@ -13,6 +13,7 @@ use PHPUnit\Framework\TestCase;
 use RuntimeException;
 use Sodaho\PdoWrapper\Database;
 use Sodaho\PdoWrapper\DatabaseInterface;
+use Sodaho\PdoWrapper\Driver\AbstractDriver;
 use Sodaho\PdoWrapper\Driver\SqliteDriver;
 use Sodaho\PdoWrapper\Exception\CommitHookException;
 use Sodaho\PdoWrapper\Exception\QueryException;
@@ -133,6 +134,10 @@ class TransactionTest extends TestCase
     public function testThrowingBeginHookRollsBackTheOpenedTransaction(): void
     {
         $rollbackHookCalls = 0;
+        // A writing listener before the throwing one: its row must be gone afterwards (rollback, not commit).
+        $this->db->on('transaction.begin', function (): void {
+            $this->db->execute('INSERT INTO users (name) VALUES (?)', ['from-hook']);
+        });
         $this->db->on('transaction.begin', function (): void {
             throw new RuntimeException('begin hook failed');
         });
@@ -157,6 +162,9 @@ class TransactionTest extends TestCase
     public function testBeginHookPdoExceptionIsStillATransactionExceptionAndRollsBack(): void
     {
         $this->db->on('transaction.begin', function (): void {
+            $this->db->execute('INSERT INTO users (name) VALUES (?)', ['from-hook']);
+        });
+        $this->db->on('transaction.begin', function (): void {
             throw new PDOException('begin hook pdo failure');
         });
 
@@ -169,6 +177,45 @@ class TransactionTest extends TestCase
         }
 
         $this->assertFalse($this->db->getPdo()->inTransaction());
+        $this->assertSame(0, $this->userCount($this->db));
+    }
+
+    public function testBeginTransactionReturningFalseIsATransactionException(): void
+    {
+        $db = $this->falseReturningDriver(failBegin: true);
+        $events = [];
+        $db->on('transaction.begin', static function () use (&$events): void {
+            $events[] = 'begin';
+        });
+
+        try {
+            $db->beginTransaction();
+            $this->fail('Expected TransactionException was not thrown');
+        } catch (TransactionException $e) {
+            $this->assertSame('PDO::beginTransaction() returned false', $e->getDebugMessage());
+        }
+
+        $this->assertSame([], $events);
+        $this->assertFalse($db->getPdo()->inTransaction());
+    }
+
+    public function testRollbackReturningFalseIsATransactionException(): void
+    {
+        $db = $this->falseReturningDriver(failRollback: true);
+        $events = [];
+        $db->on('transaction.rollback', static function () use (&$events): void {
+            $events[] = 'rollback';
+        });
+        $db->beginTransaction();
+
+        try {
+            $db->rollback();
+            $this->fail('Expected TransactionException was not thrown');
+        } catch (TransactionException $e) {
+            $this->assertSame('PDO::rollBack() returned false', $e->getDebugMessage());
+        }
+
+        $this->assertSame([], $events);
     }
 
     public function testConnectionIsUsableAfterThrowingBeginHook(): void
@@ -853,6 +900,37 @@ class TransactionTest extends TestCase
         $this->assertSame([], $events);
         $this->assertSame(1, $pdo->rollBackCalls);
         $this->assertTrue($pdo->inTransaction());
+    }
+
+    /**
+     * Driver whose PDO reports a failed BEGIN or ROLLBACK by returning false instead of throwing
+     * (non-exception error mode), without changing the connection state.
+     */
+    private function falseReturningDriver(bool $failBegin = false, bool $failRollback = false): DatabaseInterface
+    {
+        $pdo = new class ('sqlite::memory:') extends PDO {
+            public bool $failBegin = false;
+            public bool $failRollback = false;
+
+            public function beginTransaction(): bool
+            {
+                return $this->failBegin ? false : parent::beginTransaction();
+            }
+
+            public function rollBack(): bool
+            {
+                return $this->failRollback ? false : parent::rollBack();
+            }
+        };
+        $pdo->failBegin = $failBegin;
+        $pdo->failRollback = $failRollback;
+
+        return new class ($pdo) extends AbstractDriver {
+            public function __construct(PDO $pdo)
+            {
+                $this->pdo = $pdo;
+            }
+        };
     }
 
     /**

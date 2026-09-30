@@ -438,7 +438,7 @@ $db->on('transaction.commit', fn() => print "Transaction committed\n");
 $db->on('transaction.rollback', fn() => print "Transaction rolled back\n");
 ```
 
-For `query`, `error` and `transaction.begin`, a throwing hook stops the remaining hooks of its event and its exception reaches the caller; a throwing `transaction.begin` hook also rolls the transaction it was told about back first (directly, without `transaction.rollback` hooks). A throwing `transaction.rollback` hook does the same on a manual `rollback()`, but is ignored during the automatic rollback in `transaction()` and `updateMultiple()` (the original exception is re-thrown). `transaction.commit` hooks run after the commit and cannot undo it, so they work differently:
+For `query`, `error` and `transaction.begin`, a throwing hook stops the remaining hooks of its event and its exception reaches the caller; after a throwing `transaction.begin` hook a rollback of the transaction it was told about is attempted first (best effort, directly and without `transaction.rollback` hooks; if that rollback fails, the transaction may still be open). A throwing `transaction.rollback` hook does the same on a manual `rollback()`, but is ignored during the automatic rollback in `transaction()` and `updateMultiple()` (the original exception is re-thrown). `transaction.commit` hooks run after the commit and cannot undo it, so they work differently:
 
 - **All of them run**, even if one throws (only exception: see the last point). Keep them independent: steps that depend on each other belong in one hook.
 - **Failures are reported together** as `CommitHookException`: `getPrevious()` is the first failure, `$e->failures` lists all of them in hook order.
@@ -581,7 +581,7 @@ This library is designed for simple, common use cases. The following features ar
 
 - **UNION** - Combine queries manually or use raw SQL.
 
-- **LIMIT/ORDER BY/JOIN in update/delete** - `limit()`, `offset()`, `orderBy()`, `join()`, `groupBy()` and `having()` are not supported with `update()` or `delete()`: they are not part of the generated statement, and ignoring them would silently change the affected rows. The QueryBuilder throws an exception if you try. Use a subquery instead:
+- **LIMIT/ORDER BY/JOIN in update/delete** - `limit()`, `offset()`, `orderBy()`, `join()`, `groupBy()` and `having()` are not supported with `update()` or `delete()`: they are not part of the generated statement, and ignoring them could silently change the affected rows. The QueryBuilder throws an exception if you try, also for combinations that happen to be row-neutral (such as `groupBy()` on the primary key). Use a subquery instead:
   ```php
   // Delete the 10 oldest logs (works on all databases)
   $db->execute(
@@ -591,7 +591,7 @@ This library is designed for simple, common use cases. The following features ar
 
 - **NULL in where()** - `where('column', null)` throws an exception because `column = NULL` is always false in SQL. Use `whereNull()` or `whereNotNull()` instead.
 
-- **PostgreSQL primary key convention** - `insert()` assumes the primary key column is named `id`. For custom PK names, use raw query with `RETURNING`:
+- **PostgreSQL primary key convention** - `insert()` assumes the primary key column is named `id` and reads it from the `{table}_id_seq` sequence: for a table without that sequence it returns 0, and for a row inserted with an explicit `id` it returns 0 or, after an earlier sequence-based insert on the same connection, that earlier value. For custom PK names or explicit ids, use a raw query with `RETURNING`:
   ```php
   $stmt = $db->query('INSERT INTO users (name) VALUES (?) RETURNING user_id', ['John']);
   $userId = $stmt->fetch()['user_id'];

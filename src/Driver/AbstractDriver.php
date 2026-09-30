@@ -131,21 +131,30 @@ abstract class AbstractDriver implements DatabaseInterface
      * Begin a transaction.
      *
      * Triggers 'transaction.begin' hook on success. A throwing hook must not leave the transaction
-     * it was told about open: it is rolled back on raw PDO (no 'transaction.rollback' hooks, nothing
-     * was written) and the hook's exception reaches the caller, a PDOException as TransactionException.
+     * it was told about open: a rollback is attempted on raw PDO (best effort, no 'transaction.rollback'
+     * hooks; if it fails, the transaction may still be open) and the hook's exception reaches the
+     * caller, a PDOException as TransactionException.
      *
-     * @throws TransactionException On failure
+     * @throws TransactionException On failure, including PDO::beginTransaction() returning false (non-exception error mode)
      */
     public function beginTransaction(): void
     {
         try {
-            $this->pdo->beginTransaction();
+            $begun = $this->pdo->beginTransaction();
         } catch (PDOException $e) {
             throw new TransactionException(
                 message: 'Failed to begin transaction',
                 code: (int)$e->getCode(),
                 previous: $e,
                 debugMessage: $e->getMessage()
+            );
+        }
+
+        // Only reachable with a non-exception error mode (allowed via 'options').
+        if ($begun === false) {
+            throw new TransactionException(
+                message: 'Failed to begin transaction',
+                debugMessage: 'PDO::beginTransaction() returned false'
             );
         }
 
@@ -292,8 +301,7 @@ abstract class AbstractDriver implements DatabaseInterface
     public function rollback(): void
     {
         try {
-            $this->pdo->rollBack();
-            $this->trigger('transaction.rollback', []);
+            $rolledBack = $this->pdo->rollBack();
         } catch (PDOException $e) {
             throw new TransactionException(
                 message: 'Failed to rollback transaction',
@@ -302,6 +310,16 @@ abstract class AbstractDriver implements DatabaseInterface
                 debugMessage: $e->getMessage()
             );
         }
+
+        // Only reachable with a non-exception error mode (allowed via 'options').
+        if ($rolledBack === false) {
+            throw new TransactionException(
+                message: 'Failed to rollback transaction',
+                debugMessage: 'PDO::rollBack() returned false'
+            );
+        }
+
+        $this->trigger('transaction.rollback', []);
     }
 
     /**

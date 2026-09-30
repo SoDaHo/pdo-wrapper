@@ -79,7 +79,10 @@ class PostgresDriver extends AbstractDriver
      *
      * Uses PostgreSQL sequence naming convention ({table}_id_seq) for reliable
      * ID retrieval. Returns 0 for tables without auto-increment (composite PKs, UUIDs)
-     * and for rows inserted with an explicit id (the sequence was not used).
+     * and when the sequence has no value in this session yet (explicit id before any
+     * sequence-based insert); after an earlier sequence-based insert on the same
+     * connection, an explicit-id insert returns that earlier value, as before. Use a raw
+     * query with RETURNING for explicit ids.
      *
      * @param string $table Table name (supports schema.table format)
      * @param array<string, mixed> $data Column => value pairs
@@ -129,21 +132,25 @@ class PostgresDriver extends AbstractDriver
     {
         if (!$this->pdo->inTransaction()) {
             try {
-                return $this->currentValue($sequence);
+                return $this->currentValue($sequence) ?? 0;
             } catch (PDOException) {
                 return 0;
             }
         }
 
         try {
-            $this->pdo->exec('SAVEPOINT pdo_wrapper_insert_id');
+            $this->execRaw('SAVEPOINT pdo_wrapper_insert_id');
             try {
                 $id = $this->currentValue($sequence);
             } catch (PDOException) {
-                $this->pdo->exec('ROLLBACK TO SAVEPOINT pdo_wrapper_insert_id');
+                $id = null;
+            }
+            if ($id === null) {
+                // The failed probe aborted the transaction up to the savepoint: undo that part.
+                $this->execRaw('ROLLBACK TO SAVEPOINT pdo_wrapper_insert_id');
                 $id = 0;
             }
-            $this->pdo->exec('RELEASE SAVEPOINT pdo_wrapper_insert_id');
+            $this->execRaw('RELEASE SAVEPOINT pdo_wrapper_insert_id');
         } catch (PDOException $e) {
             throw new QueryException(
                 message: 'Insert failed',
@@ -157,12 +164,34 @@ class PostgresDriver extends AbstractDriver
     }
 
     /**
+     * Read the sequence's current value.
+     *
      * @throws PDOException When the sequence does not exist or has no current value in this session
+     *
+     * @return int|null The value (0 if empty), or null when PDO reported the failure by returning
+     *                  false instead of throwing (non-exception error mode)
      */
-    private function currentValue(string $sequence): int
+    private function currentValue(string $sequence): ?int
     {
         $id = $this->pdo->lastInsertId($sequence);
+        if ($id === false) {
+            return null;
+        }
 
-        return ($id !== false && $id !== '' && $id !== '0') ? (int) $id : 0;
+        return ($id !== '' && $id !== '0') ? (int) $id : 0;
+    }
+
+    /**
+     * Run a savepoint statement on raw PDO; a false result (non-exception error mode) is a failure too.
+     *
+     * @throws PDOException When the statement fails
+     */
+    private function execRaw(string $sql): void
+    {
+        if ($this->pdo->exec($sql) === false) {
+            $info = $this->pdo->errorInfo();
+            $reason = is_string($info[2] ?? null) ? $info[2] : 'unknown error';
+            throw new PDOException(sprintf('%s failed: %s', $sql, $reason));
+        }
     }
 }

@@ -159,6 +159,24 @@ class PostgresDriverIntegrationTest extends TestCase
         $this->assertNotNull($this->driver->findOne('test_tx_explicit', ['id' => 1000]));
     }
 
+    /**
+     * In a non-exception error mode PDO reports the failed currval() probe as false instead of
+     * throwing; the transaction is aborted all the same and must be rescued through the savepoint.
+     */
+    public function testInsertWithoutSequenceInsideTransactionInSilentErrorMode(): void
+    {
+        $driver = new PostgresDriver(self::getConfig() + ['options' => [PDO::ATTR_ERRMODE => PDO::ERRMODE_SILENT]]);
+        $driver->execute('CREATE TEMPORARY TABLE test_silent_tokens (token TEXT PRIMARY KEY, name TEXT)');
+
+        $id = $driver->transaction(
+            fn (DatabaseInterface $db): int|string => $db->insert('test_silent_tokens', ['token' => 'tok', 'name' => 'silent'])
+        );
+
+        $this->assertSame(0, $id);
+        $this->assertFalse($driver->getPdo()->inTransaction());
+        $this->assertSame(1, $driver->table('test_silent_tokens')->count());
+    }
+
     public function testConnectionExceptionHasDebugMessage(): void
     {
         try {

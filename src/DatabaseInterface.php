@@ -49,10 +49,11 @@ interface DatabaseInterface
     /**
      * Begin a transaction.
      *
-     * A throwing 'transaction.begin' listener does not leave the new transaction open: it is rolled
-     * back directly (without 'transaction.rollback' listeners) and the listener's exception is re-thrown.
+     * After a throwing 'transaction.begin' listener a rollback of the new transaction is attempted
+     * directly (best effort, without 'transaction.rollback' listeners; if it fails, the transaction
+     * may still be open) and the listener's exception is re-thrown.
      *
-     * @throws Exception\TransactionException When the transaction cannot be started, or a listener threw a PDOException
+     * @throws Exception\TransactionException When the transaction cannot be started (including PDO reporting the failure without throwing), or a listener threw a PDOException
      * @throws \Throwable Re-throws any other exception of a 'transaction.begin' listener
      */
     public function beginTransaction(): void;
