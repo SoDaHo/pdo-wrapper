@@ -162,8 +162,8 @@ class EdgeCaseTest extends TestCase
             ->toSql();
 
         // Wildcard should not be quoted as "*"
-        $this->assertStringContainsString('"id", *', $sql);
-        $this->assertStringNotContainsString('"*"', $sql);
+        $this->assertStringContainsString('`id`, *', $sql);
+        $this->assertStringNotContainsString('`*`', $sql);
     }
 
     public function testQuoteIdentifierWithSpecialCharacters(): void
@@ -256,9 +256,9 @@ class EdgeCaseTest extends TestCase
             ->toSql();
 
         // Verify the SQL contains properly quoted identifiers
-        $this->assertStringContainsString('"users"."id"', $sql);
-        $this->assertStringContainsString('"users"."name"', $sql);
-        $this->assertStringContainsString('"users"."active"', $sql);
+        $this->assertStringContainsString('`users`.`id`', $sql);
+        $this->assertStringContainsString('`users`.`name`', $sql);
+        $this->assertStringContainsString('`users`.`active`', $sql);
     }
 
     // =========================================================================
@@ -525,7 +525,7 @@ class EdgeCaseTest extends TestCase
         $db->insert('users', ['country' => 'DE']);
 
         [$sql, $params] = $db->table('users')->where('country', 'IS')->toSql();
-        $this->assertSame('SELECT * FROM "users" WHERE "country" = ?', $sql);
+        $this->assertSame('SELECT * FROM `users` WHERE `country` = ?', $sql);
         $this->assertSame(['IS'], $params);
         $this->assertCount(1, $db->table('users')->where('country', 'IS')->get());
         $this->assertCount(0, $db->table('users')->where('country', 'LIKE')->get());
@@ -564,7 +564,7 @@ class EdgeCaseTest extends TestCase
         $query = $db->table('users')->select(['users.*', 'orders.total'])->join('orders', 'users.id', '=', 'orders.user_id');
         [$sql] = $query->toSql();
 
-        $this->assertSame('SELECT "users".*, "orders"."total" FROM "users" INNER JOIN "orders" ON "users"."id" = "orders"."user_id"', $sql);
+        $this->assertSame('SELECT `users`.*, `orders`.`total` FROM `users` INNER JOIN `orders` ON `users`.`id` = `orders`.`user_id`', $sql);
         $this->assertSame([['id' => 1, 'name' => 'Max', 'total' => 5]], $query->get());
     }
 

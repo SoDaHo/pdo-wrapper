@@ -45,8 +45,8 @@ class RawExpressionSecurityTest extends TestCase
         [$sql, ] = $this->db->table('users')->select($maliciousColumn)->toSql();
 
         // Expectation: The attack string is completely quoted as identifier
-        // Result: SELECT "username"" --" FROM ...
-        $this->assertStringContainsString('"username"" --"', $sql);
+        // Result: SELECT `username" --` FROM ... (SQLite quotes with backticks)
+        $this->assertStringContainsString('`username" --`', $sql);
     }
 
     /**
@@ -59,8 +59,8 @@ class RawExpressionSecurityTest extends TestCase
         // Now: MUST be quoted (secure)
         [$sqlSafe, ] = $this->db->table('users')->select('COUNT(*)')->toSql();
 
-        // SQLite quote: "COUNT(*)"
-        $this->assertStringContainsString('"COUNT(*)"', $sqlSafe);
+        // SQLite quote: `COUNT(*)`
+        $this->assertStringContainsString('`COUNT(*)`', $sqlSafe);
         $this->assertStringNotContainsString('SELECT COUNT(*) ', $sqlSafe); // Must NOT be raw
 
 

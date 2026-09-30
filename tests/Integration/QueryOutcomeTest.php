@@ -52,7 +52,7 @@ class QueryOutcomeTest extends TestCase
             $this->assertSame('Query hook failed', $e->getMessage());
             $this->assertSame($hookError, $e->getPrevious());
             $this->assertSame(
-                'log table missing | SQL: INSERT INTO "users" ("name") VALUES (?) | Params: ["Max"]',
+                'log table missing | SQL: INSERT INTO `users` (`name`) VALUES (?) | Params: ["Max"]',
                 $e->getDebugMessage()
             );
         }
@@ -128,8 +128,8 @@ class QueryOutcomeTest extends TestCase
             $this->assertSame(19, $previous->getCode());
         }
 
-        $this->assertSame(['INSERT INTO "users" ("id", "name") VALUES (?, ?)'], $this->errors);
-        $this->assertSame(['INSERT INTO "users" ("id", "name") VALUES (?, ?)'], $this->queries, 'only the first insert ran');
+        $this->assertSame(['INSERT INTO `users` (`id`, `name`) VALUES (?, ?)'], $this->errors);
+        $this->assertSame(['INSERT INTO `users` (`id`, `name`) VALUES (?, ?)'], $this->queries, 'only the first insert ran');
         $this->assertSame(1, $this->db->table('users')->count());
     }
 }

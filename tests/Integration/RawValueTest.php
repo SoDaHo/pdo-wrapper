@@ -39,7 +39,7 @@ class RawValueTest extends TestCase
             ->where('name', 'b')
             ->toSql();
 
-        $this->assertSame('SELECT * FROM "counters" WHERE "hits" > 1 + 1 AND "name" = ?', $sql);
+        $this->assertSame('SELECT * FROM `counters` WHERE `hits` > 1 + 1 AND `name` = ?', $sql);
         $this->assertSame(['b'], $params);
         $this->assertCount(1, $this->db->table('counters')->where('hits', '>', Database::raw('1 + 1'))->get());
     }
@@ -51,7 +51,7 @@ class RawValueTest extends TestCase
             ->whereBetween('hits', [Database::raw('0'), 7])
             ->toSql();
 
-        $this->assertSame('SELECT * FROM "counters" WHERE "hits" IN (?, 2 + 3, ?) AND "hits" BETWEEN 0 AND ?', $sql);
+        $this->assertSame('SELECT * FROM `counters` WHERE `hits` IN (?, 2 + 3, ?) AND `hits` BETWEEN 0 AND ?', $sql);
         $this->assertSame([1, 9, 7], $params);
         $this->assertSame(2, $this->db->table('counters')->whereIn('hits', [1, Database::raw('2 + 3'), 9])->count());
         $this->assertSame(1, $this->db->table('counters')->whereBetween('hits', [Database::raw('2'), 9])->count());
@@ -79,7 +79,7 @@ class RawValueTest extends TestCase
             ->groupBy('name')
             ->having(Database::raw('SUM(hits)'), '>=', 5)
             ->toSql();
-        $this->assertSame('SELECT "name", SUM(hits) AS total FROM "counters" WHERE "hits" > 0 AND "name" = ? GROUP BY "name" HAVING SUM(hits) >= ?', $sql);
+        $this->assertSame('SELECT `name`, SUM(hits) AS total FROM `counters` WHERE `hits` > 0 AND `name` = ? GROUP BY `name` HAVING SUM(hits) >= ?', $sql);
         $this->assertSame(['b', 5], $params);
 
         $affected = $this->db->update('counters', ['hits' => Database::raw('hits + 1'), 'name' => 'z'], ['id' => 2]);
@@ -94,11 +94,11 @@ class RawValueTest extends TestCase
     public function testRawLikePatternKeepsTheEscapeClause(): void
     {
         [$sql, $params] = $this->db->table('counters')->whereLike('name', '100%')->toSql();
-        $this->assertSame('SELECT * FROM "counters" WHERE "name" LIKE ? ESCAPE \'\\\'', $sql);
+        $this->assertSame('SELECT * FROM `counters` WHERE `name` LIKE ? ESCAPE \'\\\'', $sql);
         $this->assertSame(['100%'], $params);
 
         [$sql, $params] = $this->db->table('counters')->where('name', 'LIKE', Database::raw("'a' || '%'"))->toSql();
-        $this->assertSame('SELECT * FROM "counters" WHERE "name" LIKE \'a\' || \'%\' ESCAPE \'\\\'', $sql);
+        $this->assertSame('SELECT * FROM `counters` WHERE `name` LIKE \'a\' || \'%\' ESCAPE \'\\\'', $sql);
         $this->assertSame([], $params);
         $this->assertSame(1, $this->db->table('counters')->where('name', 'LIKE', Database::raw("'a' || '%'"))->count());
     }
@@ -123,7 +123,7 @@ class RawValueTest extends TestCase
             ->select([Database::raw('counters.*'), Database::raw('COUNT(*) AS n')])
             ->toSql();
 
-        $this->assertSame('SELECT counters.*, COUNT(*) AS n FROM "counters"', $sql);
+        $this->assertSame('SELECT counters.*, COUNT(*) AS n FROM `counters`', $sql);
         $this->assertSame([], $params);
     }
 

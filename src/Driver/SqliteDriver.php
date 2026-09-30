@@ -54,6 +54,17 @@ class SqliteDriver extends AbstractDriver
     }
 
     /**
+     * Backtick, not the double quote: SQLite reads a double-quoted name that is not a column as a
+     * string literal (legacy behaviour, on by default), so a typo in a column name silently compares
+     * or sorts by a constant. A backtick-quoted name is always an identifier and fails with
+     * "no such column".
+     */
+    protected function getQuoteChar(): string
+    {
+        return '`';
+    }
+
+    /**
      * Current local date and time: `datetime('now', 'localtime')`.
      *
      * SQLite takes "local" from the operating system's time zone, not from PHP's date.timezone.

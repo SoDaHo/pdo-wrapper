@@ -70,7 +70,8 @@ class QueryBuilder
      * @param DatabaseInterface $db Database connection
      * @param string $table Table name
      * @param string $quoteChar Quote character for identifiers (" or `)
-     * @param string|null $dialect One of the DIALECT_* constants; null derives it from the quote character (` = MySQL, otherwise ANSI)
+     * @param string|null $dialect One of the DIALECT_* constants; null derives it from the quote character (` = MySQL, otherwise ANSI).
+     *                             Drivers pass their dialect from table(); pass DIALECT_SQLITE yourself for a SQLite builder (backtick, too)
      *
      * @throws \InvalidArgumentException When the dialect is unknown
      */
@@ -1113,7 +1114,7 @@ class QueryBuilder
                     // MySQL uses \ as default LIKE escape character, no ESCAPE clause needed.
                     // PostgreSQL and SQLite need an explicit ESCAPE clause - for raw patterns too, so the
                     // pattern semantics do not depend on how the value was given.
-                    if (($operator === 'LIKE' || $operator === 'NOT LIKE') && $this->quoteChar !== '`') {
+                    if (($operator === 'LIKE' || $operator === 'NOT LIKE') && $this->dialect !== self::DIALECT_MYSQL) {
                         $clause .= " ESCAPE '\\'";
                     }
                     $clauses[] = $clause;

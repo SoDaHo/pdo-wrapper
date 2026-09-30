@@ -47,7 +47,7 @@ class DialectExecutionTest extends TestCase
         $grouped = $this->db->table('users')->select(['name'])->groupBy('name');
 
         $this->assertTrue($grouped->exists());
-        $this->assertSame('SELECT "name" FROM "users" GROUP BY "name"', $grouped->toSql()[0], 'exists() must not change the builder');
+        $this->assertSame('SELECT `name` FROM `users` GROUP BY `name`', $grouped->toSql()[0], 'exists() must not change the builder');
         $this->assertTrue($this->db->table('users')->select(['name'])->distinct()->exists());
         // DISTINCT keeps its cardinality (two distinct names): offset(1) has a next page, offset(2) has not
         $this->assertTrue($this->db->table('users')->select(['name'])->distinct()->offset(1)->exists());
@@ -78,6 +78,6 @@ class DialectExecutionTest extends TestCase
 
         $this->assertSame('Max', $row['name'] ?? null);
         $this->assertSame('Anna', $shared['name'] ?? null);
-        $this->assertSame('SELECT * FROM "users" WHERE "id" = ?', $this->db->table('users')->where('id', 1)->lockForUpdate()->toSql()[0]);
+        $this->assertSame('SELECT * FROM `users` WHERE `id` = ?', $this->db->table('users')->where('id', 1)->lockForUpdate()->toSql()[0]);
     }
 }

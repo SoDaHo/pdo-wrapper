@@ -90,31 +90,6 @@ class MySqlDriver extends AbstractDriver
     }
 
     /**
-     * Quote an identifier using MySQL backticks.
-     *
-     * Handles database.table and table.column format:
-     * - `users` → `users`
-     * - `mydb.users` → `mydb`.`users`
-     *
-     * @param string $identifier Identifier to quote
-     *
-     * @return string Quoted identifier
-     */
-    protected function quoteIdentifier(string $identifier): string
-    {
-        // Handle schema.table or table.column format
-        if (str_contains($identifier, '.')) {
-            $parts = explode('.', $identifier);
-            return implode('.', array_map(
-                fn ($part) => '`' . str_replace('`', '``', $part) . '`',
-                $parts
-            ));
-        }
-
-        return '`' . str_replace('`', '``', $identifier) . '`';
-    }
-
-    /**
      * Get the MySQL quote character (backtick).
      */
     protected function getQuoteChar(): string

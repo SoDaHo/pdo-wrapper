@@ -80,6 +80,8 @@ $db = Database::sqlite(':memory:');
 $db = Database::sqlite('/path/to/database.db');
 ```
 
+SQLite identifiers are quoted with backticks. SQLite reads an unknown name in double quotes as a string literal (a typo in a column name then silently compares or sorts by a constant); a backtick-quoted name is always an identifier and fails with `no such column`, as it would on MySQL or PostgreSQL.
+
 ### Environment Variables
 
 All drivers support configuration via environment variables:

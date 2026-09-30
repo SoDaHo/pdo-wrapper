@@ -720,16 +720,19 @@ abstract class AbstractDriver implements DatabaseInterface
      */
     protected function quoteIdentifier(string $identifier): string
     {
+        $quote = $this->getQuoteChar();
+        $escape = $quote . $quote;
+
         // Handle schema.table or table.column format
         if (str_contains($identifier, '.')) {
             $parts = explode('.', $identifier);
             return implode('.', array_map(
-                fn ($part) => '"' . str_replace('"', '""', $part) . '"',
+                static fn ($part) => $quote . str_replace($quote, $escape, $part) . $quote,
                 $parts
             ));
         }
 
-        return '"' . str_replace('"', '""', $identifier) . '"';
+        return $quote . str_replace($quote, $escape, $identifier) . $quote;
     }
 
     /**
@@ -851,8 +854,8 @@ abstract class AbstractDriver implements DatabaseInterface
      * Get the quote character for identifiers.
      *
      * Override in driver for DB-specific quoting.
-     * - PostgreSQL/SQLite: " (double quote)
-     * - MySQL: ` (backtick)
+     * - PostgreSQL: " (double quote)
+     * - MySQL, SQLite: ` (backtick; SQLite would read an unknown double-quoted name as a string)
      *
      * @return string Quote character
      */

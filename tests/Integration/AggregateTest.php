@@ -115,6 +115,6 @@ class AggregateTest extends TestCase
         $builder = $this->db->table('users')->select('country')->distinct()->orderBy('country')->limit(2);
         $builder->count();
 
-        $this->assertSame('SELECT DISTINCT "country" FROM "users" ORDER BY "country" ASC LIMIT 2', $builder->toSql()[0]);
+        $this->assertSame('SELECT DISTINCT `country` FROM `users` ORDER BY `country` ASC LIMIT 2', $builder->toSql()[0]);
     }
 }
