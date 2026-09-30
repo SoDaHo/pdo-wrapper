@@ -82,7 +82,10 @@ interface DatabaseInterface
      * Execute a callback within a transaction.
      * Auto-commits on success, auto-rollback on exception.
      *
-     * Three outcomes on failure:
+     * Four outcomes on failure:
+     * - the transaction could not be started (BEGIN failed, or a transaction.begin listener threw):
+     *   the callback did not run; after a throwing listener a rollback is attempted (best effort);
+     *   the exception is re-thrown, a PDOException from the listener as TransactionException;
      * - the callback threw: rollback attempted, the callback's exception is re-thrown
      *   (best effort: if the rollback fails, the transaction may still be open);
      * - the commit failed: rollback attempted, TransactionException re-thrown
@@ -91,8 +94,9 @@ interface DatabaseInterface
      *
      * @param Closure $callback Receives the driver instance
      *
+     * @throws Exception\TransactionException When the transaction could not be started (see beginTransaction()) or the commit failed
      * @throws Exception\CommitHookException When committed, but a transaction.commit listener failed or the connection state after it could not be verified
-     * @throws \Throwable Re-throws the callback or commit exception after rollback
+     * @throws \Throwable Re-throws the callback, begin listener or commit exception after rollback
      *
      * @return mixed Return value of the callback
      */

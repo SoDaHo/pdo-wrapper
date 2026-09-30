@@ -1017,7 +1017,7 @@ class QueryBuilder
             throw new QueryException(
                 message: ucfirst($operation) . ' failed',
                 debugMessage: sprintf(
-                    '%s does not support %s (not part of the generated statement; the affected rows would silently differ). Use raw execute() for database-specific syntax.',
+                    '%s does not support %s (not part of the generated statement; the affected rows could silently differ). Use raw execute() for database-specific syntax.',
                     $operation,
                     implode(', ', $unsupported)
                 )

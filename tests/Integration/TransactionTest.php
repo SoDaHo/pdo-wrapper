@@ -199,6 +199,24 @@ class TransactionTest extends TestCase
         $this->assertFalse($db->getPdo()->inTransaction());
     }
 
+    public function testTransactionDoesNotRunTheCallbackWhenBeginReturnsFalse(): void
+    {
+        $db = $this->falseReturningDriver(failBegin: true);
+        $callbackRan = false;
+
+        try {
+            $db->transaction(static function () use (&$callbackRan): void {
+                $callbackRan = true;
+            });
+            $this->fail('Expected TransactionException was not thrown');
+        } catch (TransactionException $e) {
+            $this->assertSame('PDO::beginTransaction() returned false', $e->getDebugMessage());
+        }
+
+        $this->assertFalse($callbackRan);
+        $this->assertFalse($db->getPdo()->inTransaction());
+    }
+
     public function testRollbackHookPdoExceptionIsStillATransactionException(): void
     {
         $this->db->on('transaction.rollback', static function (): void {

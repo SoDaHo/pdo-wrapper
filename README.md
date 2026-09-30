@@ -408,6 +408,7 @@ try {
 `transaction()` ends in one of these ways (`updateMultiple()` too, when it opens its own transaction):
 
 - **Success** - committed, the callback's return value is returned.
+- **The transaction cannot be started** (`BEGIN` fails, or a `transaction.begin` hook throws) - the callback does not run; after a throwing hook a rollback is attempted (best effort); the exception is re-thrown, a `PDOException` from the hook as `TransactionException`.
 - **The callback throws** - rollback attempted, the callback's exception is re-thrown unchanged. Best effort: if the rollback itself fails, the connection may still be in a transaction.
 - **The commit fails** - rollback attempted, `TransactionException` is thrown. The commit may or may not have taken effect (e.g. connection lost during `COMMIT`).
 - **A `transaction.commit` hook fails** (throws, or leaves the connection in a state that cannot be verified or cleaned up) - the data **is committed**, nothing is rolled back, `CommitHookException` is thrown (see [Hooks](#hooks)).
@@ -581,7 +582,7 @@ This library is designed for simple, common use cases. The following features ar
 
 - **UNION** - Combine queries manually or use raw SQL.
 
-- **LIMIT/ORDER BY/JOIN in update/delete** - `limit()`, `offset()`, `orderBy()`, `join()`, `groupBy()` and `having()` are not supported with `update()` or `delete()`: they are not part of the generated statement, and ignoring them could silently change the affected rows. The QueryBuilder throws an exception if you try, also for combinations that happen to be row-neutral (such as `groupBy()` on the primary key). Use a subquery instead:
+- **LIMIT/ORDER BY/JOIN in update/delete** - `limit()`, `offset()`, `orderBy()`, `join()` (also `leftJoin()`/`rightJoin()`), `groupBy()` and `having()` are not supported with `update()` or `delete()`: they are not part of the generated statement, and ignoring them could silently change the affected rows. The QueryBuilder throws an exception if you try, also for combinations that happen to be row-neutral (such as `groupBy()` on the primary key). Use a subquery instead:
   ```php
   // Delete the 10 oldest logs (works on all databases)
   $db->execute(
