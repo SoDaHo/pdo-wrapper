@@ -57,7 +57,7 @@ abstract class AbstractDriver implements DatabaseInterface
             if ($stmt === false) {
                 throw $this->silentFailure('PDO::prepare() returned false', $this->pdo->errorInfo());
             }
-            if ($stmt->execute($params) === false) {
+            if ($this->bindAndExecute($stmt, $params) === false) {
                 throw $this->silentFailure('PDOStatement::execute() returned false', $stmt->errorInfo());
             }
         } catch (PDOException $e) {
@@ -96,6 +96,19 @@ abstract class AbstractDriver implements DatabaseInterface
         }
 
         return $stmt;
+    }
+
+    /**
+     * Bind the parameters and execute the prepared statement: PDOStatement::execute($params), every
+     * value bound as text. A driver overrides this when its database needs typed bindings.
+     *
+     * @param array<int|string, mixed> $params Positional (0-based) or named parameters
+     *
+     * @return bool False when PDO reports the failure without an exception
+     */
+    protected function bindAndExecute(PDOStatement $stmt, array $params): bool
+    {
+        return $stmt->execute($params);
     }
 
     /**

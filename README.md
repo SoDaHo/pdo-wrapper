@@ -80,7 +80,16 @@ $db = Database::sqlite(':memory:');
 $db = Database::sqlite('/path/to/database.db');
 ```
 
-SQLite identifiers are quoted with backticks. SQLite reads an unknown name in double quotes as a string literal (a typo in a column name then silently compares or sorts by a constant); a backtick-quoted name is always an identifier and fails with `no such column`, as it would on MySQL or PostgreSQL.
+SQLite identifiers are quoted with backticks. SQLite reads an unknown name in double quotes as a string literal (a typo in a column name then silently compares or sorts by a constant); a backtick-quoted name is always an identifier and fails with `no such column`, as it would on MySQL or PostgreSQL. Integers are bound as integers and booleans as `0`/`1` (PDO binds everything as text by default, and SQLite converts text to a number only through a column's affinity: `HAVING COUNT(*) > ?` with a text `1` is always false, and `false` would be stored as `''`).
+
+**Upgrading to 1.2 with an existing SQLite database:** earlier versions bound every value as text. That matters wherever SQLite kept the text: a `false` is stored as `''` in every column type, and integers are TEXT in columns declared without a type or as `BLOB` (columns with numeric affinity converted them on write; `TEXT` columns keep text, which an integer parameter still matches through the column's affinity). An integer or boolean parameter no longer matches those rows in `=`, `IN`, `BETWEEN` or range comparisons, new numeric values sort before old text values, and `UNIQUE` tells the storage classes apart. Either keep passing strings for such columns (when writing and when reading), or convert the data once. Run each statement only on columns you know to hold booleans or integers, after checking for `UNIQUE` collisions; the integer statement converts only values whose integer round trip is lossless (so `'007'`, `'+5'`, `' 5'`, `'1.5'`, `''`, text and out-of-range numbers stay as they are), and `COLLATE BINARY` keeps a column collation such as `RTRIM` from matching trailing spaces:
+
+```sql
+-- a boolean column: former false
+UPDATE t SET flag = 0 WHERE typeof(flag) = 'text' AND flag = '' COLLATE BINARY;
+-- an integer column declared without a type or as BLOB: former integers
+UPDATE t SET n = CAST(n AS INTEGER) WHERE typeof(n) = 'text' AND CAST(CAST(n AS INTEGER) AS TEXT) = n COLLATE BINARY;
+```
 
 ### Environment Variables
 
