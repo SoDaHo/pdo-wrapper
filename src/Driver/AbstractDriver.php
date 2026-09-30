@@ -319,7 +319,17 @@ abstract class AbstractDriver implements DatabaseInterface
             );
         }
 
-        $this->trigger('transaction.rollback', []);
+        // A PDOException from a hook keeps arriving as TransactionException (unchanged contract).
+        try {
+            $this->trigger('transaction.rollback', []);
+        } catch (PDOException $e) {
+            throw new TransactionException(
+                message: 'Failed to rollback transaction',
+                code: (int)$e->getCode(),
+                previous: $e,
+                debugMessage: $e->getMessage()
+            );
+        }
     }
 
     /**

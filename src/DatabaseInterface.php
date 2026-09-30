@@ -103,8 +103,8 @@ interface DatabaseInterface
      *
      * Events: 'query', 'error', 'transaction.begin', 'transaction.commit', 'transaction.rollback'
      *
-     * A throwing hook stops the remaining hooks of its event (for 'transaction.begin' the new
-     * transaction is rolled back first), except for 'transaction.commit': those listeners are
+     * A throwing hook stops the remaining hooks of its event (for 'transaction.begin' a rollback
+     * of the new transaction is attempted first, best effort), except for 'transaction.commit': those listeners are
      * independent, all of them run after the commit, and their failures arrive together in a
      * CommitHookException. Dependent steps belong in one listener.
      * Only if a transaction left open by a listener cannot be rolled back (or the connection
