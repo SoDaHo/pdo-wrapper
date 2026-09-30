@@ -269,10 +269,10 @@ abstract class AbstractDriver implements DatabaseInterface
         }
 
         // Committed from here on: a listener error must not look like a failed commit.
-        $failures = $this->runCommitListeners();
+        [$failures, $connectionInTransaction] = $this->runCommitListeners();
 
         if ($failures !== []) {
-            throw new CommitHookException($failures[0], $failures);
+            throw new CommitHookException($failures[0], $failures, $connectionInTransaction);
         }
     }
 
@@ -282,15 +282,20 @@ abstract class AbstractDriver implements DatabaseInterface
      * Listeners are independent: a failing listener does not stop the next one. A transaction
      * a listener left open is rolled back before the next listener runs (best effort) - directly
      * on PDO, because dispatching transaction.rollback here would tell rollback listeners that
-     * the committed transaction was rolled back. If that rollback fails, or inTransaction()
-     * itself fails, the connection state is unknown: the remaining listeners are skipped and
-     * the transaction may still be open. Nothing here throws: the commit has happened.
+     * the committed transaction was rolled back. If that rollback fails or leaves the connection
+     * in a transaction (MySQL completion_type=CHAIN opens the next one), or inTransaction() itself
+     * fails, the connection state is unknown: the remaining listeners are skipped and the
+     * transaction may still be open. Nothing here throws: the commit has happened.
      *
      * Per listener: its own exception, then a LogicException if it left a transaction open
      * (previous: the rollback error, if any) or if the state could not be read (previous: that
      * error), then one LogicException per skipped listener.
      *
-     * @return list<Throwable>
+     * The second element is true when the connection is, or may still be, in a transaction
+     * afterwards: the rollback failed or did not end the transaction, or the state could not be
+     * read (fail-closed).
+     *
+     * @return array{list<Throwable>, bool}
      */
     private function runCommitListeners(): array
     {
@@ -327,6 +332,12 @@ abstract class AbstractDriver implements DatabaseInterface
                         message: 'Failed to rollback transaction',
                         debugMessage: 'PDO::rollBack() returned false'
                     );
+                } elseif ($this->pdo->inTransaction()) {
+                    // e.g. MySQL completion_type=CHAIN: the rollback opened the next transaction
+                    $cleanupError = new TransactionException(
+                        message: 'Failed to rollback transaction',
+                        debugMessage: 'connection still in a transaction after PDO::rollBack()'
+                    );
                 }
             } catch (Throwable $e) {
                 $cleanupError = $e;
@@ -335,7 +346,7 @@ abstract class AbstractDriver implements DatabaseInterface
             $failures[] = new LogicException('listener left a transaction open', previous: $cleanupError);
         }
 
-        return $failures;
+        return [$failures, $cleanupError !== null];
     }
 
     /**

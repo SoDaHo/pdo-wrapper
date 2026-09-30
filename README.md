@@ -463,7 +463,7 @@ try {
 - **The commit fails** - rollback attempted, `TransactionException` is thrown. The commit may or may not have taken effect (e.g. connection lost during `COMMIT`).
 - **A `transaction.commit` hook fails** (throws, or leaves the connection in a state that cannot be verified or cleaned up) - the data **is committed**, nothing is rolled back, `CommitHookException` is thrown (see [Hooks](#hooks)).
 
-With a manual `commit()`, a failing commit hook likewise throws `CommitHookException` after the commit - do not roll back or retry then.
+With a manual `commit()`, a failing commit hook likewise throws `CommitHookException` after the commit: the committed transaction cannot be rolled back and must not be retried. Only a transaction a hook left open (`$e->connectionInTransaction`) still needs a rollback.
 
 ## Hooks
 
@@ -493,7 +493,7 @@ For `query`, `error` and `transaction.begin`, a throwing hook stops the remainin
 
 - **All of them run**, even if one throws (only exception: see the last point). Keep them independent: steps that depend on each other belong in one hook.
 - **Failures are reported together** as `CommitHookException`: `getPrevious()` is the first failure, `$e->failures` lists all of them in hook order.
-- **A transaction a hook leaves open** is rolled back before the next hook runs - directly, without `transaction.rollback` hooks - and reported as a `LogicException`. If that rollback fails (or the connection state cannot be read), the remaining hooks are skipped, listed as failures, and the connection may still be in a transaction (`$db->inTransaction()`).
+- **A transaction a hook leaves open** is rolled back before the next hook runs - directly, without `transaction.rollback` hooks - and reported as a `LogicException`. If that rollback fails or does not end the transaction (MySQL `completion_type=CHAIN` opens the next one), or the connection state cannot be read, the remaining hooks are skipped, listed as failures, and `$e->connectionInTransaction` is `true`: the connection is, or may still be, in a transaction (an unreadable state counts as `true`, fail-closed). Do not continue on that connection as if it were in autocommit: check `$db->inTransaction()` and roll back, or discard the connection.
 
 ## Exceptions
 

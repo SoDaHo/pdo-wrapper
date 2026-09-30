@@ -483,6 +483,7 @@ class TransactionTest extends TestCase
         } catch (CommitHookException $e) {
             $this->assertSame($hookError, $e->getPrevious());
             $this->assertSame([$hookError], $e->failures);
+            $this->assertFalse($e->connectionInTransaction);
         }
 
         $this->assertSame(1, $this->userCount($db));
@@ -673,6 +674,7 @@ class TransactionTest extends TestCase
         } catch (CommitHookException $e) {
             $this->assertCount(1, $e->failures);
             $this->assertSame('listener left a transaction open', $e->failures[0]->getMessage());
+            $this->assertFalse($e->connectionInTransaction, 'the open transaction was rolled back');
         }
 
         $this->assertFalse($this->db->getPdo()->inTransaction());
@@ -771,6 +773,7 @@ class TransactionTest extends TestCase
             $this->assertSame($stateError, $e->failures[1]->getPrevious());
             $this->assertSame('listener skipped: connection left in transaction', $e->failures[2]->getMessage());
             $this->assertSame($stateError, $e->failures[2]->getPrevious());
+            $this->assertTrue($e->connectionInTransaction, 'unreadable state counts as in transaction (fail-closed)');
         }
 
         $pdo->stateError = null;
@@ -949,6 +952,7 @@ class TransactionTest extends TestCase
                 $this->assertSame('PDO::rollBack() returned false', $cleanupError->getDebugMessage());
             }
             $this->assertSame($cleanupError, $e->failures[2]->getPrevious());
+            $this->assertTrue($e->connectionInTransaction);
         }
 
         // No further rollback attempt: the connection is left as the failed cleanup left it.

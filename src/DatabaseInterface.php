@@ -86,8 +86,10 @@ interface DatabaseInterface
      *
      * After a successful commit, all 'transaction.commit' listeners run; their failures are
      * reported together in a CommitHookException (not a TransactionException: the data is committed).
-     * Exception: if a transaction left open by a listener cannot be rolled back (or the connection
-     * state cannot be read), the remaining listeners are skipped and reported as failures.
+     * Exception: if a transaction left open by a listener cannot be rolled back (the rollback fails
+     * or does not end it, or the connection state cannot be read), the remaining listeners are
+     * skipped and reported as failures, and CommitHookException::$connectionInTransaction is true
+     * (fail-closed: also when the state is unknown).
      *
      * @throws Exception\TransactionException When the commit itself failed; it may or may not have taken effect
      * @throws Exception\CommitHookException When committed, but a transaction.commit listener failed or the connection state after it could not be verified

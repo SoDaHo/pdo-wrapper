@@ -10,6 +10,7 @@ use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\TestCase;
 use Sodaho\PdoWrapper\DatabaseInterface;
 use Sodaho\PdoWrapper\Driver\MySqlDriver;
+use Sodaho\PdoWrapper\Exception\CommitHookException;
 use Sodaho\PdoWrapper\Exception\TransactionException;
 
 #[Group('mysql')]
@@ -130,6 +131,48 @@ class MySqlDriverIntegrationTest extends TestCase
 
         // PDO returns int(0) on PHP 8.2-8.4, bool(false) on PHP 8.5+
         $this->assertEmpty($emulate);
+    }
+
+    /**
+     * With completion_type=CHAIN, ROLLBACK opens the next transaction at once. The cleanup after a
+     * commit listener that left a transaction open must notice that and report the connection as
+     * (still) in a transaction instead of claiming a clean state.
+     */
+    public function testRollbackChainingAfterACommitListenerIsReportedAsInTransaction(): void
+    {
+        $db = $this->driver;
+        $secondRan = false;
+        $db->on('transaction.commit', static function () use ($db): void {
+            $db->execute('SET SESSION completion_type = CHAIN');
+            $db->beginTransaction();
+        });
+        $db->on('transaction.commit', static function () use (&$secondRan): void {
+            $secondRan = true;
+        });
+
+        $db->beginTransaction();
+        try {
+            $db->commit();
+            $this->fail('Expected CommitHookException');
+        } catch (CommitHookException $e) {
+            $this->assertTrue($e->connectionInTransaction);
+            $this->assertCount(2, $e->failures);
+            $this->assertSame('listener left a transaction open', $e->failures[0]->getMessage());
+            $cleanupError = $e->failures[0]->getPrevious();
+            $this->assertInstanceOf(TransactionException::class, $cleanupError);
+            $this->assertSame('connection still in a transaction after PDO::rollBack()', $cleanupError->getDebugMessage());
+            $this->assertSame('listener skipped: connection left in transaction', $e->failures[1]->getMessage());
+            $this->assertSame($cleanupError, $e->failures[1]->getPrevious());
+            $this->assertTrue($db->inTransaction(), 'the chained transaction is open');
+        } finally {
+            $db->execute('SET SESSION completion_type = NO_CHAIN');
+            if ($db->inTransaction()) {
+                $db->rollback();
+            }
+        }
+
+        $this->assertFalse($secondRan);
+        $this->assertFalse($db->inTransaction());
     }
 
     public function testTransactionCommitWithoutBeginThrowsException(): void
