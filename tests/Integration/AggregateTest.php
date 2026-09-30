@@ -92,6 +92,7 @@ class AggregateTest extends TestCase
         }
         $this->assertSame(5, $this->db->table('users')->select(['*'])->distinct()->count(), 'a bare "*" without a join is fine');
         $this->assertSame(5, $this->db->table('users')->select(['users.*'])->distinct()->count());
+        $this->assertSame(4, $this->db->table('users')->select([Database::raw('LOWER(country) AS c'), 'status'])->distinct()->count(), 'raw entries are not inspected: is/de/de-inactive/at');
     }
 
     /**

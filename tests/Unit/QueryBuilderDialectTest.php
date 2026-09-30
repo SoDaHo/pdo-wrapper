@@ -11,6 +11,7 @@ use Sodaho\PdoWrapper\Driver\AbstractDriver;
 use Sodaho\PdoWrapper\Driver\SqliteDriver;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Query\QueryBuilder;
+use Sodaho\PdoWrapper\Query\RawExpression;
 
 /**
  * The SQL the builder renders per dialect, without executing it: IS / IS NOT, OFFSET without LIMIT, row locks.
@@ -55,6 +56,28 @@ class QueryBuilderDialectTest extends TestCase
         $this->assertSame('SELECT * FROM `users` WHERE `name` LIKE ? LOCK IN SHARE MODE', $sql);
         [$sql] = $ansi->table('users')->whereLike('name', 'a%')->sharedLock()->toSql();
         $this->assertSame('SELECT * FROM "users" WHERE "name" LIKE ? ESCAPE \'\\\' FOR SHARE', $sql);
+    }
+
+    /**
+     * A custom driver that does not override now()/utcNow() gets the SQL standard expression.
+     */
+    public function testAbstractDriverTimestampDefaultsAreCurrentTimestamp(): void
+    {
+        $driver = new class () extends SqliteDriver {
+            public function now(): RawExpression
+            {
+                return AbstractDriver::now();
+            }
+
+            public function utcNow(): RawExpression
+            {
+                return AbstractDriver::utcNow();
+            }
+        };
+
+        $this->assertSame('CURRENT_TIMESTAMP', (string) $driver->now());
+        $this->assertSame('CURRENT_TIMESTAMP', (string) $driver->utcNow());
+        $this->assertSame('SELECT * FROM `users` WHERE `created_at` < CURRENT_TIMESTAMP', $driver->table('users')->where('created_at', '<', $driver->now())->toSql()[0]);
     }
 
     public function testIsAndIsNotAreNullSafeEqualityPerDialect(): void

@@ -177,6 +177,33 @@ class PostgresDriverIntegrationTest extends TestCase
         $this->assertSame(1, $driver->table('test_silent_tokens')->count());
     }
 
+    /**
+     * The savepoint itself can fail: a 'query' hook that breaks the transaction right after the
+     * INSERT (a failing statement in silent mode aborts it) makes SAVEPOINT return false, and the
+     * insert is reported as failed with the savepoint's reason.
+     */
+    public function testFailingSavepointAroundTheInsertIdProbeIsReported(): void
+    {
+        $driver = new PostgresDriver(self::getConfig() + ['options' => [PDO::ATTR_ERRMODE => PDO::ERRMODE_SILENT]]);
+        $driver->execute('CREATE TEMPORARY TABLE test_savepoint_users (id SERIAL PRIMARY KEY, name TEXT)');
+        $driver->on('query', static function () use ($driver): void {
+            $driver->getPdo()->exec('SELECT 1/0'); // silent mode: returns false, the transaction is aborted
+        });
+
+        $driver->beginTransaction();
+        try {
+            $driver->insert('test_savepoint_users', ['name' => 'x']);
+            $this->fail('Expected QueryException was not thrown');
+        } catch (QueryException $e) {
+            $this->assertSame('Insert failed', $e->getMessage());
+            $this->assertStringContainsString('Savepoint around the insert ID probe failed: SAVEPOINT pdo_wrapper_insert_id failed: ', $e->getDebugMessage() ?? '');
+        } finally {
+            $driver->rollback();
+        }
+
+        $this->assertFalse($driver->getPdo()->inTransaction());
+    }
+
     public function testNowAndUtcNowAreUsableAsValues(): void
     {
         $this->driver->execute('CREATE TEMPORARY TABLE test_now (id SERIAL PRIMARY KEY, local_at TIMESTAMP, utc_at TIMESTAMP)');

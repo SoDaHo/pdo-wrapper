@@ -159,6 +159,42 @@ class TransactionTest extends TestCase
         $this->assertSame(0, $this->userCount($this->db));
     }
 
+    /**
+     * The quiet rollback after a throwing 'transaction.begin' hook is best effort: when it throws
+     * itself, the hook's exception still reaches the caller and the transaction stays open.
+     */
+    public function testFailingQuietRollbackAfterAThrowingBeginHookKeepsTheHookException(): void
+    {
+        $pdo = new class ('sqlite::memory:', null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC]) extends PDO {
+            public int $rollBackCalls = 0;
+
+            public function rollBack(): bool
+            {
+                $this->rollBackCalls++;
+                throw new PDOException('rollback failed');
+            }
+        };
+        $db = new class ($pdo) extends SqliteDriver {
+            public function __construct(PDO $pdo)
+            {
+                $this->pdo = $pdo;
+            }
+        };
+        $db->on('transaction.begin', static function (): void {
+            throw new RuntimeException('begin hook failed');
+        });
+
+        try {
+            $db->beginTransaction();
+            $this->fail('Expected RuntimeException was not thrown');
+        } catch (RuntimeException $e) {
+            $this->assertSame('begin hook failed', $e->getMessage());
+        }
+
+        $this->assertSame(1, $pdo->rollBackCalls);
+        $this->assertTrue($pdo->inTransaction(), 'the failed rollback left the transaction open');
+    }
+
     public function testBeginHookPdoExceptionIsStillATransactionExceptionAndRollsBack(): void
     {
         $this->db->on('transaction.begin', function (): void {
