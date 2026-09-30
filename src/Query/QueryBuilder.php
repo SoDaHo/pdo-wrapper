@@ -119,6 +119,7 @@ class QueryBuilder
      * - where('id', '=', 5)      → id = 5
      * - where('age', '>', 18)    → age > 18
      * - where(['active' => 1])   → active = 1
+     * - where('expires_at', '<', $db->now()) → expires_at < NOW()  (a RawExpression value is inlined, not bound)
      *
      * @param string|array<string, mixed> $column Column name or array of conditions
      * @param mixed $operatorOrValue Operator or value (if 2 args)
@@ -708,6 +709,11 @@ class QueryBuilder
         $params = [];
 
         foreach ($data as $column => $value) {
+            // A RawExpression value is inlined, never bound (SECURITY: never pass user input to Database::raw())
+            if ($value instanceof RawExpression) {
+                $setClauses[] = $this->quoteIdentifier($column) . ' = ' . $value;
+                continue;
+            }
             $setClauses[] = $this->quoteIdentifier($column) . ' = ?';
             $params[] = $value;
         }
@@ -890,6 +896,12 @@ class QueryBuilder
             switch ($type) {
                 case 'basic':
                     $operator = (string)($where['operator'] ?? '=');
+                    $value = $where['value'] ?? null;
+                    // A RawExpression value is inlined, never bound (SECURITY: never pass user input to Database::raw())
+                    if ($value instanceof RawExpression) {
+                        $clauses[] = $this->quoteIdentifier($column) . ' ' . $operator . ' ' . $value;
+                        break;
+                    }
                     $clause = $this->quoteIdentifier($column) . ' ' . $operator . ' ?';
                     // MySQL uses \ as default LIKE escape character, no ESCAPE clause needed.
                     // PostgreSQL and SQLite need an explicit ESCAPE clause.
@@ -897,7 +909,7 @@ class QueryBuilder
                         $clause .= " ESCAPE '\\'";
                     }
                     $clauses[] = $clause;
-                    $params[] = $where['value'] ?? null;
+                    $params[] = $value;
                     break;
 
                 case 'in':
@@ -944,6 +956,10 @@ class QueryBuilder
             $column = $h['column'] instanceof RawExpression
                 ? (string) $h['column']
                 : $this->quoteIdentifier($h['column']);
+            if ($h['value'] instanceof RawExpression) {
+                $clauses[] = $column . ' ' . $h['operator'] . ' ' . $h['value'];
+                continue;
+            }
             $clauses[] = $column . ' ' . $h['operator'] . ' ?';
             $params[] = $h['value'];
         }

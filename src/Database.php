@@ -95,16 +95,19 @@ class Database
      * Create a raw SQL expression that will not be quoted.
      *
      * Use this for aggregate functions, complex expressions, or any SQL
-     * that should be passed through without identifier quoting.
+     * that should be passed through without identifier quoting. As a value in
+     * insert()/update()/where()/having() the expression is inlined instead of bound.
      *
      * SECURITY WARNING: Never pass untrusted user input to this method.
-     * This bypasses SQL injection protection for identifiers.
+     * This bypasses SQL injection protection for identifiers and, as a value,
+     * the parameter binding.
      *
      * @param string $value The raw SQL string
      *
      * @example
      * $db->table('users')->select([Database::raw('COUNT(*) as total')])->get();
      * $db->table('orders')->select([Database::raw('SUM(amount) as revenue')])->get();
+     * $db->update('counters', ['hits' => Database::raw('hits + 1')], ['id' => $id]);
      */
     public static function raw(string $value): RawExpression
     {

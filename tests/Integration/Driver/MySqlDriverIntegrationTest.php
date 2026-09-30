@@ -70,6 +70,19 @@ class MySqlDriverIntegrationTest extends TestCase
         $this->assertSame('1', $id);
     }
 
+    public function testNowAndUtcNowAreUsableAsValues(): void
+    {
+        $this->driver->execute('CREATE TEMPORARY TABLE test_now (id INT AUTO_INCREMENT PRIMARY KEY, local_at DATETIME, utc_at DATETIME)');
+
+        $id = $this->driver->insert('test_now', ['local_at' => $this->driver->now(), 'utc_at' => $this->driver->utcNow()]);
+        $row = $this->driver->findOne('test_now', ['id' => $id]);
+
+        $this->assertNotNull($row);
+        $this->assertMatchesRegularExpression('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', (string) $row['local_at']);
+        $this->assertEqualsWithDelta(time(), (int) strtotime((string) $row['utc_at'] . ' UTC'), 5);
+        $this->assertSame(1, $this->driver->table('test_now')->where('utc_at', '<=', $this->driver->utcNow())->count());
+    }
+
     public function testConnectionUsesUtf8mb4(): void
     {
         $stmt = $this->driver->query("SHOW VARIABLES LIKE 'character_set_client'");

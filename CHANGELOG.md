@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Added
+- `now()` and `utcNow()` on every driver and in `DatabaseInterface`: the database's current local or UTC timestamp as a raw expression in the driver's dialect (MySQL `NOW()`/`UTC_TIMESTAMP()`, PostgreSQL `LOCALTIMESTAMP(0)`/`CAST(NOW() AT TIME ZONE 'UTC' AS TIMESTAMP(0))`, SQLite `datetime('now', 'localtime')`/`datetime('now')`), for use as a value in `insert()`, `update()` and `where()` (#1).
+
+### Changed
+- A `Database::raw()` expression given as a **value** in `insert()`, `update()`, `where()` or `having()` (drivers and query builder) is inlined into the SQL instead of being bound as a string. Before, such a value was stored or compared literally as text; `raw()` in `select()` lists is unchanged. As with every raw expression: never build it from user input.
+
 ## [1.1.1] - 2026-09-30
 
 ### Added

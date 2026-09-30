@@ -177,6 +177,19 @@ class PostgresDriverIntegrationTest extends TestCase
         $this->assertSame(1, $driver->table('test_silent_tokens')->count());
     }
 
+    public function testNowAndUtcNowAreUsableAsValues(): void
+    {
+        $this->driver->execute('CREATE TEMPORARY TABLE test_now (id SERIAL PRIMARY KEY, local_at TIMESTAMP, utc_at TIMESTAMP)');
+
+        $id = $this->driver->insert('test_now', ['local_at' => $this->driver->now(), 'utc_at' => $this->driver->utcNow()]);
+        $row = $this->driver->findOne('test_now', ['id' => $id]);
+
+        $this->assertNotNull($row);
+        $this->assertMatchesRegularExpression('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', (string) $row['local_at']);
+        $this->assertEqualsWithDelta(time(), (int) strtotime((string) $row['utc_at'] . ' UTC'), 5);
+        $this->assertSame(1, $this->driver->table('test_now')->where('utc_at', '<=', $this->driver->utcNow())->count());
+    }
+
     public function testConnectionExceptionHasDebugMessage(): void
     {
         try {

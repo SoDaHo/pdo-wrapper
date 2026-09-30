@@ -13,6 +13,7 @@ use Sodaho\PdoWrapper\DatabaseInterface;
 use Sodaho\PdoWrapper\Exception\CommitHookException;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Exception\TransactionException;
+use Sodaho\PdoWrapper\Query\RawExpression;
 use Sodaho\PdoWrapper\Traits\HasHooks;
 use Throwable;
 
@@ -426,17 +427,16 @@ abstract class AbstractDriver implements DatabaseInterface
             );
         }
 
-        $columns = array_keys($data);
-        $placeholders = array_fill(0, count($columns), '?');
+        [$columns, $values, $params] = $this->buildInsertParts($data);
 
         $sql = sprintf(
             'INSERT INTO %s (%s) VALUES (%s)',
             $this->quoteIdentifier($table),
-            implode(', ', array_map([$this, 'quoteIdentifier'], $columns)),
-            implode(', ', $placeholders)
+            $columns,
+            $values
         );
 
-        $this->query($sql, array_values($data));
+        $this->query($sql, $params);
 
         $lastId = $this->lastInsertId();
 
@@ -477,21 +477,14 @@ abstract class AbstractDriver implements DatabaseInterface
             );
         }
 
-        $setClauses = [];
-        $params = [];
-
-        foreach ($data as $column => $value) {
-            $setClauses[] = $this->quoteIdentifier($column) . ' = ?';
-            $params[] = $value;
-        }
-
+        [$setSql, $params] = $this->buildSetClause($data);
         [$whereSql, $whereParams] = $this->buildWhereClause($where);
         $params = array_merge($params, $whereParams);
 
         $sql = sprintf(
             'UPDATE %s SET %s WHERE %s',
             $this->quoteIdentifier($table),
-            implode(', ', $setClauses),
+            $setSql,
             $whereSql
         );
 
@@ -683,7 +676,64 @@ abstract class AbstractDriver implements DatabaseInterface
     }
 
     /**
+     * Build the column list, the VALUES list and the params of an INSERT.
+     *
+     * A RawExpression value is inlined into the VALUES list instead of being bound
+     * (SECURITY: never pass user input to Database::raw()).
+     *
+     * @param array<string, mixed> $data Column => value pairs
+     *
+     * @return array{0: string, 1: string, 2: array<int, mixed>} [columns sql, values sql, params]
+     */
+    protected function buildInsertParts(array $data): array
+    {
+        $columns = [];
+        $values = [];
+        $params = [];
+
+        foreach ($data as $column => $value) {
+            $columns[] = $this->quoteIdentifier($column);
+            if ($value instanceof RawExpression) {
+                $values[] = (string) $value;
+                continue;
+            }
+            $values[] = '?';
+            $params[] = $value;
+        }
+
+        return [implode(', ', $columns), implode(', ', $values), $params];
+    }
+
+    /**
+     * Build the SET clause of an UPDATE and its params.
+     *
+     * A RawExpression value is inlined instead of being bound (SECURITY: never pass user input to Database::raw()).
+     *
+     * @param array<string, mixed> $data Column => value pairs
+     *
+     * @return array{0: string, 1: array<int, mixed>} [sql, params]
+     */
+    protected function buildSetClause(array $data): array
+    {
+        $clauses = [];
+        $params = [];
+
+        foreach ($data as $column => $value) {
+            if ($value instanceof RawExpression) {
+                $clauses[] = $this->quoteIdentifier($column) . ' = ' . $value;
+                continue;
+            }
+            $clauses[] = $this->quoteIdentifier($column) . ' = ?';
+            $params[] = $value;
+        }
+
+        return [implode(', ', $clauses), $params];
+    }
+
+    /**
      * Build WHERE clause from conditions array.
+     *
+     * A RawExpression value is inlined instead of being bound (SECURITY: never pass user input to Database::raw()).
      *
      * @param array<string, mixed> $where Column => value pairs
      *
@@ -704,11 +754,39 @@ abstract class AbstractDriver implements DatabaseInterface
                     )
                 );
             }
+            if ($value instanceof RawExpression) {
+                $clauses[] = $this->quoteIdentifier($column) . ' = ' . $value;
+                continue;
+            }
             $clauses[] = $this->quoteIdentifier($column) . ' = ?';
             $params[] = $value;
         }
 
         return [implode(' AND ', $clauses), $params];
+    }
+
+    /**
+     * Current date and time as a raw SQL expression for insert()/update()/where() values.
+     *
+     * The shipped drivers return their dialect's expression (MySQL `NOW()`, PostgreSQL
+     * `LOCALTIMESTAMP(0)`, SQLite `datetime('now', 'localtime')`); this default is the SQL
+     * standard `CURRENT_TIMESTAMP`. Override in a custom driver.
+     */
+    public function now(): RawExpression
+    {
+        return new RawExpression('CURRENT_TIMESTAMP');
+    }
+
+    /**
+     * Current UTC date and time as a raw SQL expression.
+     *
+     * The shipped drivers return their dialect's expression (MySQL `UTC_TIMESTAMP()`, PostgreSQL
+     * `CAST(NOW() AT TIME ZONE 'UTC' AS TIMESTAMP(0))`, SQLite `datetime('now')`); this default is
+     * `CURRENT_TIMESTAMP`, which is UTC only where the server runs in UTC. Override in a custom driver.
+     */
+    public function utcNow(): RawExpression
+    {
+        return new RawExpression('CURRENT_TIMESTAMP');
     }
 
     /**

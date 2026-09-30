@@ -47,6 +47,20 @@ interface DatabaseInterface
     public function getPdo(): PDO;
 
     /**
+     * Current date and time of the database in local time, as a raw SQL expression for
+     * insert()/update()/where() values: MySQL `NOW()`, PostgreSQL `LOCALTIMESTAMP(0)`,
+     * SQLite `datetime('now', 'localtime')`. "Local" is the session's or server's time zone
+     * (SQLite: the operating system's), not PHP's date.timezone.
+     */
+    public function now(): Query\RawExpression;
+
+    /**
+     * Current UTC date and time as a raw SQL expression: MySQL `UTC_TIMESTAMP()`, PostgreSQL
+     * `CAST(NOW() AT TIME ZONE 'UTC' AS TIMESTAMP(0))`, SQLite `datetime('now')`.
+     */
+    public function utcNow(): Query\RawExpression;
+
+    /**
      * Begin a transaction.
      *
      * After a throwing 'transaction.begin' listener a rollback of the new transaction is attempted
@@ -125,6 +139,10 @@ interface DatabaseInterface
 
     /**
      * Insert a row and return the last insert ID.
+     *
+     * A Query\RawExpression value (Database::raw(), now(), utcNow()) is inlined into the SQL
+     * instead of being bound; the same applies to update() data and to WHERE condition values.
+     * SECURITY: never pass user input to Database::raw().
      *
      * @param string $table Table name
      * @param array<string, mixed> $data Column => value pairs

@@ -7,6 +7,7 @@ namespace Sodaho\PdoWrapper\Driver;
 use PDO;
 use PDOException;
 use Sodaho\PdoWrapper\Exception\ConnectionException;
+use Sodaho\PdoWrapper\Query\RawExpression;
 
 /**
  * SQLite database driver.
@@ -44,5 +45,23 @@ class SqliteDriver extends AbstractDriver
                 debugMessage: sprintf('SQLite connection failed: %s', $e->getMessage())
             );
         }
+    }
+
+    /**
+     * Current local date and time: `datetime('now', 'localtime')`.
+     *
+     * SQLite takes "local" from the operating system's time zone, not from PHP's date.timezone.
+     */
+    public function now(): RawExpression
+    {
+        return new RawExpression("datetime('now', 'localtime')");
+    }
+
+    /**
+     * Current UTC date and time: `datetime('now')`.
+     */
+    public function utcNow(): RawExpression
+    {
+        return new RawExpression("datetime('now')");
     }
 }

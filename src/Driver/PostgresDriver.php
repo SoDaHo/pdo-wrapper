@@ -8,6 +8,7 @@ use PDO;
 use PDOException;
 use Sodaho\PdoWrapper\Exception\ConnectionException;
 use Sodaho\PdoWrapper\Exception\QueryException;
+use Sodaho\PdoWrapper\Query\RawExpression;
 
 /**
  * PostgreSQL database driver.
@@ -100,17 +101,16 @@ class PostgresDriver extends AbstractDriver
             );
         }
 
-        $columns = array_keys($data);
-        $placeholders = array_fill(0, count($columns), '?');
+        [$columns, $values, $params] = $this->buildInsertParts($data);
 
         $sql = sprintf(
             'INSERT INTO %s (%s) VALUES (%s)',
             $this->quoteIdentifier($table),
-            implode(', ', array_map([$this, 'quoteIdentifier'], $columns)),
-            implode(', ', $placeholders)
+            $columns,
+            $values
         );
 
-        $this->query($sql, array_values($data));
+        $this->query($sql, $params);
 
         // Strip schema prefix for sequence name (e.g. "public.users" -> "users")
         $baseTable = str_contains($table, '.') ? substr($table, strrpos($table, '.') + 1) : $table;
@@ -193,5 +193,21 @@ class PostgresDriver extends AbstractDriver
             $reason = is_string($info[2] ?? null) ? $info[2] : 'unknown error';
             throw new PDOException(sprintf('%s failed: %s', $sql, $reason));
         }
+    }
+
+    /**
+     * Current date and time in the session's time zone, to the second: `LOCALTIMESTAMP(0)`.
+     */
+    public function now(): RawExpression
+    {
+        return new RawExpression('LOCALTIMESTAMP(0)');
+    }
+
+    /**
+     * Current UTC date and time, to the second.
+     */
+    public function utcNow(): RawExpression
+    {
+        return new RawExpression("CAST(NOW() AT TIME ZONE 'UTC' AS TIMESTAMP(0))");
     }
 }

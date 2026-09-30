@@ -7,6 +7,7 @@ namespace Sodaho\PdoWrapper\Driver;
 use PDO;
 use PDOException;
 use Sodaho\PdoWrapper\Exception\ConnectionException;
+use Sodaho\PdoWrapper\Query\RawExpression;
 
 /**
  * MySQL database driver.
@@ -107,5 +108,21 @@ class MySqlDriver extends AbstractDriver
     protected function getQuoteChar(): string
     {
         return '`';
+    }
+
+    /**
+     * Current date and time in the session's time zone: `NOW()`.
+     */
+    public function now(): RawExpression
+    {
+        return new RawExpression('NOW()');
+    }
+
+    /**
+     * Current UTC date and time: `UTC_TIMESTAMP()`.
+     */
+    public function utcNow(): RawExpression
+    {
+        return new RawExpression('UTC_TIMESTAMP()');
     }
 }

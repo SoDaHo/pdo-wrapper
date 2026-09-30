@@ -347,6 +347,32 @@ $affected = $db->table('users')
 // $params = [1]
 ```
 
+## Timestamps and Raw Values
+
+`now()` and `utcNow()` return the database's current time as a raw SQL expression, so every driver uses its own dialect and the clock of the database server, not PHP's:
+
+```php
+$db->insert('logs', ['message' => 'started', 'created_at' => $db->utcNow()]);
+$db->table('sessions')->where('expires_at', '<', $db->now())->delete();
+```
+
+| Driver | `now()` (local time) | `utcNow()` |
+|---|---|---|
+| MySQL / MariaDB | `NOW()` | `UTC_TIMESTAMP()` |
+| PostgreSQL | `LOCALTIMESTAMP(0)` | `CAST(NOW() AT TIME ZONE 'UTC' AS TIMESTAMP(0))` |
+| SQLite | `datetime('now', 'localtime')` | `datetime('now')` |
+
+"Local" is the database session's time zone; SQLite takes it from the operating system, not from PHP's `date.timezone`. When PHP and the database may run in different zones, `utcNow()` is the unambiguous choice.
+
+Any `Database::raw()` expression works the same way as a **value** in `insert()`, `update()`, `where()` and `having()`, in the CRUD methods and in the query builder alike. It is inlined into the SQL instead of being bound, which allows expressions on the row itself:
+
+```php
+$db->update('counters', ['hits' => Database::raw('hits + 1')], ['id' => $id]);
+$db->table('jobs')->where('attempts', '<', Database::raw('max_attempts'))->get();
+```
+
+**Security Note:** a raw value is not a bound parameter. Never build it from user input (see [Raw Expressions](#raw-expressions)).
+
 ## Transactions
 
 ```php
@@ -532,7 +558,7 @@ $db->table('users')
     ->get();
 ```
 
-**Security Note:** Never pass user input to `Database::raw()`. Raw expressions bypass all identifier quoting.
+**Security Note:** Never pass user input to `Database::raw()`. Raw expressions bypass all identifier quoting, and as values in `insert()`, `update()`, `where()` or `having()` they are inlined instead of bound (see [Timestamps and Raw Values](#timestamps-and-raw-values)).
 
 ### User Input in Column Names
 
