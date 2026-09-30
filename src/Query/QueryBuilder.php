@@ -121,11 +121,14 @@ class QueryBuilder
      * - where(['active' => 1])   → active = 1
      * - where('expires_at', '<', $db->now()) → expires_at < NOW()  (a RawExpression value is inlined, not bound)
      *
+     * The argument count decides the form: with two arguments the second one is always the value
+     * (so 'IS' for Iceland or 'LIKE' as a value is fine), with three it is the operator.
+     *
      * @param string|array<string, mixed> $column Column name or array of conditions
      * @param mixed $operatorOrValue Operator or value (if 2 args)
      * @param mixed $value Value (if 3 args)
      *
-     * @throws QueryException When called with only column name (missing value)
+     * @throws QueryException When the value is null (use whereNull()/whereNotNull()) or the operator is not allowed
      */
     public function where(string|array $column, mixed $operatorOrValue = null, mixed $value = null): self
     {
@@ -148,43 +151,31 @@ class QueryBuilder
             return $this;
         }
 
-        // Must have at least 2 arguments for string column
-        // Also catches where('col', null) — 2-argument form with null value
-        if ($operatorOrValue === null) {
-            throw new QueryException(
-                message: 'Query failed',
-                debugMessage: sprintf(
-                    'Cannot use null value in where(). SQL "column = NULL" is always false. Use whereNull(\'%s\') or whereNotNull(\'%s\') instead.',
-                    $column,
-                    $column
-                )
-            );
+        // Two arguments: where('id', 5) means equality, whatever the value looks like.
+        if (func_num_args() < 3) {
+            $value = $operatorOrValue;
+            $operator = '=';
+        } else {
+            $operator = $this->validateOperator((string) $operatorOrValue);
         }
 
-        // 3-argument form: where('col', '=', null) — reject null values
-        // Detect by checking if $operatorOrValue looks like an operator
-        if ($value === null && in_array(strtoupper(trim((string) $operatorOrValue)), self::ALLOWED_OPERATORS, true)) {
+        // where('col', null) and where('col', '=', null): "column = NULL" is always false
+        if ($value === null) {
             throw new QueryException(
                 message: 'Query failed',
                 debugMessage: sprintf(
                     'Cannot use null value in where(). SQL "column %s NULL" is always false. Use whereNull(\'%s\') or whereNotNull(\'%s\') instead.',
-                    strtoupper(trim((string) $operatorOrValue)),
+                    $operator,
                     $column,
                     $column
                 )
             );
-        }
-
-        // Two params: where('id', 5) → equals
-        if ($value === null) {
-            $value = $operatorOrValue;
-            $operatorOrValue = '=';
         }
 
         $this->wheres[] = [
             'type' => 'basic',
             'column' => $column,
-            'operator' => $this->validateOperator((string)$operatorOrValue),
+            'operator' => $operator,
             'value' => $value,
         ];
 
@@ -703,6 +694,13 @@ class QueryBuilder
             );
         }
 
+        if (empty($data)) {
+            throw new QueryException(
+                message: 'Update failed',
+                debugMessage: 'Cannot update with empty data'
+            );
+        }
+
         [$whereSql, $whereParams] = $this->buildWhere();
 
         $setClauses = [];
@@ -1000,11 +998,11 @@ class QueryBuilder
         // Escape character: double the quote char (standard SQL escaping)
         $escape = $this->quoteChar . $this->quoteChar;
 
-        // Handle table.column format
+        // Handle table.column format; "users.*" keeps its wildcard: "users".*
         if (str_contains($identifier, '.')) {
             $parts = explode('.', $identifier);
             return implode('.', array_map(
-                fn ($p) => $this->quoteChar . str_replace($this->quoteChar, $escape, $p) . $this->quoteChar,
+                fn ($p) => $p === '*' ? '*' : $this->quoteChar . str_replace($this->quoteChar, $escape, $p) . $this->quoteChar,
                 $parts
             ));
         }

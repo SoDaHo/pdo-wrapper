@@ -513,6 +513,75 @@ class EdgeCaseTest extends TestCase
         }
     }
 
+    /**
+     * Regression test: where('country', 'IS') threw "null value", because the value spelled an operator.
+     * With two arguments the second one is always the value.
+     */
+    public function testWhereWithTwoArgumentsTreatsAnOperatorNamedValueAsValue(): void
+    {
+        $db = Database::sqlite(':memory:');
+        $db->execute('CREATE TABLE users (id INTEGER PRIMARY KEY, country TEXT)');
+        $db->insert('users', ['country' => 'IS']);
+        $db->insert('users', ['country' => 'DE']);
+
+        [$sql, $params] = $db->table('users')->where('country', 'IS')->toSql();
+        $this->assertSame('SELECT * FROM "users" WHERE "country" = ?', $sql);
+        $this->assertSame(['IS'], $params);
+        $this->assertCount(1, $db->table('users')->where('country', 'IS')->get());
+        $this->assertCount(0, $db->table('users')->where('country', 'LIKE')->get());
+    }
+
+    public function testWhereWithThreeArgumentsValidatesOperatorAndRejectsNull(): void
+    {
+        $db = Database::sqlite(':memory:');
+
+        try {
+            $db->table('users')->where('name', '=', null);
+            $this->fail('Expected QueryException was not thrown');
+        } catch (QueryException $e) {
+            $this->assertStringContainsString('whereNull', $e->getDebugMessage() ?? '');
+        }
+
+        try {
+            $db->table('users')->where('name', 'A', null);
+            $this->fail('Expected QueryException was not thrown');
+        } catch (QueryException $e) {
+            $this->assertStringContainsString('Invalid operator "A"', $e->getDebugMessage() ?? '');
+        }
+    }
+
+    /**
+     * Regression test: select(['users.*']) produced "users"."*" (no such column).
+     */
+    public function testSelectTableWildcardIsNotQuoted(): void
+    {
+        $db = Database::sqlite(':memory:');
+        $db->execute('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)');
+        $db->execute('CREATE TABLE orders (id INTEGER PRIMARY KEY, user_id INTEGER, total INTEGER)');
+        $db->insert('users', ['name' => 'Max']);
+        $db->insert('orders', ['user_id' => 1, 'total' => 5]);
+
+        $query = $db->table('users')->select(['users.*', 'orders.total'])->join('orders', 'users.id', '=', 'orders.user_id');
+        [$sql] = $query->toSql();
+
+        $this->assertSame('SELECT "users".*, "orders"."total" FROM "users" INNER JOIN "orders" ON "users"."id" = "orders"."user_id"', $sql);
+        $this->assertSame([['id' => 1, 'name' => 'Max', 'total' => 5]], $query->get());
+    }
+
+    public function testBuilderUpdateWithEmptyDataThrowsClearException(): void
+    {
+        $db = Database::sqlite(':memory:');
+        $db->execute('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)');
+
+        try {
+            $db->table('users')->where('id', 1)->update([]);
+            $this->fail('Expected QueryException was not thrown');
+        } catch (QueryException $e) {
+            $this->assertSame('Update failed', $e->getMessage());
+            $this->assertSame('Cannot update with empty data', $e->getDebugMessage());
+        }
+    }
+
     public function testUpdateWithoutLimitOrOrderByStillWorks(): void
     {
         $db = Database::sqlite(':memory:');
