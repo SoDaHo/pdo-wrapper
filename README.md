@@ -330,7 +330,14 @@ $min = $db->table('orders')->min('total');
 $max = $db->table('orders')->max('total');
 
 $exists = $db->table('users')->where('email', 'test@example.com')->exists();
+
+// Distinct values and groups
+$countries = $db->table('users')->select('country')->distinct()->count();          // number of distinct countries
+$authors   = $db->table('posts')->groupBy('user_id')->having(Database::raw('COUNT(*)'), '>', 5)->count(); // groups with more than 5 posts
+$revenue   = $db->table('orders')->distinct()->sum('amount');                      // SUM(DISTINCT amount)
 ```
+
+`sum()`, `avg()`, `min()` and `max()` combined with `groupBy()` throw a `QueryException`: one value per group is ambiguous, select the aggregate explicitly with `Database::raw()` and `get()` instead. `distinct()->count()` over a join needs named `select()` columns (or `count('column')`): a bare `*` or a wildcard next to other entries throws a `QueryException`, because the counted derived table would repeat column names (MySQL rejects that); a single `table.*` is fine, `Database::raw()` entries are not inspected. With `groupBy()`, only aliased `select()` entries (`'country as c'`, `Database::raw('LOWER(name) AS ln')`, `Database::raw('COUNT(*) AS n')`) stay in the counted query, so `groupBy('ln')` works everywhere and `having('n', '>', 1)` where the database accepts select aliases in `HAVING` (MySQL/MariaDB and SQLite, not PostgreSQL). `having()` without `groupBy()` treats the whole result as one group: `count()` returns its row count, and `distinct()` only applies to `count('column')` then.
 
 ### Insert, Update, Delete via Query Builder
 

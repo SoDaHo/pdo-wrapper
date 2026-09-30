@@ -636,6 +636,19 @@ class QueryBuilder
     /**
      * Get the count of matching records.
      *
+     * With distinct(): the number of distinct rows of the selected columns (or COUNT(DISTINCT col)
+     * for a column). Over a join the select() must not repeat column names (MySQL rejects them in the
+     * counted derived table): a bare "*" or a wildcard next to other entries throws a QueryException,
+     * a single "table.*" is allowed, raw() entries are not inspected.
+     *
+     * With groupBy(): the number of groups, having() included; the column argument is irrelevant then.
+     * Only aliased select() entries ("col as x", raw('COUNT(*) AS n'); scalar or aggregate expressions,
+     * one per alias) stay in the counted query, so groupBy() may refer to an alias, and having() where
+     * the database allows it (MySQL/MariaDB and SQLite; PostgreSQL rejects select aliases in HAVING).
+     * having() without groupBy() makes the whole set one group: count() is its row count and distinct()
+     * only applies to count('column') then (a non-aggregated select() is rejected by every driver in
+     * that case).
+     *
      * @param string $column Column to count (default: *)
      *
      * @return int Number of records
@@ -648,6 +661,9 @@ class QueryBuilder
 
     /**
      * Get the sum of a column.
+     *
+     * With distinct(): SUM(DISTINCT col). With groupBy() the value is ambiguous (one per group) and a
+     * QueryException is thrown; the same holds for avg(), min() and max().
      *
      * @param string $column Column to sum
      *
@@ -709,13 +725,56 @@ class QueryBuilder
         $query->orderBy = [];
         $query->lock = null; // PostgreSQL rejects FOR UPDATE with aggregates
 
-        if ($column === '*') {
-            $query->columns = [new RawExpression("{$function}(*) as aggregate")];
+        if (!empty($this->groupBy)) {
+            // One value per group is ambiguous for sum()/avg()/min()/max(); count() means "how many groups"
+            // (having() applies): one row per group of the grouped select, counted in a derived table.
+            // Only aliased select() entries stay in the inner select (one per alias), so that having() and
+            // groupBy() can refer to the aliases; everything else is dropped: it does not affect the number
+            // of groups, and unaliased or repeated entries could repeat column names, which MySQL rejects
+            // in a derived table. DISTINCT is dropped too: it could merge groups with equal projections.
+            if ($function !== 'COUNT') {
+                throw new QueryException(
+                    message: 'Query failed',
+                    debugMessage: sprintf(
+                        '%s() with groupBy() is ambiguous (one value per group). Select the aggregate explicitly with Database::raw() and get().',
+                        strtolower($function)
+                    )
+                );
+            }
+            $query->distinct = false;
+            $aliased = [];
+            foreach ($this->columns as $entry) {
+                if (preg_match('/\s+as\s+(\w+)$/i', (string) $entry, $match) === 1) {
+                    $aliased[strtolower($match[1])] ??= $entry;
+                }
+            }
+            $query->columns = array_values($aliased) ?: [new RawExpression('1 as g')];
+            [$innerSql, $params] = $query->toSql();
+            $sql = sprintf('SELECT COUNT(*) as aggregate FROM (%s) as grouped', $innerSql);
+        } elseif ($this->distinct && $column === '*' && empty($this->having)) {
+            // count() of the distinct rows: count the distinct select itself (with having() but no
+            // groupBy() the whole set is one group: that case takes the plain aggregate path below).
+            // Over a join, a wildcard next to other entries (or a bare "*") would repeat column names in
+            // the derived table, which MySQL rejects; a single "table.*" is fine. Raw entries are not parsed.
+            $wildcards = array_filter($this->columns, static fn (string|RawExpression $c): bool => $c === '*' || (is_string($c) && str_ends_with($c, '.*')));
+            if (!empty($this->joins) && $wildcards !== [] && (in_array('*', $wildcards, true) || count($this->columns) > 1)) {
+                throw new QueryException(
+                    message: 'Query failed',
+                    debugMessage: 'distinct()->count() over a join needs explicit select() columns: no bare "*", and a "table.*" only on its own (repeated column names fail in the derived table). Name the columns, or count one column with count(\'column\').'
+                );
+            }
+            [$innerSql, $params] = $query->toSql();
+            $sql = sprintf('SELECT COUNT(*) as aggregate FROM (%s) as distinct_rows', $innerSql);
         } else {
-            $query->columns = [new RawExpression("{$function}({$query->quoteIdentifier($column)}) as aggregate")];
+            // distinct() narrows the aggregate to distinct values of the column: COUNT(DISTINCT col), SUM(DISTINCT col);
+            // "*" has no DISTINCT form (only reached with having(): one group, all rows)
+            $target = $column === '*' ? '*' : $query->quoteIdentifier($column);
+            $expression = ($this->distinct && $column !== '*') ? "{$function}(DISTINCT {$target})" : "{$function}({$target})";
+            $query->distinct = false;
+            $query->columns = [new RawExpression("{$expression} as aggregate")];
+            [$sql, $params] = $query->toSql();
         }
 
-        [$sql, $params] = $query->toSql();
         $stmt = $this->db->query($sql, $params);
         /** @var array<string, mixed>|false $result */
         $result = $stmt->fetch(PDO::FETCH_ASSOC);

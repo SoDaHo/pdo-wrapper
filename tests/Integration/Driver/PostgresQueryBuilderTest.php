@@ -105,6 +105,28 @@ class PostgresQueryBuilderTest extends TestCase
         $this->assertSame(['id' => 1], $probe());
     }
 
+    public function testCountWithDistinctAndGroupByExecutes(): void
+    {
+        $this->db->insert('qb_test', ['name' => 'Max', 'age' => 40]);
+        $this->db->insert('qb_test', ['name' => 'Max', 'age' => 25]); // ages 25, 30, 40, 25: SUM 120, SUM(DISTINCT) 95
+
+        $this->assertSame(2, $this->db->table('qb_test')->select('name')->distinct()->count());
+        $this->assertSame(2, $this->db->table('qb_test')->distinct()->count('name'));
+        $this->assertSame(2, $this->db->table('qb_test')->groupBy('name')->count());
+        $this->assertSame(1, $this->db->table('qb_test')->groupBy('name')->having(Database::raw('COUNT(*)'), '>', 1)->count());
+        $this->assertSame(120.0, $this->db->table('qb_test')->sum('age'));
+        $this->assertSame(95.0, $this->db->table('qb_test')->distinct()->sum('age'));
+        // group keys from two tables: four users, one of them with a profile (the orphan profile is not in a LEFT JOIN)
+        $this->assertSame(4, $this->db->table('qb_test')->leftJoin('qb_profiles', 'qb_test.id', '=', 'qb_profiles.user_id')->groupBy(['qb_test.id', 'qb_profiles.id'])->count());
+        $this->assertSame(5, $this->db->table('qb_test')->rightJoin('qb_profiles', 'qb_test.id', '=', 'qb_profiles.user_id')->groupBy(['qb_test.id', 'qb_profiles.id'])->count() + 3, 'right join: one matched and one orphan profile');
+        $this->assertSame(2, $this->db->table('qb_test')->leftJoin('qb_profiles', 'qb_test.id', '=', 'qb_profiles.user_id')->select(['qb_test.name'])->distinct()->count());
+        $this->assertSame(4, $this->db->table('qb_test')->leftJoin('qb_profiles', 'qb_test.id', '=', 'qb_profiles.user_id')->select(['qb_test.*'])->distinct()->count(), 'one wildcard over a join: four users, distinct by id');
+        $this->assertSame(4, $this->db->table('qb_test')->leftJoin('qb_profiles', 'qb_test.id', '=', 'qb_profiles.user_id')->select(['qb_test.*', 'qb_profiles.*'])->groupBy(['qb_test.id', 'qb_profiles.id'])->count(), 'wildcards dropped from the grouped select');
+        $this->assertSame(2, $this->db->table('qb_test')->select([Database::raw('LOWER(name) AS ln')])->groupBy('ln')->count(), 'groupBy() on a select alias');
+        // PostgreSQL rejects a select alias in HAVING; the aggregate itself works
+        $this->assertSame(1, $this->db->table('qb_test')->select(['name', Database::raw('COUNT(*) AS n')])->groupBy('name')->having(Database::raw('COUNT(*)'), '>', 1)->count());
+    }
+
     public function testExistsWithOffsetAndLocksExecutes(): void
     {
         $this->db->beginTransaction();

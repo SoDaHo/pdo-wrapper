@@ -131,6 +131,37 @@ class MySqlQueryBuilderTest extends TestCase
         $this->assertSame(['id' => 1], $probe());
     }
 
+    public function testCountWithDistinctAndGroupByExecutes(): void
+    {
+        $this->db->insert('qb_test', ['name' => 'Max', 'age' => 40]);
+        $this->db->insert('qb_test', ['name' => 'Max', 'age' => 25]); // ages 25, 30, 40, 25: SUM 120, SUM(DISTINCT) 95
+        $this->db->execute('DROP TABLE IF EXISTS qb_profiles');
+        $this->db->execute('CREATE TABLE qb_profiles (id INT AUTO_INCREMENT PRIMARY KEY, user_id INT, name VARCHAR(255))');
+        $this->db->insert('qb_profiles', ['user_id' => 1, 'name' => 'Developer']);
+
+        $this->assertSame(2, $this->db->table('qb_test')->select('name')->distinct()->count());
+        $this->assertSame(2, $this->db->table('qb_test')->distinct()->count('name'));
+        $this->assertSame(2, $this->db->table('qb_test')->groupBy('name')->count());
+        $this->assertSame(1, $this->db->table('qb_test')->groupBy('name')->having(Database::raw('COUNT(*)'), '>', 1)->count());
+        $this->assertSame(120.0, $this->db->table('qb_test')->sum('age'));
+        $this->assertSame(95.0, $this->db->table('qb_test')->distinct()->sum('age'));
+        // a join with clashing column names ("name" in both tables) must not break the derived table
+        $this->assertSame(2, $this->db->table('qb_test')->leftJoin('qb_profiles', 'qb_test.id', '=', 'qb_profiles.user_id')->groupBy('qb_test.name')->count());
+        $this->assertSame(4, $this->db->table('qb_test')->leftJoin('qb_profiles', 'qb_test.id', '=', 'qb_profiles.user_id')->groupBy(['qb_test.id', 'qb_profiles.id'])->count());
+        $this->assertSame(2, $this->db->table('qb_test')->leftJoin('qb_profiles', 'qb_test.id', '=', 'qb_profiles.user_id')->select(['qb_test.name'])->distinct()->count());
+        $this->assertSame(4, $this->db->table('qb_test')->leftJoin('qb_profiles', 'qb_test.id', '=', 'qb_profiles.user_id')->select(['qb_test.*'])->distinct()->count(), 'one wildcard over a join: four users, distinct by id');
+        // clashing names in an explicit select() are dropped from the grouped select (MySQL rejects them in a derived table)
+        $this->assertSame(4, $this->db->table('qb_test')->leftJoin('qb_profiles', 'qb_test.id', '=', 'qb_profiles.user_id')->select(['qb_test.*', 'qb_profiles.*'])->groupBy(['qb_test.id', 'qb_profiles.id'])->count());
+        $this->assertSame(2, $this->db->table('qb_test')->leftJoin('qb_profiles', 'qb_test.id', '=', 'qb_profiles.user_id')->select(['qb_test.name', 'qb_profiles.name'])->groupBy('qb_test.name')->count());
+        // having() on a select alias keeps working, because aliased select() entries stay in the inner select
+        $this->assertSame(1, $this->db->table('qb_test')->select([Database::raw('COUNT(*) AS n')])->groupBy('name')->having('n', '>', 1)->count());
+        $this->assertSame(1, $this->db->table('qb_test')->select(['name', 'age', Database::raw('COUNT(*) AS n')])->groupBy('name')->having('n', '>', 1)->count(), 'plain columns dropped, alias kept');
+        $this->assertSame(1, $this->db->table('qb_test')->select([Database::raw('COUNT(*)'), Database::raw('COUNT(*) AS n'), Database::raw('COUNT(*) AS n')])->groupBy('name')->having('n', '>', 1)->count(), 'unaliased and repeated aliases would repeat a column name in the derived table');
+        $this->assertSame(2, $this->db->table('qb_test')->select([Database::raw('LOWER(name) AS ln')])->groupBy('ln')->count());
+
+        $this->db->execute('DROP TABLE IF EXISTS qb_profiles');
+    }
+
     public function testExistsWithOffsetAndLocksExecutes(): void
     {
         $this->db->beginTransaction();
