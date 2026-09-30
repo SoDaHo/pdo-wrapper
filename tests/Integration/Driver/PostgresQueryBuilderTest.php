@@ -58,6 +58,12 @@ class PostgresQueryBuilderTest extends TestCase
         $this->assertSame(['Anna'], array_column($rows, 'name'));
     }
 
+    public function testWhereRawExecutes(): void
+    {
+        $this->assertSame(['Max'], array_column($this->db->table('qb_test')->where('age', '<', 40)->whereRaw('LOWER(name) = ? OR age > ?', ['max', 100])->get(), 'name'));
+        $this->assertSame(1, $this->db->table('qb_test')->whereRaw('age BETWEEN ? AND ?', [26, 35])->count());
+    }
+
     public function testRowLocksExecuteInsideATransaction(): void
     {
         $this->db->beginTransaction();

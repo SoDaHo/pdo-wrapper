@@ -8,7 +8,7 @@ A lightweight PHP PDO wrapper with fluent Query Builder, supporting MySQL/MariaD
 - **Readable codebase** -- the entire source fits in a handful of files. You can read and understand all of it in minutes.
 - **Multi-database** -- MySQL, MariaDB, PostgreSQL, SQLite behind one API, with driver-specific details handled internally.
 - **Safe defaults** -- prepared statements, identifier quoting, operator whitelist. Hard to accidentally write an injection vulnerability.
-- **Intentionally limited** -- no OR conditions, no subqueries, no UNION in the query builder. When you need complex SQL, you write SQL. The builder handles the straightforward queries.
+- **Intentionally limited** -- no dedicated OR methods, no subqueries, no UNION in the query builder. When you need complex SQL, you write SQL: a raw condition with bound values via `whereRaw()`, or the whole statement. The builder handles the straightforward queries.
 
 ## Installation
 
@@ -91,6 +91,18 @@ UPDATE t SET flag = 0 WHERE typeof(flag) = 'text' AND flag = '' COLLATE BINARY;
 UPDATE t SET n = CAST(n AS INTEGER) WHERE typeof(n) = 'text' AND CAST(CAST(n AS INTEGER) AS TEXT) = n COLLATE BINARY;
 ```
 
+### One Config for Every Environment
+
+`Database::connect()` picks the driver from the config (`driver`) or from `DB_DRIVER`, and delegates to `mysql()`, `postgres()` or `sqlite()` with the same keys and environment fallbacks - MariaDB in production, SQLite in tests, one call:
+
+```php
+$db = Database::connect(['driver' => 'mysql', 'host' => 'localhost', 'database' => 'myapp', 'username' => 'root', 'password' => 'secret']);
+$db = Database::connect(['driver' => 'sqlite', 'path' => ':memory:']);
+$db = Database::connect(); // driver and connection values from the environment
+```
+
+Accepted driver names: `mysql` (also `mariadb`), `pgsql` (also `postgres`, `postgresql`), `sqlite`. A missing or unknown driver throws a `ConnectionException`.
+
 ### Environment Variables
 
 All drivers support configuration via environment variables:
@@ -101,6 +113,9 @@ All drivers support configuration via environment variables:
 
 // SQLite reads from:
 // DB_SQLITE_PATH
+
+// Database::connect() reads the driver from:
+// DB_DRIVER (mysql, pgsql or sqlite)
 ```
 
 **Priority:** `$config` array > `$_ENV` > `getenv()`. The library checks `$_ENV` first (thread-safe), then falls back to `getenv()` for legacy compatibility. Use a library like [sodaho/env-loader](https://github.com/sodaho/env-loader) to load `.env` files.
@@ -269,6 +284,17 @@ $users = $db->table('users')
 ```
 
 `IS` and `IS NOT` with a bound value compare **null-safely**: `where('nick', 'IS NOT', 'anna')` also matches rows whose `nick` is NULL. The builder renders them in each database's own syntax (SQLite `IS`, MySQL/MariaDB `<=>`, PostgreSQL `IS NOT DISTINCT FROM`). With a raw value (`where('flag', 'IS', Database::raw('TRUE'))`) the SQL is passed through unchanged, so truth tests keep their database semantics. For a plain NULL test use `whereNull()` / `whereNotNull()`.
+
+`whereRaw()` takes a condition the other methods cannot express - an expression on the left, an OR group, a database function - with its values bound in order; it is joined to the other conditions with AND, in parentheses. The SQL is trusted developer code (never build it from user input; user input goes into the bindings):
+
+```php
+$users = $db->table('users')
+    ->where('status', 'active')
+    ->whereRaw('LOWER(email) = ?', [$email])
+    ->whereRaw('score > ? OR created_at < ?', [100, $cutoff])
+    ->get();
+// SELECT * FROM "users" WHERE "status" = ? AND (LOWER(email) = ?) AND (score > ? OR created_at < ?)
+```
 
 ### Joins
 

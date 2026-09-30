@@ -237,6 +237,48 @@ class QueryBuilder
     }
 
     /**
+     * Add a raw WHERE condition with bound values.
+     *
+     * For conditions the other where*() methods cannot express: an expression on the left
+     * (LOWER(email) = ?), an OR group, a database function. The SQL is used as given, in
+     * parentheses, joined to the other conditions with AND; the values are bound to its ?
+     * placeholders in order (positional placeholders only, like the rest of the builder).
+     *
+     * SECURITY: the SQL is trusted developer code, never build it from user input; user input
+     * belongs in $bindings. A RawExpression is not accepted as a binding: write it into the SQL.
+     *
+     * @param string $sql Condition with ? placeholders, e.g. 'LOWER(email) = ?'
+     * @param array<array-key, mixed> $bindings Values for the placeholders, in order
+     *
+     * @throws QueryException When $sql is empty or a binding is a RawExpression
+     */
+    public function whereRaw(string $sql, array $bindings = []): self
+    {
+        if (trim($sql) === '') {
+            throw new QueryException(
+                message: 'Query failed',
+                debugMessage: 'whereRaw() needs a condition'
+            );
+        }
+        foreach ($bindings as $binding) {
+            if ($binding instanceof RawExpression) {
+                throw new QueryException(
+                    message: 'Query failed',
+                    debugMessage: 'whereRaw() binds its values; write a raw expression into the SQL instead'
+                );
+            }
+        }
+
+        $this->wheres[] = [
+            'type' => 'raw',
+            'sql' => trim($sql),
+            'bindings' => array_values($bindings),
+        ];
+
+        return $this;
+    }
+
+    /**
      * Add a WHERE IN condition.
      *
      * @param string $column Column name
@@ -694,7 +736,9 @@ class QueryBuilder
      *
      * @param string $column Column to check
      *
-     * @return mixed Minimum value or null if no rows
+     * @return mixed Minimum value in the driver's native type (PostgreSQL returns numeric and
+     *               date/time values as strings, MySQL and SQLite return integers for integer
+     *               columns), or null if no rows
      */
     public function min(string $column): mixed
     {
@@ -706,7 +750,9 @@ class QueryBuilder
      *
      * @param string $column Column to check
      *
-     * @return mixed Maximum value or null if no rows
+     * @return mixed Maximum value in the driver's native type (PostgreSQL returns numeric and
+     *               date/time values as strings, MySQL and SQLite return integers for integer
+     *               columns), or null if no rows
      */
     public function max(string $column): mixed
     {
@@ -1118,6 +1164,16 @@ class QueryBuilder
                         $clause .= " ESCAPE '\\'";
                     }
                     $clauses[] = $clause;
+                    break;
+
+                case 'raw':
+                    // Trusted developer SQL (see whereRaw()); its values are bound in order with the others
+                    $clauses[] = '(' . (string)($where['sql'] ?? '') . ')';
+                    /** @var array<int, mixed> $bindings */
+                    $bindings = is_array($where['bindings'] ?? null) ? array_values($where['bindings']) : [];
+                    foreach ($bindings as $binding) {
+                        $params[] = $binding;
+                    }
                     break;
 
                 case 'in':

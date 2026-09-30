@@ -7,6 +7,7 @@ namespace Sodaho\PdoWrapper;
 use Sodaho\PdoWrapper\Driver\MySqlDriver;
 use Sodaho\PdoWrapper\Driver\PostgresDriver;
 use Sodaho\PdoWrapper\Driver\SqliteDriver;
+use Sodaho\PdoWrapper\Exception\ConnectionException;
 use Sodaho\PdoWrapper\Query\RawExpression;
 
 /**
@@ -15,6 +16,7 @@ use Sodaho\PdoWrapper\Query\RawExpression;
  * Configuration priority: $config array > $_ENV > getenv()
  *
  * Usage:
+ * - Database::connect(['driver' => 'mysql', 'host' => '...', ...]) or with DB_DRIVER set
  * - Database::mysql(['host' => '...', 'database' => '...', ...])
  * - Database::postgres(['host' => '...', 'database' => '...', ...])
  * - Database::sqlite(':memory:')
@@ -89,6 +91,35 @@ class Database
         $path ??= self::env('DB_SQLITE_PATH') ?? ':memory:';
 
         return new SqliteDriver($path);
+    }
+
+    /**
+     * Create a connection for the driver named in the config or in DB_DRIVER.
+     *
+     * 'mysql' (also 'mariadb'), 'pgsql' (also 'postgres', 'postgresql') and 'sqlite' delegate to
+     * mysql(), postgres() and sqlite() with the same config keys and environment fallbacks; the
+     * SQLite path comes from 'path', else 'database', else DB_SQLITE_PATH. One config array for
+     * every environment: the driver decides which of them is used.
+     *
+     * @param array{driver?: string, path?: string, host?: string, database?: string, username?: string, password?: string, port?: int, charset?: string, options?: array<int, mixed>} $config
+     *
+     * @throws ConnectionException When no or an unknown driver is named, or the connection fails
+     */
+    public static function connect(array $config = []): DatabaseInterface
+    {
+        $driver = strtolower(trim($config['driver'] ?? self::env('DB_DRIVER') ?? ''));
+
+        return match ($driver) {
+            'mysql', 'mariadb' => self::mysql($config),
+            'pgsql', 'postgres', 'postgresql' => self::postgres($config),
+            'sqlite' => self::sqlite($config['path'] ?? $config['database'] ?? null),
+            default => throw new ConnectionException(
+                message: 'Database connection failed',
+                debugMessage: $driver === ''
+                    ? 'No database driver given: set $config[\'driver\'] or DB_DRIVER to mysql, pgsql or sqlite'
+                    : sprintf('Unknown database driver "%s": use mysql, pgsql or sqlite', $driver)
+            ),
+        };
     }
 
     /**
