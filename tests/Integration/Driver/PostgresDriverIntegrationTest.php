@@ -321,4 +321,96 @@ class PostgresDriverIntegrationTest extends TestCase
 
         $this->fail('Expected ConnectionException was not thrown');
     }
+
+    /**
+     * A lost connection (the server terminated the backend): the callback's statement fails, no
+     * rollback can be confirmed, no 'transaction.rollback' listener runs, and 'transaction.end'
+     * reports 'lost' with the statement's exception.
+     */
+    public function testLostConnectionEndsTheTransactionAsLost(): void
+    {
+        $db = $this->driver;
+        $db->execute('DROP TABLE IF EXISTS end_probe');
+        $db->execute('CREATE TABLE end_probe (id SERIAL PRIMARY KEY, name VARCHAR(50))');
+        $killer = new PostgresDriver(self::getConfig());
+        $pid = (int) $db->query('SELECT pg_backend_pid()')->fetchColumn();
+        $events = [];
+        $db->on('transaction.rollback', static function () use (&$events): void {
+            $events[] = 'rollback';
+        });
+        $db->on('transaction.end', static function (array $data) use (&$events): void {
+            $events[] = $data;
+        });
+        $measured = [];
+
+        try {
+            $db->transaction(static function (PostgresDriver $db) use ($killer, $pid, &$measured): void {
+                $db->insert('end_probe', ['name' => 'inside']);
+                $killer->query('SELECT pg_terminate_backend(?)', [$pid])->fetchColumn();
+                $gone = false;
+                for ($i = 0; $i < 100 && !$gone; $i++) {
+                    $gone = (int) $killer->query('SELECT COUNT(*) FROM pg_stat_activity WHERE pid = ?', [$pid])->fetchColumn() === 0;
+                    if (!$gone) {
+                        usleep(50_000);
+                    }
+                }
+                if (!$gone) {
+                    throw new \RuntimeException('the terminated backend did not disappear within 5 s');
+                }
+                try {
+                    $db->execute('UPDATE end_probe SET name = ? WHERE id = 1', ['after']);
+                } catch (QueryException $e) {
+                    $measured['inTransactionAfterError'] = $db->inTransaction();
+                    throw $e;
+                }
+            });
+            $this->fail('Expected the lost connection');
+        } catch (QueryException $e) {
+            $measured['inTransactionAfterwards'] = $db->inTransaction();
+        }
+
+        $this->assertSame([['outcome' => 'lost', 'error' => $e]], $events, 'no rollback listener, transaction.end reports lost with the statement exception');
+        $this->assertSame(0, $killer->table('end_probe')->count(), 'the server rolled the terminated backend back');
+        // measured on PostgreSQL 15 with pdo_pgsql: like mysqlnd, PDO keeps reporting the transaction
+        $this->assertTrue($measured['inTransactionAfterError'], 'PDO still reports the transaction right after the error');
+        $this->assertTrue($measured['inTransactionAfterwards'], 'and after the failed rollback');
+        $killer->execute('DROP TABLE IF EXISTS end_probe');
+    }
+
+    /**
+     * A COMMIT rejected by a deferred constraint: PostgreSQL rolls the transaction back itself and
+     * pdo_pgsql no longer reports it, so the library cannot send a rollback: no
+     * 'transaction.rollback' listener runs and 'transaction.end' reports 'lost' with the commit's
+     * exception (fail-closed, although the server did roll back).
+     */
+    public function testACommitRejectedByADeferredConstraintEndsAsLost(): void
+    {
+        $db = $this->driver;
+        $db->execute('DROP TABLE IF EXISTS end_child');
+        $db->execute('DROP TABLE IF EXISTS end_parent');
+        $db->execute('CREATE TABLE end_parent (id INT PRIMARY KEY)');
+        $db->execute('CREATE TABLE end_child (id SERIAL PRIMARY KEY, parent_id INT REFERENCES end_parent (id) DEFERRABLE INITIALLY DEFERRED)');
+        $events = [];
+        $db->on('transaction.rollback', static function () use (&$events): void {
+            $events[] = 'rollback';
+        });
+        $db->on('transaction.end', static function (array $data) use (&$events): void {
+            $events[] = $data;
+        });
+
+        try {
+            $db->transaction(static function (PostgresDriver $db): void {
+                $db->insert('end_child', ['parent_id' => 999]); // checked at COMMIT
+            });
+            $this->fail('Expected the commit to fail');
+        } catch (QueryException|\Sodaho\PdoWrapper\Exception\TransactionException $e) {
+            $this->assertSame('23503', $e->getPrevious()?->getCode(), 'foreign key violation at COMMIT');
+        }
+
+        $this->assertFalse($db->inTransaction(), 'pdo_pgsql no longer reports the transaction after the failed COMMIT');
+        $this->assertSame([['outcome' => 'lost', 'error' => $e]], $events, "no rollback listener; lost with the commit's exception");
+        $this->assertSame(0, $db->table('end_child')->count(), 'the server rolled back');
+        $db->execute('DROP TABLE IF EXISTS end_child');
+        $db->execute('DROP TABLE IF EXISTS end_parent');
+    }
 }

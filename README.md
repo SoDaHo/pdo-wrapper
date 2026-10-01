@@ -514,7 +514,11 @@ try {
     $db->insert('users', ['name' => 'John']);
     $db->commit();
 } catch (CommitHookException $e) {
-    throw $e; // Committed: never roll back
+    // Committed: never roll that back. Only what a commit hook left open may still need it
+    if ($e->connectionInTransaction && $db->inTransaction()) {
+        $db->rollback(); // or discard the connection
+    }
+    throw $e;
 } catch (Throwable $e) {
     // Best effort: roll back only if still open, keep the original exception
     try {
@@ -533,9 +537,9 @@ try {
 - **The transaction cannot be started** (`BEGIN` fails, or a `transaction.begin` hook throws) - the callback does not run; after a throwing hook a rollback is attempted (best effort); the exception is re-thrown, a `PDOException` from the hook as `TransactionException`.
 - **The callback throws** - rollback attempted, the callback's exception is re-thrown unchanged. Best effort: if the rollback itself fails, the connection may still be in a transaction.
 - **The commit fails** - rollback attempted, `TransactionException` is thrown. The commit may or may not have taken effect (e.g. connection lost during `COMMIT`).
-- **A `transaction.commit` hook fails** (throws, or leaves the connection in a state that cannot be verified or cleaned up) - the data **is committed**, nothing is rolled back, `CommitHookException` is thrown (see [Hooks](#hooks)).
+- **A `transaction.commit` hook fails, or a `transaction.end` hook fails after the commit** (throws, or a commit hook leaves the connection in a state that cannot be verified or cleaned up) - the data **is committed**, the committed transaction is not rolled back (only what a commit hook left open is, raw), `CommitHookException` is thrown (see [Hooks](#hooks)). On the rollback and `lost` paths an end hook's failure never replaces the exception that ended the transaction.
 
-With a manual `commit()`, a failing commit hook likewise throws `CommitHookException` after the commit: the committed transaction cannot be rolled back and must not be retried. Only a transaction a hook left open (`$e->connectionInTransaction`) still needs a rollback.
+With a manual `commit()`, a failing commit hook likewise throws `CommitHookException` after the commit: the committed transaction cannot be rolled back and must not be retried. `$e->connectionInTransaction` is a fail-closed snapshot taken after the commit hooks and before the end hooks: `true` means a transaction a commit hook left open could not be cleaned up, or the connection state could not be read, so check `inTransaction()` again and roll back, or discard the connection; what an end hook leaves open is not checked.
 
 ## Hooks
 
@@ -559,7 +563,14 @@ $db->on('error', function (array $data) {
 $db->on('transaction.begin', fn() => print "Transaction started\n");
 $db->on('transaction.commit', fn() => print "Transaction committed\n");
 $db->on('transaction.rollback', fn() => print "Transaction rolled back\n");
+
+// One listener for every outcome: 'committed', 'rolled_back' or 'lost'
+$db->on('transaction.end', function (array $data) use ($pending) {
+    $data['outcome'] === DatabaseInterface::TRANSACTION_COMMITTED ? $pending->flush() : $pending->discard();
+});
 ```
+
+`transaction.end` fires exactly once for every transaction the library ends, after the `transaction.commit` or `transaction.rollback` listeners, with `['outcome' => ..., 'error' => ?Throwable]`. `rolled_back` carries the exception that ended the transaction (null after a manual `rollback()`). `lost` is the case the rollback listeners never see: the library could not confirm a rollback, because the connection was lost, the raw cleanup of a commit hook's transaction did not end it (MySQL `completion_type=CHAIN`), PDO no longer reported the transaction, the connection state could not be read, or the commit failed and so did the rollback after it (then the data may be committed, fail-closed, and `error` is the commit's exception: PostgreSQL lands here when `COMMIT` fails on a deferred constraint, although the server rolled back, but so does a callback that committed itself with a raw `COMMIT` or a MySQL DDL statement, and then the data is committed). The connection may be gone, so listeners must not expect queries to work. If the transaction may in fact still be open, end it with `rollback()` or discard the connection: that `rollback()` runs the rollback listeners but tells no second end. Ending it on raw PDO instead leaves that mark in place: a transaction then begun on raw PDO and ended through the library tells no end (`beginTransaction()` clears the mark). All end listeners run; their failures land in `CommitHookException::$failures` after a commit (behind the commit listeners' failures: first the ends of transactions commit listeners left open, then the committed transaction's end), as `TransactionException` after a manual `rollback()` (unless a rollback listener threw: that exception wins), and only in the `error` hook (with `hook`, `outcome` and `exception` keys; a throwing `error` listener is ignored there) after the automatic rollback in `transaction()`/`updateMultiple()` and on a `lost` reported there, so the exception that ended the transaction reaches you unchanged. A failed manual `commit()` or `rollback()` fires nothing: that transaction is still yours to end. A transaction a commit listener starts through the library and leaves open is rolled back without rollback hooks but with its own `transaction.end` (after all commit listeners, before the outer end); one a rollback or end listener leaves open is not checked. Do not swallow database errors inside `transaction()` without a savepoint: on PostgreSQL the `COMMIT` of an aborted transaction is a silent `ROLLBACK`, and both `transaction.commit` and `transaction.end` would report `committed`.
 
 For `query`, `error` and `transaction.begin`, a throwing hook stops the remaining hooks of its event and its exception reaches the caller (a `PDOException` from a `query` hook arrives as `QueryException` with the message `Query hook failed`: the statement did run and no `error` hook fires); after a throwing `transaction.begin` hook a rollback of the transaction it was told about is attempted first (best effort, directly and without `transaction.rollback` hooks; if that rollback fails, the transaction may still be open). A throwing `transaction.rollback` hook does the same on a manual `rollback()`, but is ignored during the automatic rollback in `transaction()` and `updateMultiple()` (the original exception is re-thrown). `transaction.commit` hooks run after the commit and cannot undo it, so they work differently:
 
@@ -602,8 +613,12 @@ try {
 try {
     $db->transaction(fn($db) => $db->insert('users', ['name' => 'John']));
 } catch (CommitHookException $e) {
-    // Committed, but a transaction.commit hook failed: do not retry
-    $hookError = $e->getPrevious();
+    // Committed, but a transaction.commit or transaction.end hook failed, or the connection
+    // state after a commit hook could not be verified or cleaned up: do not retry
+    $firstFailure = $e->getPrevious(); // all of them: $e->failures
+    if ($e->connectionInTransaction) {
+        // a transaction a commit hook left open may still be open: check inTransaction(), roll back or discard the connection
+    }
 } catch (TransactionException $e) {
     // Begin or commit failed; a failed commit may or may not have taken effect
 }

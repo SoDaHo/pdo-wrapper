@@ -29,6 +29,18 @@ abstract class AbstractDriver implements DatabaseInterface
 
     protected PDO $pdo;
 
+    /** True while a transaction begun through this driver still owes its 'transaction.end' event */
+    private bool $transactionBegun = false;
+
+    /** While rollbackQuietly() runs rollback(): the exception that ended the transaction (the end event's error) */
+    private ?Throwable $automaticRollbackCause = null;
+
+    /** True after 'transaction.end' reported (or buffered) 'lost' for a transaction that may still be open: its later commit()/rollback() tells no second end */
+    private bool $lostReported = false;
+
+    /** Counts the rollbacks rollback() sent successfully: lets rollbackQuietly() tell a listener's exception from a failed rollback */
+    private int $rollbacksSent = 0;
+
     // =========================================================================
     // Query Execution
     // =========================================================================
@@ -228,6 +240,9 @@ abstract class AbstractDriver implements DatabaseInterface
             );
         }
 
+        $this->transactionBegun = true;
+        $this->lostReported = false;
+
         try {
             $this->trigger('transaction.begin', []);
         } catch (PDOException $e) {
@@ -245,11 +260,14 @@ abstract class AbstractDriver implements DatabaseInterface
     }
 
     /**
-     * Roll back on raw PDO if a transaction is open, without 'transaction.rollback' hooks and ignoring
-     * failures: the exception that caused this is more important for debugging.
+     * Roll back on raw PDO if a transaction is open, without 'transaction.rollback' or 'transaction.end'
+     * hooks and ignoring failures: the exception that caused this is more important for debugging.
      */
     private function rollbackRawQuietly(): void
     {
+        // Ended here, without an event: a later cleanup must not report it as lost
+        $this->transactionBegun = false;
+
         try {
             if ($this->pdo->inTransaction()) {
                 $this->pdo->rollBack();
@@ -266,9 +284,14 @@ abstract class AbstractDriver implements DatabaseInterface
      * the commit, so every listener runs and their failures are reported together - unless
      * a transaction left open by a listener cannot be rolled back (or the connection state
      * cannot be read): the remaining listeners are then skipped and reported as failures.
+     * Then the ends of the transactions commit listeners began through this driver and left open are
+     * dispatched, then 'transaction.end' fires with outcome 'committed' (also after skipped listeners;
+     * not when a 'lost' was already reported for this transaction); the end listeners' failures follow
+     * the commit listeners' in the same exception, in that order. A failed commit fires no
+     * 'transaction.end': the transaction is still the caller's to end.
      *
      * @throws TransactionException When the commit itself failed; it may or may not have taken effect
-     * @throws CommitHookException When committed, but a transaction.commit listener failed or the connection state after it could not be verified
+     * @throws CommitHookException When committed, but a transaction.commit or transaction.end listener failed or the connection state after a commit listener could not be verified
      */
     public function commit(): void
     {
@@ -292,10 +315,65 @@ abstract class AbstractDriver implements DatabaseInterface
         }
 
         // Committed from here on: a listener error must not look like a failed commit.
-        [$failures, $connectionInTransaction] = $this->runCommitListeners();
+        $this->transactionBegun = false;
+        $endOwed = !$this->lostReported; // after a reported 'lost' this transaction's end has already been told
+        $this->lostReported = false;
+        [$failures, $connectionInTransaction, $innerEnds] = $this->runCommitListeners();
+        $failures = [...$failures, ...$this->dispatchInnerEnds($innerEnds)];
+        if ($endOwed) {
+            $failures = [...$failures, ...$this->dispatchTransactionEnd(self::TRANSACTION_COMMITTED, null)];
+        }
 
         if ($failures !== []) {
             throw new CommitHookException($failures[0], $failures, $connectionInTransaction);
+        }
+    }
+
+    /**
+     * Run every 'transaction.end' listener with the outcome and collect their failures in listener
+     * order; nothing here throws. The mark of the ended transaction is cleared by the caller before
+     * any listener runs, so a transaction a listener begins keeps its own mark.
+     *
+     * @return list<Throwable>
+     */
+    private function dispatchTransactionEnd(string $outcome, ?Throwable $error): array
+    {
+        $failures = [];
+
+        foreach ($this->hooks['transaction.end'] ?? [] as $listener) {
+            try {
+                $listener(['outcome' => $outcome, 'error' => $error]);
+            } catch (Throwable $e) {
+                $failures[] = $e;
+            }
+        }
+
+        return $failures;
+    }
+
+    /**
+     * Hand 'transaction.end' listener failures to the 'error' hook (existing keys, plus hook, outcome
+     * and exception), for the paths on which another exception reaches the caller. A throwing
+     * 'error' listener is ignored: the exception that ended the transaction is more important.
+     *
+     * @param list<Throwable> $failures
+     */
+    private function reportTransactionEndFailures(string $outcome, array $failures): void
+    {
+        foreach ($failures as $e) {
+            try {
+                $this->trigger('error', [
+                    'sql' => '',
+                    'params' => [],
+                    'error' => $e->getMessage(),
+                    'code' => $e->getCode(),
+                    'hook' => 'transaction.end',
+                    'outcome' => $outcome,
+                    'exception' => $e,
+                ]);
+            } catch (Throwable) {
+                // the exception that ended the transaction is more important
+            }
         }
     }
 
@@ -308,7 +386,9 @@ abstract class AbstractDriver implements DatabaseInterface
      * the committed transaction was rolled back. If that rollback fails or leaves the connection
      * in a transaction (MySQL completion_type=CHAIN opens the next one), or inTransaction() itself
      * fails, the connection state is unknown: the remaining listeners are skipped and the
-     * transaction may still be open. Nothing here throws: the commit has happened.
+     * transaction may still be open. A left-open transaction begun through this driver gets its
+     * own 'transaction.end' ('rolled_back', or 'lost' when the cleanup failed or the state could not
+     * be read), buffered for after this loop. Nothing here throws: the commit has happened.
      *
      * Per listener: its own exception, then a LogicException if it left a transaction open
      * (previous: the rollback error, if any) or if the state could not be read (previous: that
@@ -318,11 +398,15 @@ abstract class AbstractDriver implements DatabaseInterface
      * afterwards: the rollback failed or did not end the transaction, or the state could not be
      * read (fail-closed).
      *
-     * @return array{list<Throwable>, bool}
+     * The third element lists the transactions listeners began through this driver and left open
+     * (rolled back raw here), for their own 'transaction.end' after the loop.
+     *
+     * @return array{list<Throwable>, bool, list<array{string, Throwable}>}
      */
     private function runCommitListeners(): array
     {
         $failures = [];
+        $innerEnds = [];
         $cleanupError = null;
 
         foreach ($this->hooks['transaction.commit'] ?? [] as $listener) {
@@ -341,14 +425,26 @@ abstract class AbstractDriver implements DatabaseInterface
                 $open = $this->pdo->inTransaction();
             } catch (Throwable $e) {
                 $cleanupError = $e;
-                $failures[] = new LogicException('connection state unknown after listener', previous: $e);
+                $stateUnknown = new LogicException('connection state unknown after listener', previous: $e);
+                $failures[] = $stateUnknown;
+                if ($this->transactionBegun) {
+                    // A transaction the listener began through this driver: its end cannot be confirmed either
+                    $this->transactionBegun = false;
+                    $this->lostReported = true;
+                    $innerEnds[] = [self::TRANSACTION_LOST, $stateUnknown];
+                }
                 continue;
             }
 
             if (!$open) {
+                // PDO confirms no transaction: whatever the listener began through this driver and ended raw
+                // or implicitly (a DDL statement) is gone, and so is what its transaction() reported as lost
+                $this->transactionBegun = false;
+                $this->lostReported = false;
                 continue;
             }
 
+            // Raw cleanup of what the listener left open, without 'transaction.rollback' hooks
             try {
                 if ($this->pdo->rollBack() === false) {
                     $cleanupError = new TransactionException(
@@ -366,21 +462,70 @@ abstract class AbstractDriver implements DatabaseInterface
                 $cleanupError = $e;
             }
 
-            $failures[] = new LogicException('listener left a transaction open', previous: $cleanupError);
+            $leftOpen = new LogicException('listener left a transaction open', previous: $cleanupError);
+            $failures[] = $leftOpen;
+            if ($cleanupError === null) {
+                $this->lostReported = false; // the connection is clean again: whatever a listener's transaction() reported as lost is gone
+            }
+
+            // A transaction the listener began through this driver gets its own end, before the outer one -
+            // dispatched after this loop, so that its end listeners run outside the commit listeners' cleanup.
+            // The state marks are set now: a lost transaction may still be open, and whoever ends it before
+            // the buffered end is delivered must not tell a second one.
+            if ($this->transactionBegun) {
+                $this->transactionBegun = false;
+                if ($cleanupError === null) {
+                    $innerEnds[] = [self::TRANSACTION_ROLLED_BACK, $leftOpen];
+                } else {
+                    $this->lostReported = true;
+                    $innerEnds[] = [self::TRANSACTION_LOST, $leftOpen];
+                }
+            }
         }
 
-        return [$failures, $cleanupError !== null];
+        return [$failures, $cleanupError !== null, $innerEnds];
+    }
+
+    /**
+     * 'transaction.end' for the transactions commit listeners began and left open (rolled back raw).
+     * Delivery only: the state marks were set when the ends were buffered, so nothing a listener did
+     * in between (ending a lost transaction, beginning a new one) is overwritten here. The listeners'
+     * failures join the CommitHookException the caller gets anyway.
+     *
+     * @param list<array{string, Throwable}> $innerEnds outcome and error per transaction, in listener order
+     *
+     * @return list<Throwable>
+     */
+    private function dispatchInnerEnds(array $innerEnds): array
+    {
+        $failures = [];
+        foreach ($innerEnds as [$outcome, $error]) {
+            $failures = [...$failures, ...$this->dispatchTransactionEnd($outcome, $error)];
+        }
+
+        return $failures;
     }
 
     /**
      * Roll back the current transaction.
      *
-     * Triggers 'transaction.rollback' hook on success.
+     * Triggers the 'transaction.rollback' hook on success, then 'transaction.end' with outcome
+     * 'rolled_back' (error null) - also when a rollback listener threw; that exception takes
+     * precedence and reaches the caller, the end listeners' failures then only the 'error' hook. A
+     * failed rollback fires nothing: the transaction is still the caller's to end. After a
+     * 'transaction.end' that reported 'lost' for this transaction, no second end is told. An
+     * override that does not call this method dispatches no event.
      *
-     * @throws TransactionException On failure
+     * @throws TransactionException On failure, or when a transaction.end listener failed and no rollback listener did (the first failure; all of them reach the 'error' hook)
+     * @throws Throwable Re-throws a rollback listener's exception
      */
     public function rollback(): void
     {
+        // Set by rollbackQuietly(): this rollback ends a transaction that $cause ended, which reaches the caller instead.
+        // Consumed here, so that a rollback() a listener calls for its own transaction is an explicit one.
+        $cause = $this->automaticRollbackCause;
+        $this->automaticRollbackCause = null;
+
         try {
             $rolledBack = $this->pdo->rollBack();
         } catch (PDOException $e) {
@@ -400,15 +545,47 @@ abstract class AbstractDriver implements DatabaseInterface
             );
         }
 
-        // A PDOException from a hook keeps arriving as TransactionException (unchanged contract).
+        // Rolled back from here on. A PDOException from a hook keeps arriving as TransactionException (unchanged contract).
+        $this->transactionBegun = false;
+        $this->rollbacksSent++; // tells rollbackQuietly() that a later exception came from a listener, not from the rollback
+        $endOwed = !$this->lostReported; // after a reported 'lost' this transaction's end has already been told
+        $this->lostReported = false;
+        $pending = null;
         try {
             $this->trigger('transaction.rollback', []);
         } catch (PDOException $e) {
-            throw new TransactionException(
+            $pending = new TransactionException(
                 message: 'Failed to rollback transaction',
                 code: (int)$e->getCode(),
                 previous: $e,
                 debugMessage: $e->getMessage()
+            );
+        } catch (Throwable $e) {
+            $pending = $e;
+        }
+
+        $failures = $endOwed ? $this->dispatchTransactionEnd(self::TRANSACTION_ROLLED_BACK, $cause) : [];
+        if ($cause !== null) {
+            // Automatic rollback: end listener failures only reach the 'error' hook; a rollback listener's
+            // exception is re-thrown as before (rollbackQuietly() swallows it, an override sees it)
+            $this->reportTransactionEndFailures(self::TRANSACTION_ROLLED_BACK, $failures);
+            if ($pending !== null) {
+                throw $pending;
+            }
+
+            return;
+        }
+        if ($pending !== null) {
+            $this->reportTransactionEndFailures(self::TRANSACTION_ROLLED_BACK, $failures);
+            throw $pending;
+        }
+        if ($failures !== []) {
+            $this->reportTransactionEndFailures(self::TRANSACTION_ROLLED_BACK, $failures);
+            throw new TransactionException(
+                message: 'Transaction rolled back, but a transaction.end listener failed',
+                code: (int)$failures[0]->getCode(),
+                previous: $failures[0],
+                debugMessage: $failures[0]->getMessage()
             );
         }
     }
@@ -424,16 +601,29 @@ abstract class AbstractDriver implements DatabaseInterface
      *   (best effort: if the rollback fails, the transaction may still be open). Measured on MySQL 8.0
      *   and MariaDB 11.4 with mysqlnd: after a deadlock (the server rolled the transaction back) and
      *   after a lock wait timeout (the server rolled back only the statement) PDO still reports the
-     *   transaction, so the rollback is sent and the transaction.rollback listeners run; after a
-     *   lost connection the rollback fails, no listener runs, and PDO still reported the transaction;
-     * - the commit failed: rollback attempted, the TransactionException is re-thrown
-     *   (the commit may or may not have taken effect);
-     * - a transaction.commit listener failed: committed, no rollback, CommitHookException.
+     *   transaction, so the rollback is sent, the transaction.rollback listeners run and
+     *   transaction.end reports 'rolled_back'; after a lost connection the rollback fails, no
+     *   rollback listener runs, PDO still reported the transaction, and transaction.end reports 'lost';
+     * - the commit failed: a rollback is attempted when PDO still reports the transaction, the
+     *   TransactionException is re-thrown; transaction.end reports 'rolled_back' when that rollback
+     *   succeeded (nothing was committed) and 'lost' when it failed too (the commit may or may not
+     *   have taken effect), with the commit's exception as error. When PDO reports no transaction
+     *   after the failed commit, transaction.end reports 'lost' as well, fail-closed: that is what
+     *   PostgreSQL leaves behind when COMMIT fails on a deferred constraint (the server rolled back),
+     *   but also what a callback leaves behind that committed itself with a raw COMMIT or a MySQL DDL
+     *   statement (the data is committed, PDO::commit() then fails with "no active transaction");
+     * - a transaction.commit or transaction.end listener failed, or the connection state after a
+     *   commit listener could not be verified or cleaned up: committed, the committed transaction is
+     *   not rolled back, CommitHookException (getPrevious() is the first failure, which need not be
+     *   a listener's own exception).
+     * Once the transaction was started, transaction.end fires exactly once: after the commit
+     * listeners ('committed'), or after the rollback listeners ('rolled_back'), or as 'lost'; on the
+     * rollback and lost paths its listeners' failures reach the 'error' hook, never the caller.
      *
      * @param Closure $callback Receives the driver instance
      *
      * @throws TransactionException When the transaction could not be started (see beginTransaction()) or the commit failed
-     * @throws CommitHookException When committed, but a transaction.commit listener failed or the connection state after it could not be verified
+     * @throws CommitHookException When committed, but a transaction.commit or transaction.end listener failed or the connection state after a commit listener could not be verified
      * @throws Throwable Re-throws the callback, begin listener or commit exception after rollback
      *
      * @return mixed Return value of the callback
@@ -445,7 +635,7 @@ abstract class AbstractDriver implements DatabaseInterface
         try {
             $result = $callback($this);
         } catch (Throwable $e) {
-            $this->rollbackQuietly();
+            $this->rollbackQuietly($e);
             throw $e;
         }
 
@@ -457,7 +647,7 @@ abstract class AbstractDriver implements DatabaseInterface
     /**
      * Commit a transaction this driver began, rolling back only if the commit itself failed.
      *
-     * @throws CommitHookException When committed, but a transaction.commit listener failed or the connection state after it could not be verified
+     * @throws CommitHookException When committed, but a transaction.commit or transaction.end listener failed or the connection state after a commit listener could not be verified
      * @throws Throwable Re-throws the commit exception after rollback
      */
     private function commitOwnTransaction(): void
@@ -469,23 +659,58 @@ abstract class AbstractDriver implements DatabaseInterface
             throw $e;
         } catch (Throwable $e) {
             // The commit itself failed; some drivers (e.g. SQLite) keep the transaction open.
-            $this->rollbackQuietly();
+            $this->rollbackQuietly($e);
             throw $e;
         }
     }
 
     /**
-     * Roll back if a transaction is open, ignoring failures: the original exception is more important for debugging.
+     * End a transaction this driver began after $cause ended its work, ignoring failures: $cause is
+     * more important for debugging and reaches the caller unchanged. If PDO still reports the
+     * transaction, ROLLBACK is sent; when it succeeds the 'transaction.rollback' listeners run and
+     * 'transaction.end' reports 'rolled_back'. When the rollback fails, PDO no longer reports the
+     * transaction (while this driver still owed its end), or the state cannot be read,
+     * 'transaction.end' reports 'lost'. Nothing fires for a transaction this driver already ended
+     * (a callback that called rollback() itself before throwing).
      */
-    private function rollbackQuietly(): void
+    private function rollbackQuietly(Throwable $cause): void
     {
+        $sent = $this->rollbacksSent;
+
         try {
             if ($this->pdo->inTransaction()) {
+                $this->automaticRollbackCause = $cause; // consumed by rollback() on entry
                 $this->rollback();
+            } elseif ($this->transactionBegun) {
+                $this->endLostTransaction($cause, mayStillBeOpen: false);
             }
         } catch (Throwable) {
-            // Rollback failed, but original exception is more important for debugging
+            // $cause is more important for debugging. Reached when the rollback itself failed (or the
+            // state could not be read) - then the transaction may still be open - or when a listener
+            // threw after the rollback went through: then the transaction has ended and told its end.
+            $this->automaticRollbackCause = null;
+            if ($this->rollbacksSent === $sent && $this->transactionBegun) {
+                $this->endLostTransaction($cause, mayStillBeOpen: true);
+            }
+        } finally {
+            $this->automaticRollbackCause = null;
         }
+    }
+
+    /**
+     * 'transaction.end' with outcome 'lost': the transaction ended without a commit by this driver
+     * and no rollback could be confirmed. When it may in fact still be open (the rollback failed,
+     * the state could not be read), its later commit()/rollback() tells no second end.
+     */
+    private function endLostTransaction(Throwable $cause, bool $mayStillBeOpen): void
+    {
+        $this->automaticRollbackCause = null; // a rollback() a listener calls is an explicit one
+        $this->transactionBegun = false;
+        $this->lostReported = $mayStillBeOpen;
+        $this->reportTransactionEndFailures(
+            self::TRANSACTION_LOST,
+            $this->dispatchTransactionEnd(self::TRANSACTION_LOST, $cause)
+        );
     }
 
     // =========================================================================
@@ -733,7 +958,7 @@ abstract class AbstractDriver implements DatabaseInterface
      *
      * @throws QueryException When a row is missing the key column
      * @throws TransactionException When the own transaction's commit failed
-     * @throws CommitHookException When committed, but a transaction.commit listener failed or the connection state after it could not be verified
+     * @throws CommitHookException When committed, but a transaction.commit or transaction.end listener failed or the connection state after a commit listener could not be verified
      *
      * @return int Total number of affected rows
      */
@@ -769,7 +994,7 @@ abstract class AbstractDriver implements DatabaseInterface
             }
         } catch (Throwable $e) {
             if ($manageTransaction) {
-                $this->rollbackQuietly();
+                $this->rollbackQuietly($e);
             }
             throw $e;
         }
