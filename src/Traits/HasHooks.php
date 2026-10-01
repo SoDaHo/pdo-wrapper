@@ -14,6 +14,12 @@ namespace Sodaho\PdoWrapper\Traits;
  * so all of them run and their failures arrive together in a CommitHookException - unless a
  * transaction left open by a listener cannot be rolled back (or the connection state cannot be
  * read); the remaining listeners are then skipped and listed as failures (see AbstractDriver).
+ * 'transaction.rollback' listeners run only after a rollback this library performed and that
+ * succeeded (rollback(), or the automatic rollback in transaction()/updateMultiple()). Measured on
+ * MySQL 8.0 and MariaDB 11.4 with mysqlnd: after a deadlock (transaction rolled back by the server)
+ * and after a lock wait timeout (only the statement rolled back) PDO still reports the transaction,
+ * the library's ROLLBACK succeeds and the listeners run; after a lost connection the rollback fails
+ * and no listener runs.
  * Events: 'query', 'error', 'transaction.begin', 'transaction.commit', 'transaction.rollback'
  */
 trait HasHooks

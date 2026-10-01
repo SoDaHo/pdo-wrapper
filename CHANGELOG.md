@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- Documented when `transaction.rollback` listeners run after a server-side error, measured on MySQL 8.0 and MariaDB 11.4 with mysqlnd: after a deadlock (1213, the server rolled the transaction back) and after a lock wait timeout (1205, the server rolled back only the statement) PDO still reports the transaction, `transaction()` rolls back and the listeners run; after a lost connection (2006/2013) the rollback fails, no listener runs, and PDO still reported the transaction.
+
 ## [1.2.0] - 2026-10-01
 
 ### Added

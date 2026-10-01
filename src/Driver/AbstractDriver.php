@@ -411,7 +411,11 @@ abstract class AbstractDriver implements DatabaseInterface
      *   the callback did not run; after a throwing listener a rollback is attempted (best effort);
      *   the exception is re-thrown, a PDOException from the listener as TransactionException;
      * - the callback threw: rollback attempted, the callback's exception is re-thrown
-     *   (best effort: if the rollback fails, the transaction may still be open);
+     *   (best effort: if the rollback fails, the transaction may still be open). Measured on MySQL 8.0
+     *   and MariaDB 11.4 with mysqlnd: after a deadlock (the server rolled the transaction back) and
+     *   after a lock wait timeout (the server rolled back only the statement) PDO still reports the
+     *   transaction, so the rollback is sent and the transaction.rollback listeners run; after a
+     *   lost connection the rollback fails, no listener runs, and PDO still reported the transaction;
      * - the commit failed: rollback attempted, the TransactionException is re-thrown
      *   (the commit may or may not have taken effect);
      * - a transaction.commit listener failed: committed, no rollback, CommitHookException.
