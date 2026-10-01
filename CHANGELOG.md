@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-10-01
+
 ### Changed
 - `orderBy()` throws a `QueryException` for a direction other than `ASC`/`DESC` (`'DESCENDING'`, `'down'`, `'DESC NULLS LAST'`) on every statement; before, a select silently sorted ascending and only `delete()->limit()` refused it. Case and surrounding whitespace are still tolerated. A direction taken from request input must be mapped to one of the two first.
 
@@ -129,7 +131,8 @@
 - **CI**: GitHub Actions with PHP 8.2-8.5, MySQL 8.0/8.4, MariaDB 10.11/11.4, PostgreSQL 15/16/17.
 - **Quality**: PHPStan level 9, PHP-CS-Fixer (PSR-12).
 
-[Unreleased]: https://github.com/sodaho/pdo-wrapper/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/sodaho/pdo-wrapper/compare/v1.3.1...HEAD
+[1.3.1]: https://github.com/sodaho/pdo-wrapper/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/sodaho/pdo-wrapper/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/sodaho/pdo-wrapper/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/sodaho/pdo-wrapper/compare/v1.1.0...v1.1.1
