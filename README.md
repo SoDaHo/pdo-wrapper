@@ -334,6 +334,8 @@ $users = $db->table('users')
     ->get();
 ```
 
+The direction is `ASC` or `DESC` (any case, surrounding whitespace ignored); anything else (`'DESCENDING'`, `'down'`) throws a `QueryException` instead of silently sorting ascending.
+
 `offset()` works without `limit()` on every driver (MySQL/MariaDB and SQLite get the "no limit" value they require).
 
 ### Row Locks
@@ -664,7 +666,7 @@ if (!in_array($column, $allowedColumns, true)) {
 $db->table('users')->orderBy($column)->get();
 ```
 
-This applies to `select()`, `orderBy()`, `groupBy()`, and `join()`.
+This applies to `select()`, `orderBy()`, `groupBy()`, and `join()`. The same goes for a sort direction from request input: `orderBy()` throws on anything but `ASC`/`DESC`, so map the input to one of the two first.
 
 ### LIKE Patterns with User Input
 

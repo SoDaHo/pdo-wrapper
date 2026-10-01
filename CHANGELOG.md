@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Changed
+- `orderBy()` throws a `QueryException` for a direction other than `ASC`/`DESC` (`'DESCENDING'`, `'down'`, `'DESC NULLS LAST'`) on every statement; before, a select silently sorted ascending and only `delete()->limit()` refused it. Case and surrounding whitespace are still tolerated. A direction taken from request input must be mapped to one of the two first.
+
 ### Fixed
 - `false` is bound as `'0'` on MySQL/MariaDB and PostgreSQL (`true` was already `'1'`; SQLite binds booleans as `0`/`1` since 1.2). PDO sent it as `''`, which MySQL in strict mode rejected for a numeric column on insert and update and PostgreSQL rejected for a boolean or integer column everywhere. Wherever `''` was accepted before (a text or binary column), `'0'` is stored and compared now; rows that earlier versions wrote there with `false` hold `''` and no longer match `where('col', false)`, so keep passing `''` for them or convert them once (`UPDATE t SET col = '0' WHERE col = ''`, only on columns that hold booleans). A MySQL `BIT` column does not store a bound `0`/`1` as bits (`false` only landed as 0 there by accident): use `Database::raw('0')` or a `TINYINT(1)` column. A custom driver that inherits `bindAndExecute()` from `AbstractDriver` gets the same conversion; raw PDO use (`getPdo()`, re-executing a returned statement) is not converted, and the `query` and `error` hooks get the parameters as passed.
 

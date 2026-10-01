@@ -287,12 +287,24 @@ class QueryBuilderTest extends TestCase
         $this->assertSame('Anna', $users[0]['name']); // age 30
     }
 
-    public function testOrderByInvalidDirectionDefaultsToAsc(): void
+    public function testOrderByInvalidDirectionThrows(): void
     {
-        $users = $this->db->table('users')->orderBy('age', 'INVALID')->get();
+        $queries = [];
+        $this->db->on('query', static function (array $context) use (&$queries): void {
+            $queries[] = $context['sql'];
+        });
 
-        // Invalid direction should default to ASC
-        $this->assertSame('Tom', $users[0]['name']); // age 20 (lowest)
+        try {
+            $this->db->table('users')->orderBy('age', 'INVALID')->get();
+            $this->fail('Expected QueryException');
+        } catch (QueryException $e) {
+            // earlier versions silently sorted ascending here
+            $this->assertSame('Invalid orderBy() direction "INVALID" for "age". Allowed: ASC, DESC', $e->getDebugMessage());
+        }
+        $this->assertSame([], $queries, 'nothing reached the database');
+
+        $users = $this->db->table('users')->orderBy('age', ' desc ')->get();
+        $this->assertSame('Anna', $users[0]['name'], 'case and surrounding whitespace are tolerated');
     }
 
     public function testLimit(): void

@@ -47,7 +47,7 @@ class QueryBuilder
     /** @var array<int, array<string, string>> */
     private array $joins = [];
 
-    /** @var array<int, array{column: string, direction: string, valid: bool}> */
+    /** @var array<int, array{column: string, direction: string}> */
     private array $orderBy = [];
 
     private ?int $limit = null;
@@ -528,25 +528,26 @@ class QueryBuilder
     /**
      * Add an ORDER BY clause.
      *
-     * An unknown direction falls back to ASC for selects; delete()->limit() refuses it instead,
-     * because there the direction decides which rows are deleted.
+     * The direction must be ASC or DESC (any case, surrounding whitespace ignored). Anything else
+     * ("DESCENDING", "down", "DESC NULLS LAST") throws instead of silently sorting ascending: the
+     * direction decides which rows a page shows and, in delete()->limit(), which rows are deleted.
      *
      * @param string $column Column to order by
      * @param string $direction ASC or DESC (default: ASC)
+     *
+     * @throws QueryException When the direction is neither ASC nor DESC
      */
     public function orderBy(string $column, string $direction = 'ASC'): self
     {
-        $given = $direction;
-        $direction = strtoupper(trim($direction));
-        if (!in_array($direction, ['ASC', 'DESC'], true)) {
-            $direction = 'ASC';
+        $normalized = strtoupper(trim($direction));
+        if (!in_array($normalized, ['ASC', 'DESC'], true)) {
+            throw new QueryException(
+                message: 'Query failed',
+                debugMessage: sprintf('Invalid orderBy() direction "%s" for "%s". Allowed: ASC, DESC', $direction, $column)
+            );
         }
 
-        $this->orderBy[] = [
-            'column' => $column,
-            'direction' => $direction,
-            'valid' => strtoupper(trim($given)) === $direction,
-        ];
+        $this->orderBy[] = ['column' => $column, 'direction' => $normalized];
 
         return $this;
     }
@@ -1033,7 +1034,7 @@ class QueryBuilder
      * the generated statement); select(), distinct() and a row lock are ignored.
      *
      * @throws QueryException When no WHERE conditions set (safety)
-     * @throws QueryException When offset(), join(), groupBy(), having() or an orderBy() without limit() is set, limit() is used on a dialect other than MySQL, or an orderBy() direction is not ASC/DESC
+     * @throws QueryException When offset(), join(), groupBy(), having() or an orderBy() without limit() is set, or limit() is used on a dialect other than MySQL
      *
      * @return int Number of affected rows
      */
@@ -1042,17 +1043,6 @@ class QueryBuilder
         // Only MySQL/MariaDB render DELETE ... [ORDER BY ...] LIMIT n; elsewhere the guard throws as before
         $limited = $this->limit !== null && $this->dialect === self::DIALECT_MYSQL;
         $this->guardAgainstSelectClauses('delete', $limited);
-        if ($limited) {
-            // The direction decides which rows go: an unknown word ("DESCENDING", "down") must not quietly mean ASC
-            foreach ($this->orderBy as $order) {
-                if (!$order['valid']) {
-                    throw new QueryException(
-                        message: 'Delete failed',
-                        debugMessage: sprintf('delete() with limit() needs an explicit ASC or DESC in orderBy() for "%s" (an unknown direction would silently become ASC and delete the wrong rows).', $order['column'])
-                    );
-                }
-            }
-        }
 
         if (empty($this->wheres)) {
             throw new QueryException(

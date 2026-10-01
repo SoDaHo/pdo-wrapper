@@ -122,19 +122,22 @@ class QueryBuilderDialectTest extends TestCase
         $this->assertSame(0, $sqlite()->where('id', 999)->distinct()->sharedLock()->delete(), 'distinct() and a row lock are ignored on delete()');
         $this->assertSame(['UPDATE "users" SET "name" = ? WHERE "id" = ?', 'DELETE FROM "users" WHERE "id" = ?'], $rendered);
 
-        // an orderBy() direction that is not ASC/DESC (case and surrounding whitespace aside) would
-        // silently become ASC and delete the wrong rows
-        foreach (['DESCENDING', 'down', 'DESC NULLS LAST'] as $direction) {
+        // an orderBy() direction that is not ASC/DESC (case and surrounding whitespace aside) used to
+        // become ASC silently; now orderBy() itself refuses it, for selects and deletes alike
+        foreach (['DESCENDING', 'down', 'DESC NULLS LAST', '', 'ASC;'] as $direction) {
             $rendered = [];
-            try {
-                $mysql()->where('id', '>', 0)->orderBy('id', $direction)->limit(1)->delete();
-                $this->fail("Expected QueryException for direction '{$direction}'");
-            } catch (QueryException $e) {
-                $this->assertStringContainsString('needs an explicit ASC or DESC', $e->getDebugMessage() ?? '');
+            foreach (['select' => $mysql(), 'delete' => $mysql()->where('id', '>', 0)->limit(1)] as $kind => $builder) {
+                try {
+                    $builder->orderBy('id', $direction);
+                    $this->fail("Expected QueryException for direction '{$direction}' on {$kind}");
+                } catch (QueryException $e) {
+                    $this->assertSame('Query failed', $e->getMessage());
+                    $this->assertSame(sprintf('Invalid orderBy() direction "%s" for "id". Allowed: ASC, DESC', $direction), $e->getDebugMessage());
+                }
             }
             $this->assertSame([], $rendered);
         }
-        $this->assertSame('SELECT * FROM `users` ORDER BY `id` ASC', $mysql()->orderBy('id', 'down')->toSql()[0], 'selects keep the ASC fallback');
+        $this->assertSame('SELECT * FROM `users` ORDER BY `id` DESC', $mysql()->orderBy('id', ' Desc ')->toSql()[0], 'selects tolerate case and whitespace');
         $rendered = [];
         try {
             $mysql()->where('id', '>', 0)->orderBy('id', ' desc')->limit(1)->delete();
