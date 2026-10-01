@@ -147,6 +147,9 @@ $id = $db->insert('users', [
     'name' => 'John',
     'email' => 'john@example.com',
 ]);
+
+// Conditional insert in one statement: 1 when inserted, 0 when the condition failed
+$inserted = $db->insertWhen('codes', ['user_id' => 7, 'code' => 'abc'], 'NOT EXISTS (SELECT 1 FROM codes WHERE user_id = ? AND used_at IS NULL)', [7]);
 ```
 
 ### Update
@@ -394,7 +397,27 @@ $affected = $db->table('users')
 $affected = $db->table('users')
     ->where('id', 1)
     ->delete();
+
+// Delete in batches, oldest first - MySQL/MariaDB only (DELETE ... ORDER BY ... LIMIT);
+// PostgreSQL and SQLite throw here instead of deleting every matching row.
+// Order by a unique key (or add one as tie-breaker) so that each batch is deterministic.
+$deleted = $db->table('logs')
+    ->where('created_at', '<', $cutoff)
+    ->orderBy('created_at')
+    ->orderBy('id')
+    ->limit(500)
+    ->delete();
+
+// Insert only when a condition holds, in one statement:
+// the row's values are bound first, then the condition's bindings
+$inserted = $db->table('codes')->insertWhen(
+    ['user_id' => $userId, 'code' => $code],
+    'NOT EXISTS (SELECT 1 FROM codes WHERE user_id = ? AND used_at IS NULL)',
+    [$userId]
+); // 1 or 0
 ```
+
+`insertWhen()` renders `INSERT INTO codes (...) SELECT ?, ? WHERE (condition)` (`FROM DUAL` on MySQL/MariaDB). The condition is trusted developer SQL, like `whereRaw()`: never build it from user input. Check and insert see one snapshot, but two concurrent calls can still both insert: an invariant like "one open code per user" needs a `UNIQUE` constraint, a row lock (`lockForUpdate()` on the user row) or `SERIALIZABLE` on top. After a return of 0, `lastInsertId()` is meaningless. Clauses set on the builder (`where*()`, joins, `groupBy()`/`having()`, `orderBy()`, `limit()`/`offset()`, `distinct()`, locks) are not part of the statement and make `insertWhen()` throw; a `select()` is ignored.
 
 ### Debug Query
 
@@ -671,13 +694,14 @@ This library is designed for simple, common use cases. The following features ar
 
 - **UNION** - Combine queries manually or use raw SQL.
 
-- **LIMIT/ORDER BY/JOIN in update/delete** - `limit()`, `offset()`, `orderBy()`, `join()` (also `leftJoin()`/`rightJoin()`), `groupBy()` and `having()` are not supported with `update()` or `delete()`: they are not part of the generated statement, and ignoring them could silently change the affected rows. The QueryBuilder throws an exception if you try, also for combinations that happen to be row-neutral (such as `groupBy()` on the primary key). Use a subquery instead:
+- **LIMIT/ORDER BY/JOIN in update/delete** - `offset()`, `join()` (also `leftJoin()`/`rightJoin()`), `groupBy()` and `having()` are not supported with `update()` or `delete()`, nor are `limit()` and `orderBy()` with `update()`: they are not part of the generated statement, and ignoring them could silently change the affected rows. The QueryBuilder throws an exception if you try, also for combinations that happen to be row-neutral (such as `groupBy()` on the primary key). The one exception is `delete()->orderBy()->limit(n)` on MySQL/MariaDB (see above). On PostgreSQL and SQLite use a subquery (MySQL and MariaDB reject `LIMIT` inside `IN (...)`, MySQL also a subquery on the target table - there the builder form above is the way):
   ```php
-  // Delete the 10 oldest logs (works on all databases)
+  // Delete the 10 oldest logs - PostgreSQL and SQLite
   $db->execute(
       'DELETE FROM logs WHERE id IN (SELECT id FROM logs ORDER BY created_at ASC LIMIT 10)'
   );
   ```
+  `select()`, `distinct()` and a row lock on an `update()`/`delete()` have no meaning there and are ignored (the statement takes its own row locks), so a builder locked for a `first()` can be reused for the update.
 
 - **NULL in where()** - `where('column', null)` throws an exception because `column = NULL` is always false in SQL. Use `whereNull()` or `whereNotNull()` instead.
 

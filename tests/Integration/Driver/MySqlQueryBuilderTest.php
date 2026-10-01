@@ -90,6 +90,85 @@ class MySqlQueryBuilderTest extends TestCase
         $this->assertSame(1, $this->db->table('qb_test')->whereRaw('age BETWEEN ? AND ?', [26, 35])->count());
     }
 
+    public function testDeleteWithOrderByAndLimitDeletesTheOldestRows(): void
+    {
+        foreach (['Tom', 'Eva', 'Kim'] as $name) {
+            $this->db->insert('qb_test', ['name' => $name, 'age' => 20]);
+        }
+        $sql = [];
+        $this->db->on('query', static function (array $context) use (&$sql): void {
+            $sql[] = (string) $context['sql'];
+        });
+
+        $this->assertSame(2, $this->db->table('qb_test')->where('id', '>', 0)->orderBy('id')->limit(2)->delete());
+        $this->assertSame('DELETE FROM `qb_test` WHERE `id` > ? ORDER BY `id` ASC LIMIT 2', $sql[0]);
+        $this->assertSame([3, 4, 5], array_map('intval', array_column($this->db->table('qb_test')->orderBy('id')->get(), 'id')), 'the two oldest rows are gone');
+        $this->assertSame(1, $this->db->table('qb_test')->where('age', 20)->orderBy('id', 'DESC')->limit(1)->delete(), 'the newest of the matching rows');
+        $this->assertSame([3, 4], array_map('intval', array_column($this->db->table('qb_test')->orderBy('id')->get(), 'id')));
+        $this->assertSame(2, $this->db->table('qb_test')->where('id', '>', 0)->limit(10)->delete(), 'limit() without orderBy(): any order');
+    }
+
+    public function testInsertWhenExecutesWithFromDual(): void
+    {
+        $sql = [];
+        $this->db->on('query', static function (array $context) use (&$sql): void {
+            $sql[] = (string) $context['sql'];
+        });
+        $condition = 'NOT EXISTS (SELECT 1 FROM qb_test WHERE name = ?)';
+
+        $this->assertSame(1, $this->db->insertWhen('qb_test', ['name' => 'Tom', 'age' => 50], $condition, ['Tom']));
+        $this->assertSame(0, $this->db->insertWhen('qb_test', ['name' => 'Tom', 'age' => 51], $condition, ['Tom']));
+        $this->assertSame(1, $this->db->table('qb_test')->insertWhen(['name' => 'Eva', 'age' => Database::raw('40 + 2')], '? < ?', [1, 2]));
+        $this->assertSame('INSERT INTO `qb_test` (`name`, `age`) SELECT ?, ? FROM DUAL WHERE (NOT EXISTS (SELECT 1 FROM qb_test WHERE name = ?))', $sql[0]);
+        $this->assertSame([['Tom', 50], ['Eva', 42]], array_map(static fn (array $r): array => [$r['name'], (int) $r['age']], $this->db->table('qb_test')->where('age', '>=', 40)->orderBy('id')->get()));
+    }
+
+    /**
+     * sharedLock() lets another connection read the row with a shared lock but not take an
+     * exclusive one; without any lock (control) the exclusive probe succeeds at once.
+     */
+    public function testSharedLockIsVisibleToAnotherConnection(): void
+    {
+        $other = Database::mysql([
+            'host' => $_ENV['MYSQL_HOST'] ?? '127.0.0.1',
+            'port' => (int) ($_ENV['MYSQL_PORT'] ?? 3306),
+            'database' => $_ENV['MYSQL_DATABASE'] ?? 'pdo_wrapper_test',
+            'username' => $_ENV['MYSQL_USERNAME'] ?? 'root',
+            'password' => $_ENV['MYSQL_PASSWORD'] ?? 'root',
+        ]);
+        $other->execute('SET SESSION innodb_lock_wait_timeout = 1');
+        // NOWAIT exists since MySQL 8.0 / MariaDB 10.3 (the supported matrix starts at 8.0 / 10.11)
+        $exclusiveProbe = static fn (): mixed => $other->query('SELECT id FROM qb_test WHERE id = 1 FOR UPDATE NOWAIT')->fetch();
+        $sharedProbe = static fn (): mixed => $other->query('SELECT id FROM qb_test WHERE id = 1 LOCK IN SHARE MODE')->fetch();
+
+        $this->db->beginTransaction();
+        $this->db->table('qb_test')->where('id', 1)->sharedLock()->first();
+        $other->beginTransaction();
+        try {
+            $this->assertSame(['id' => 1], $sharedProbe(), 'a shared lock does not block another shared lock');
+            try {
+                $exclusiveProbe();
+                $this->fail('Expected the exclusive probe to fail while the row is share-locked');
+            } catch (QueryException $e) {
+                $this->assertContains($e->getPrevious()?->errorInfo[1] ?? null, [3572, 1205], 'lock conflict, not some other error');
+            }
+        } finally {
+            $other->rollback();
+            $this->db->commit();
+        }
+
+        // control: a plain read holds no lock, the exclusive probe succeeds at once
+        $this->db->beginTransaction();
+        $this->db->table('qb_test')->where('id', 1)->first();
+        $other->beginTransaction();
+        try {
+            $this->assertSame(['id' => 1], $exclusiveProbe());
+        } finally {
+            $other->rollback();
+            $this->db->commit();
+        }
+    }
+
     public function testGroupedExistsWithHavingOnASelectAlias(): void
     {
         $this->db->insert('qb_test', ['name' => 'Max', 'age' => 40]);
@@ -134,8 +213,8 @@ class MySqlQueryBuilderTest extends TestCase
                 $other->beginTransaction();
                 $probe();
                 $this->fail("Expected the probe to fail while the row is locked via {$method}()");
-            } catch (QueryException) {
-                // locked by the first connection
+            } catch (QueryException $e) {
+                $this->assertContains($e->getPrevious()?->errorInfo[1] ?? null, [3572, 1205], 'lock conflict: NOWAIT (MySQL 3572) or lock wait timeout (MariaDB 1205)');
             } finally {
                 $other->rollback();
             }

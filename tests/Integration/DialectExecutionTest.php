@@ -7,6 +7,7 @@ namespace Sodaho\PdoWrapper\Tests\Integration;
 use PHPUnit\Framework\TestCase;
 use Sodaho\PdoWrapper\Database;
 use Sodaho\PdoWrapper\DatabaseInterface;
+use Sodaho\PdoWrapper\Exception\QueryException;
 
 /**
  * Dialect-dependent builder features executed on SQLite: IS / IS NOT, OFFSET without LIMIT, row locks (omitted).
@@ -79,5 +80,44 @@ class DialectExecutionTest extends TestCase
         $this->assertSame('Max', $row['name'] ?? null);
         $this->assertSame('Anna', $shared['name'] ?? null);
         $this->assertSame('SELECT * FROM `users` WHERE `id` = ?', $this->db->table('users')->where('id', 1)->lockForUpdate()->toSql()[0]);
+    }
+
+    /**
+     * SQLite has no row locks: lockForUpdate() renders nothing, and while the first transaction
+     * still holds its "locked" row, a second connection on the same database file reads it and
+     * even starts writing it (its UPDATE is accepted; only the commit would wait for the reader).
+     */
+    public function testLockForUpdateHoldsNoRowLockOnSqlite(): void
+    {
+        $file = tempnam(sys_get_temp_dir(), 'pdo-sqlite-lock-');
+        try {
+            $first = Database::sqlite($file);
+            $first->execute('CREATE TABLE accounts (id INTEGER PRIMARY KEY, balance INTEGER)');
+            $first->insert('accounts', ['balance' => 10]);
+            $second = Database::sqlite($file);
+
+            $first->beginTransaction();
+            $this->assertSame(10, $first->table('accounts')->where('id', 1)->lockForUpdate()->first()['balance'] ?? null);
+            $this->assertSame(10, $second->table('accounts')->where('id', 1)->first()['balance'] ?? null, 'another connection still reads the row');
+            $second->beginTransaction();
+            $this->assertSame(1, $second->update('accounts', ['balance' => 11], ['id' => 1]), 'and its UPDATE is accepted while the "lock" is held');
+            $second->rollback();
+            $first->commit();
+
+            $this->assertSame(1, $second->update('accounts', ['balance' => 12], ['id' => 1]));
+            $this->assertSame(12, $first->table('accounts')->where('id', 1)->first()['balance'] ?? null);
+        } finally {
+            @unlink($file);
+        }
+    }
+
+    public function testDeleteWithLimitThrowsOnSqlite(): void
+    {
+        try {
+            $this->db->table('users')->where('id', '>', 0)->limit(1)->delete();
+            $this->fail('Expected QueryException');
+        } catch (QueryException $e) {
+            $this->assertStringContainsString('only MySQL/MariaDB support (dialect "sqlite")', $e->getDebugMessage() ?? '');
+        }
     }
 }

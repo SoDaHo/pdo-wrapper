@@ -18,7 +18,7 @@ driver (MySQL/MariaDB, PostgreSQL or SQLite) and, if you have one, a minimal rep
 ## Scope
 
 The library binds every value as a prepared-statement parameter and quotes every identifier it is given.
-`Database::raw()`, `whereRaw()` (its SQL; only its bindings are bound), `query()`, `execute()` and
-`getPdo()` pass SQL through unchanged by design and are documented as unsafe for untrusted input; a report
-that needs untrusted input in one of those calls is a usage error in the application, not a vulnerability
-in the library.
+`Database::raw()`, `query()`, `execute()`, `getPdo()`, and the condition SQL of `whereRaw()` and
+`insertWhen()` (only their bindings are bound) pass SQL through unchanged by design and are documented
+as unsafe for untrusted input; a report that needs untrusted input in one of those calls is a usage
+error in the application, not a vulnerability in the library.

@@ -59,6 +59,91 @@ class QueryBuilderDialectTest extends TestCase
     }
 
     /**
+     * delete() with limit(): `DELETE ... [ORDER BY ...] LIMIT n` on MySQL only; the other dialects
+     * throw instead of silently deleting every matching row.
+     */
+    public function testDeleteWithLimitRendersOnMysqlAndThrowsElsewhere(): void
+    {
+        $db = Database::sqlite();
+        $db->execute('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)');
+        $rendered = [];
+        $db->on('query', static function (array $context) use (&$rendered): void {
+            $rendered[] = (string) $context['sql'];
+        });
+        $db->on('error', static function (array $context) use (&$rendered): void {
+            $rendered[] = (string) $context['sql'];
+        });
+
+        // MySQL dialect over SQLite: the statement is rendered; whether SQLite accepts DELETE ... LIMIT depends on its build
+        try {
+            (new QueryBuilder($db, 'users', '`', QueryBuilder::DIALECT_MYSQL))->where('id', '>', 5)->orderBy('id')->limit(2)->delete();
+        } catch (QueryException) {
+            // SQLite without SQLITE_ENABLE_UPDATE_DELETE_LIMIT
+        }
+        $this->assertSame(['DELETE FROM `users` WHERE `id` > ? ORDER BY `id` ASC LIMIT 2'], $rendered);
+        $rendered = [];
+        try {
+            (new QueryBuilder($db, 'users', '`', QueryBuilder::DIALECT_MYSQL))->where('id', '>', 5)->limit(3)->delete();
+        } catch (QueryException) {
+        }
+        $this->assertSame(['DELETE FROM `users` WHERE `id` > ? LIMIT 3'], $rendered, 'orderBy() is optional');
+
+        foreach ([QueryBuilder::DIALECT_SQLITE, QueryBuilder::DIALECT_PGSQL, QueryBuilder::DIALECT_ANSI] as $dialect) {
+            $rendered = [];
+            try {
+                (new QueryBuilder($db, 'users', '"', $dialect))->where('id', '>', 5)->orderBy('id')->limit(2)->delete();
+                $this->fail("Expected QueryException for dialect {$dialect}");
+            } catch (QueryException $e) {
+                $this->assertStringContainsString("only MySQL/MariaDB support (dialect \"{$dialect}\")", $e->getDebugMessage() ?? '');
+            }
+            $this->assertSame([], $rendered, 'nothing was executed');
+        }
+
+        // still unsupported, also on MySQL: orderBy() without limit(), offset(), and limit() on update()
+        $mysql = static fn (): QueryBuilder => new QueryBuilder($db, 'users', '`', QueryBuilder::DIALECT_MYSQL);
+        foreach ([
+            'orderBy() alone' => fn () => $mysql()->where('id', 1)->orderBy('id')->delete(),
+            'offset()' => fn () => $mysql()->where('id', 1)->limit(2)->offset(1)->delete(),
+            'update()' => fn () => $mysql()->where('id', 1)->limit(2)->update(['name' => 'x']),
+        ] as $name => $case) {
+            try {
+                $case();
+                $this->fail("{$name}: expected QueryException");
+            } catch (QueryException $e) {
+                $this->assertStringContainsString('does not support', $e->getDebugMessage() ?? '', $name);
+            }
+        }
+        $this->assertSame([], $rendered, 'none of them reached the database');
+        $this->assertSame(0, $mysql()->select(['name'])->where('id', 999)->delete(), 'select() is ignored on delete()');
+        // a builder locked for a first() may be reused: distinct() and locks cannot change which rows are hit
+        $rendered = [];
+        $sqlite = static fn (): QueryBuilder => new QueryBuilder($db, 'users', '"', QueryBuilder::DIALECT_SQLITE);
+        $this->assertSame(0, $sqlite()->where('id', 999)->lockForUpdate()->update(['name' => 'x']), 'a row lock is ignored on update()');
+        $this->assertSame(0, $sqlite()->where('id', 999)->distinct()->sharedLock()->delete(), 'distinct() and a row lock are ignored on delete()');
+        $this->assertSame(['UPDATE "users" SET "name" = ? WHERE "id" = ?', 'DELETE FROM "users" WHERE "id" = ?'], $rendered);
+
+        // an orderBy() direction that is not ASC/DESC (case and surrounding whitespace aside) would
+        // silently become ASC and delete the wrong rows
+        foreach (['DESCENDING', 'down', 'DESC NULLS LAST'] as $direction) {
+            $rendered = [];
+            try {
+                $mysql()->where('id', '>', 0)->orderBy('id', $direction)->limit(1)->delete();
+                $this->fail("Expected QueryException for direction '{$direction}'");
+            } catch (QueryException $e) {
+                $this->assertStringContainsString('needs an explicit ASC or DESC', $e->getDebugMessage() ?? '');
+            }
+            $this->assertSame([], $rendered);
+        }
+        $this->assertSame('SELECT * FROM `users` ORDER BY `id` ASC', $mysql()->orderBy('id', 'down')->toSql()[0], 'selects keep the ASC fallback');
+        $rendered = [];
+        try {
+            $mysql()->where('id', '>', 0)->orderBy('id', ' desc')->limit(1)->delete();
+        } catch (QueryException) {
+        }
+        $this->assertSame(['DELETE FROM `users` WHERE `id` > ? ORDER BY `id` DESC LIMIT 1'], $rendered, 'surrounding whitespace and case are tolerated');
+    }
+
+    /**
      * A custom driver that does not override now()/utcNow() gets the SQL standard expression.
      */
     public function testAbstractDriverTimestampDefaultsAreCurrentTimestamp(): void

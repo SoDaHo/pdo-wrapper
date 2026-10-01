@@ -169,6 +169,35 @@ interface DatabaseInterface
     public function insert(string $table, array $data): int|string;
 
     /**
+     * Insert a row only when a condition holds, in one statement:
+     * `INSERT INTO table (...) SELECT ?, ?, ... WHERE (condition)` (`FROM DUAL` on MySQL/MariaDB).
+     *
+     * Check and insert see the same snapshot, but two concurrent statements can still both see
+     * the condition true and both insert (READ COMMITTED / REPEATABLE READ): an invariant such as
+     * "one open code per user" needs a UNIQUE constraint, a row lock (lockForUpdate()) or
+     * SERIALIZABLE on top.
+     *
+     * The condition is trusted developer SQL with ? placeholders, like whereRaw(); it may look at
+     * the target table itself (`NOT EXISTS (SELECT 1 FROM codes WHERE user_id = ? AND used_at IS NULL)`).
+     * Binding order: the row's values first (in column order), then $bindings. A RawExpression in
+     * $data is inlined as in insert() (but inside a SELECT list: `raw('DEFAULT')` is not valid there);
+     * in $bindings it is not accepted. On MySQL a TEMPORARY target table cannot be read by its own
+     * condition (error 1137). SECURITY: never build the condition from user input; user input
+     * belongs in $bindings. After a return of 0, lastInsertId() is meaningless: it reports an older
+     * value or 0, depending on the driver, or fails (PostgreSQL, no sequence used in this session).
+     *
+     * @param string $table Table name
+     * @param array<string, mixed> $data Column => value pairs of the row
+     * @param string $condition Trusted condition SQL with ? placeholders (never built from user input)
+     * @param array<array-key, mixed> $bindings Values for the condition's placeholders, in order
+     *
+     * @throws Exception\QueryException When $data or the condition is empty, a binding is a RawExpression, or the query fails
+     *
+     * @return int Inserted rows: 1 or 0
+     */
+    public function insertWhen(string $table, array $data, string $condition, array $bindings = []): int;
+
+    /**
      * Update rows matching WHERE conditions.
      *
      * @param string $table Table name

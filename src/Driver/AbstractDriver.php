@@ -525,6 +525,59 @@ abstract class AbstractDriver implements DatabaseInterface
     }
 
     /**
+     * Insert a row only when a condition holds, in one statement.
+     *
+     * Renders `INSERT INTO table (...) SELECT ?, ?, ... WHERE (condition)`; MySQL/MariaDB need
+     * `FROM DUAL` before a WHERE without a table. The row's values are bound first, then the
+     * condition's bindings (see DatabaseInterface::insertWhen()).
+     *
+     * @param string $table Table name (supports schema.table format)
+     * @param array<string, mixed> $data Column => value pairs of the row
+     * @param string $condition Trusted condition SQL with ? placeholders (never built from user input)
+     * @param array<array-key, mixed> $bindings Values for the condition's placeholders, in order
+     *
+     * @throws QueryException When $data or the condition is empty, a binding is a RawExpression, or the query fails
+     *
+     * @return int Inserted rows: 1 or 0
+     */
+    public function insertWhen(string $table, array $data, string $condition, array $bindings = []): int
+    {
+        if (empty($data)) {
+            throw new QueryException(
+                message: 'Insert failed',
+                debugMessage: 'Cannot insert empty data'
+            );
+        }
+        if (trim($condition) === '') {
+            throw new QueryException(
+                message: 'Insert failed',
+                debugMessage: 'insertWhen() needs a condition'
+            );
+        }
+        foreach ($bindings as $binding) {
+            if ($binding instanceof RawExpression) {
+                throw new QueryException(
+                    message: 'Insert failed',
+                    debugMessage: 'insertWhen() binds the condition values; write a raw expression into the condition instead'
+                );
+            }
+        }
+
+        [$columns, $values, $params] = $this->buildInsertParts($data);
+
+        $sql = sprintf(
+            'INSERT INTO %s (%s) SELECT %s%s WHERE (%s)',
+            $this->quoteIdentifier($table),
+            $columns,
+            $values,
+            $this->getDialect() === \Sodaho\PdoWrapper\Query\QueryBuilder::DIALECT_MYSQL ? ' FROM DUAL' : '',
+            trim($condition)
+        );
+
+        return $this->execute($sql, [...$params, ...array_values($bindings)]);
+    }
+
+    /**
      * Update rows matching WHERE conditions.
      *
      * @param string $table Table name (supports schema.table format)

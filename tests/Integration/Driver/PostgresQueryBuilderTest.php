@@ -64,6 +64,77 @@ class PostgresQueryBuilderTest extends TestCase
         $this->assertSame(1, $this->db->table('qb_test')->whereRaw('age BETWEEN ? AND ?', [26, 35])->count());
     }
 
+    public function testDeleteWithLimitThrowsInsteadOfDeletingEverything(): void
+    {
+        try {
+            $this->db->table('qb_test')->where('id', '>', 0)->orderBy('id')->limit(1)->delete();
+            $this->fail('Expected QueryException');
+        } catch (QueryException $e) {
+            $this->assertStringContainsString('only MySQL/MariaDB support (dialect "pgsql")', $e->getDebugMessage() ?? '');
+        }
+
+        $this->assertSame(2, $this->db->table('qb_test')->count(), 'nothing was deleted');
+    }
+
+    public function testInsertWhenExecutes(): void
+    {
+        $sql = [];
+        $this->db->on('query', static function (array $context) use (&$sql): void {
+            $sql[] = (string) $context['sql'];
+        });
+        $condition = 'NOT EXISTS (SELECT 1 FROM qb_test WHERE name = ?)';
+
+        $this->assertSame(1, $this->db->insertWhen('qb_test', ['name' => 'Tom', 'age' => 50], $condition, ['Tom']));
+        $this->assertSame(0, $this->db->insertWhen('qb_test', ['name' => 'Tom', 'age' => 51], $condition, ['Tom']));
+        $this->assertSame(1, $this->db->table('qb_test')->insertWhen(['name' => 'Eva', 'age' => Database::raw('40 + 2')], '? < ?', [1, 2]));
+        $this->assertSame('INSERT INTO "qb_test" ("name", "age") SELECT ?, ? WHERE (NOT EXISTS (SELECT 1 FROM qb_test WHERE name = ?))', $sql[0]);
+        $this->assertSame([['Tom', 50], ['Eva', 42]], array_map(static fn (array $r): array => [$r['name'], (int) $r['age']], $this->db->table('qb_test')->where('age', '>=', 40)->orderBy('id')->get()));
+    }
+
+    /**
+     * sharedLock() lets another connection read the row with a shared lock but not take an
+     * exclusive one; without any lock (control) the exclusive probe succeeds at once.
+     */
+    public function testSharedLockIsVisibleToAnotherConnection(): void
+    {
+        $other = Database::postgres([
+            'host' => $_ENV['POSTGRES_HOST'] ?? '127.0.0.1',
+            'port' => (int) ($_ENV['POSTGRES_PORT'] ?? 5432),
+            'database' => $_ENV['POSTGRES_DATABASE'] ?? 'pdo_wrapper_test',
+            'username' => $_ENV['POSTGRES_USERNAME'] ?? 'postgres',
+            'password' => $_ENV['POSTGRES_PASSWORD'] ?? 'postgres',
+        ]);
+        $exclusiveProbe = static fn (): mixed => $other->query('SELECT id FROM qb_test WHERE id = 1 FOR UPDATE NOWAIT')->fetch();
+        $sharedProbe = static fn (): mixed => $other->query('SELECT id FROM qb_test WHERE id = 1 FOR SHARE NOWAIT')->fetch();
+
+        $this->db->beginTransaction();
+        $this->db->table('qb_test')->where('id', 1)->sharedLock()->first();
+        $other->beginTransaction();
+        try {
+            $this->assertSame(['id' => 1], $sharedProbe(), 'a shared lock does not block another shared lock');
+            try {
+                $exclusiveProbe();
+                $this->fail('Expected the exclusive probe to fail while the row is share-locked');
+            } catch (QueryException $e) {
+                $this->assertSame('55P03', $e->getPrevious()?->errorInfo[0] ?? null, 'lock_not_available, not some other error');
+            }
+        } finally {
+            $other->rollback();
+            $this->db->commit();
+        }
+
+        // control: a plain read holds no lock, the exclusive probe succeeds at once
+        $this->db->beginTransaction();
+        $this->db->table('qb_test')->where('id', 1)->first();
+        $other->beginTransaction();
+        try {
+            $this->assertSame(['id' => 1], $exclusiveProbe());
+        } finally {
+            $other->rollback();
+            $this->db->commit();
+        }
+    }
+
     public function testRowLocksExecuteInsideATransaction(): void
     {
         $this->db->beginTransaction();
@@ -100,8 +171,8 @@ class PostgresQueryBuilderTest extends TestCase
                 $other->beginTransaction();
                 $probe();
                 $this->fail("Expected the probe to fail while the row is locked via {$method}()");
-            } catch (QueryException) {
-                // locked by the first connection
+            } catch (QueryException $e) {
+                $this->assertSame('55P03', $e->getPrevious()?->errorInfo[0] ?? null, 'lock_not_available: the row is locked');
             } finally {
                 $other->rollback();
             }

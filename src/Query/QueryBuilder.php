@@ -47,7 +47,7 @@ class QueryBuilder
     /** @var array<int, array<string, string>> */
     private array $joins = [];
 
-    /** @var array<int, array{column: string, direction: string}> */
+    /** @var array<int, array{column: string, direction: string, valid: bool}> */
     private array $orderBy = [];
 
     private ?int $limit = null;
@@ -528,12 +528,16 @@ class QueryBuilder
     /**
      * Add an ORDER BY clause.
      *
+     * An unknown direction falls back to ASC for selects; delete()->limit() refuses it instead,
+     * because there the direction decides which rows are deleted.
+     *
      * @param string $column Column to order by
      * @param string $direction ASC or DESC (default: ASC)
      */
     public function orderBy(string $column, string $direction = 'ASC'): self
     {
-        $direction = strtoupper($direction);
+        $given = $direction;
+        $direction = strtoupper(trim($direction));
         if (!in_array($direction, ['ASC', 'DESC'], true)) {
             $direction = 'ASC';
         }
@@ -541,6 +545,7 @@ class QueryBuilder
         $this->orderBy[] = [
             'column' => $column,
             'direction' => $direction,
+            'valid' => strtoupper(trim($given)) === $direction,
         ];
 
         return $this;
@@ -930,10 +935,38 @@ class QueryBuilder
     }
 
     /**
+     * Insert a row only when a condition holds, in one statement (see DatabaseInterface::insertWhen()).
+     *
+     * The condition is the argument: a where*()/whereRaw(), join, groupBy()/having(), orderBy(),
+     * limit()/offset(), distinct() or row lock set on this builder is not part of the statement, so
+     * the method refuses to run with one (insert() ignores them); a select() is harmless and ignored.
+     *
+     * @param array<string, mixed> $data Column => value pairs of the row
+     * @param string $condition Trusted condition SQL with ? placeholders
+     * @param array<array-key, mixed> $bindings Values for the condition, bound after the row's values
+     *
+     * @throws QueryException When a builder clause is set, $data or the condition is empty, a binding is a RawExpression, or the query fails
+     *
+     * @return int Inserted rows: 1 or 0
+     */
+    public function insertWhen(array $data, string $condition, array $bindings = []): int
+    {
+        if ($this->wheres !== [] || $this->joins !== [] || $this->groupBy !== [] || $this->having !== [] || $this->orderBy !== [] || $this->limit !== null || $this->offset !== null || $this->distinct || $this->lock !== null) {
+            throw new QueryException(
+                message: 'Insert failed',
+                debugMessage: 'insertWhen() takes its condition as an argument; where()/whereRaw(), joins, groupBy()/having(), orderBy(), limit()/offset(), distinct() and locks set on the builder are not part of the statement.'
+            );
+        }
+
+        return $this->db->insertWhen($this->table, $data, $condition, $bindings);
+    }
+
+    /**
      * Update rows matching the WHERE conditions.
      *
      * Requires at least one WHERE condition for safety.
-     * Does not support LIMIT, OFFSET, ORDER BY, JOIN, GROUP BY or HAVING (not part of the generated statement).
+     * Does not support LIMIT, OFFSET, ORDER BY, JOIN, GROUP BY or HAVING (not part of the generated
+     * statement); select(), distinct() and a row lock are ignored.
      *
      * @param array<string, mixed> $data Column => value pairs to update
      *
@@ -991,16 +1024,35 @@ class QueryBuilder
      * Delete rows matching the WHERE conditions.
      *
      * Requires at least one WHERE condition for safety.
-     * Does not support LIMIT, OFFSET, ORDER BY, JOIN, GROUP BY or HAVING (not part of the generated statement).
+     *
+     * On MySQL/MariaDB, limit() deletes at most that many rows, in orderBy() order when given
+     * (`DELETE ... ORDER BY ... LIMIT n`: "the oldest n", for deleting in batches; order by a unique
+     * key, or add one as tie-breaker, so that the batch is deterministic). DELETE ... LIMIT is not
+     * portable: on the other dialects limit() throws instead of silently deleting every matching row.
+     * OFFSET, JOIN, GROUP BY, HAVING and an orderBy() without limit() are not supported (not part of
+     * the generated statement); select(), distinct() and a row lock are ignored.
      *
      * @throws QueryException When no WHERE conditions set (safety)
-     * @throws QueryException When limit(), offset(), orderBy(), join(), groupBy() or having() is set (not supported)
+     * @throws QueryException When offset(), join(), groupBy(), having() or an orderBy() without limit() is set, limit() is used on a dialect other than MySQL, or an orderBy() direction is not ASC/DESC
      *
      * @return int Number of affected rows
      */
     public function delete(): int
     {
-        $this->guardAgainstSelectClauses('delete');
+        // Only MySQL/MariaDB render DELETE ... [ORDER BY ...] LIMIT n; elsewhere the guard throws as before
+        $limited = $this->limit !== null && $this->dialect === self::DIALECT_MYSQL;
+        $this->guardAgainstSelectClauses('delete', $limited);
+        if ($limited) {
+            // The direction decides which rows go: an unknown word ("DESCENDING", "down") must not quietly mean ASC
+            foreach ($this->orderBy as $order) {
+                if (!$order['valid']) {
+                    throw new QueryException(
+                        message: 'Delete failed',
+                        debugMessage: sprintf('delete() with limit() needs an explicit ASC or DESC in orderBy() for "%s" (an unknown direction would silently become ASC and delete the wrong rows).', $order['column'])
+                    );
+                }
+            }
+        }
 
         if (empty($this->wheres)) {
             throw new QueryException(
@@ -1016,6 +1068,9 @@ class QueryBuilder
             $this->quoteIdentifier($this->table),
             $whereSql
         );
+        if ($limited) {
+            $sql .= $this->orderByClause() . ' LIMIT ' . $this->limit;
+        }
 
         return $this->db->execute($sql, $whereParams);
     }
@@ -1111,14 +1166,7 @@ class QueryBuilder
             $params = array_merge($params, $havingParams);
         }
 
-        // ORDER BY
-        if (!empty($this->orderBy)) {
-            $orderClauses = [];
-            foreach ($this->orderBy as $order) {
-                $orderClauses[] = $this->quoteIdentifier($order['column']) . ' ' . $order['direction'];
-            }
-            $sql .= ' ORDER BY ' . implode(', ', $orderClauses);
-        }
+        $sql .= $this->orderByClause();
 
         // LIMIT / OFFSET (typed as ?int, enforced by PHP's type system); MySQL and SQLite need a
         // LIMIT before an OFFSET, so an offset() without limit() gets the dialect's "no limit" value
@@ -1138,6 +1186,22 @@ class QueryBuilder
         }
 
         return [$sql, $params];
+    }
+
+    /**
+     * The ORDER BY clause with a leading space, or an empty string.
+     */
+    private function orderByClause(): string
+    {
+        if (empty($this->orderBy)) {
+            return '';
+        }
+        $orderClauses = [];
+        foreach ($this->orderBy as $order) {
+            $orderClauses[] = $this->quoteIdentifier($order['column']) . ' ' . $order['direction'];
+        }
+
+        return ' ORDER BY ' . implode(', ', $orderClauses);
     }
 
     /**
@@ -1355,23 +1419,26 @@ class QueryBuilder
      *
      * None of these clauses is part of the SQL that update()/delete() generate. Ignoring them
      * silently would change which rows are affected (a delete narrowed down by a join would hit
-     * every matching row of the base table). This guard makes the error explicit.
+     * every matching row of the base table). This guard makes the error explicit. select(),
+     * distinct() and a row lock are ignored: they cannot change which rows an UPDATE/DELETE hits
+     * (the statement takes its own row locks), so a builder locked for a first() may be reused.
      *
      * @param string $operation Operation name for error message ('update' or 'delete')
+     * @param bool $orderedLimitAllowed True when the statement renders ORDER BY ... LIMIT (delete() on MySQL/MariaDB)
      *
-     * @throws QueryException When limit, offset, orderBy, join, groupBy or having is set
+     * @throws QueryException When limit, offset, orderBy, join, groupBy or having is set (limit and orderBy allowed together when $orderedLimitAllowed)
      */
-    private function guardAgainstSelectClauses(string $operation): void
+    private function guardAgainstSelectClauses(string $operation, bool $orderedLimitAllowed = false): void
     {
         $unsupported = [];
 
-        if ($this->limit !== null) {
+        if ($this->limit !== null && !$orderedLimitAllowed) {
             $unsupported[] = 'limit()';
         }
         if ($this->offset !== null) {
             $unsupported[] = 'offset()';
         }
-        if (!empty($this->orderBy)) {
+        if (!empty($this->orderBy) && !($orderedLimitAllowed && $this->limit !== null)) {
             $unsupported[] = 'orderBy()';
         }
         if (!empty($this->joins)) {
@@ -1385,12 +1452,16 @@ class QueryBuilder
         }
 
         if (!empty($unsupported)) {
+            $hint = ($operation === 'delete' && $this->limit !== null && $this->dialect !== self::DIALECT_MYSQL)
+                ? sprintf(' delete() with limit() would need DELETE ... LIMIT, which only MySQL/MariaDB support (dialect "%s"): use a subquery in raw execute() instead.', $this->dialect)
+                : '';
             throw new QueryException(
                 message: ucfirst($operation) . ' failed',
                 debugMessage: sprintf(
-                    '%s does not support %s (not part of the generated statement; the affected rows could silently differ). Use raw execute() for database-specific syntax.',
+                    '%s does not support %s (not part of the generated statement; the affected rows could silently differ). Use raw execute() for database-specific syntax.%s',
                     $operation,
-                    implode(', ', $unsupported)
+                    implode(', ', $unsupported),
+                    $hint
                 )
             );
         }
