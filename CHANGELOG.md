@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-10-01
+
 ### Added
 - `update()->limit(n)` on the query builder for MySQL/MariaDB, like `delete()->limit(n)` since 1.3.0: `UPDATE ... SET ... WHERE ... [ORDER BY ...] LIMIT n`, `orderBy()` allowed with it (order by a unique key so the batch is deterministic). On PostgreSQL, SQLite and ANSI `limit()` on `update()` still throws, with the same hint as for `delete()`.
 - `transaction.end` hook: fires exactly once for every transaction this library ends, after the `transaction.commit` or `transaction.rollback` listeners, with `['outcome' => 'committed'|'rolled_back'|'lost', 'error' => ?Throwable]` (`DatabaseInterface::TRANSACTION_COMMITTED`, `TRANSACTION_ROLLED_BACK`, `TRANSACTION_LOST`). `lost` covers what the rollback listeners cannot: no rollback could be confirmed (lost connection, PDO no longer reporting the transaction, an unreadable connection state, a raw cleanup of a commit listener's transaction that did not end it, or a failed commit followed by a failed rollback, where the data may be committed, fail-closed, and `error` is the commit's exception); listeners must not expect queries to work then, and a transaction that may in fact still be open tells no second end when it is later committed or rolled back through the library. All listeners run; their failures arrive in `CommitHookException::$failures` after a commit (behind the commit listeners': first the ends of transactions commit listeners left open, then the committed transaction's end), as `TransactionException` after an explicit `rollback()` (a rollback listener's exception takes precedence), and only via the `error` hook (keys `hook`, `outcome`, `exception` added) on the automatic rollback in `transaction()`/`updateMultiple()` and on a `lost` reported there, so the exception that ended the transaction reaches the caller unchanged. A failing explicit `commit()`/`rollback()` fires nothing. A transaction a commit listener began through the library and leaves open gets its own `transaction.end` before the outer one. See the `HasHooks` header for the full contract, including transactions started inside listeners.
@@ -138,7 +140,8 @@
 - **CI**: GitHub Actions with PHP 8.2-8.5, MySQL 8.0/8.4, MariaDB 10.11/11.4, PostgreSQL 15/16/17.
 - **Quality**: PHPStan level 9, PHP-CS-Fixer (PSR-12).
 
-[Unreleased]: https://github.com/sodaho/pdo-wrapper/compare/v1.3.1...HEAD
+[Unreleased]: https://github.com/sodaho/pdo-wrapper/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/sodaho/pdo-wrapper/compare/v1.3.1...v1.4.0
 [1.3.1]: https://github.com/sodaho/pdo-wrapper/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/sodaho/pdo-wrapper/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/sodaho/pdo-wrapper/compare/v1.1.1...v1.2.0
