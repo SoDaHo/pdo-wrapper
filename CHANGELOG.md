@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-10-01
+
 ### Added
 - `delete()->limit(n)` on the query builder for MySQL/MariaDB: `DELETE ... [ORDER BY ...] LIMIT n`, `orderBy()` allowed with it (delete the oldest n rows, in batches; order by a unique key so the batch is deterministic). Before, `limit()` on `delete()` threw on every dialect; it still throws on PostgreSQL, SQLite and ANSI, where `DELETE ... LIMIT` is not portable, instead of silently deleting every matching row. An `orderBy()` direction other than `ASC`/`DESC` (`'DESCENDING'`, `'down'`) throws there too, because it decides which rows go (for selects it still falls back to `ASC`). A custom driver whose quote character is the backtick renders as MySQL unless it overrides `getDialect()`. `offset()`, `join()`, `groupBy()`, `having()` and an `orderBy()` without `limit()` still throw; `update()` is unchanged. `select()`, `distinct()` and a row lock on `update()`/`delete()` are ignored, as before (they cannot change which rows the statement hits).
 - `insertWhen($table, $row, $condition, $bindings = [])` on every driver and in `DatabaseInterface`, `insertWhen($row, $condition, $bindings = [])` on the query builder: insert a row only when a trusted condition holds, in one statement (`INSERT INTO t (...) SELECT ?, ... WHERE (condition)`, with `FROM DUAL` on MySQL/MariaDB). Check and insert see one snapshot; concurrent statements can still both insert, so an invariant needs a `UNIQUE` constraint, a row lock or `SERIALIZABLE`. The condition may look at the target table (`NOT EXISTS (SELECT 1 FROM codes WHERE user_id = ? AND used_at IS NULL)`); the row's values are bound first, then the condition's bindings. Returns the inserted rows, 1 or 0 (`lastInsertId()` is meaningless after 0). Never build the condition from user input. On the builder, clauses set before `insertWhen()` throw (they are not part of the statement). A direct implementation of `DatabaseInterface` must add the method; a custom backtick driver renders `FROM DUAL` unless it overrides `getDialect()`.
@@ -121,7 +123,8 @@
 - **CI**: GitHub Actions with PHP 8.2-8.5, MySQL 8.0/8.4, MariaDB 10.11/11.4, PostgreSQL 15/16/17.
 - **Quality**: PHPStan level 9, PHP-CS-Fixer (PSR-12).
 
-[Unreleased]: https://github.com/sodaho/pdo-wrapper/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/sodaho/pdo-wrapper/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/sodaho/pdo-wrapper/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/sodaho/pdo-wrapper/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/sodaho/pdo-wrapper/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/sodaho/pdo-wrapper/compare/v1.0.1...v1.1.0
