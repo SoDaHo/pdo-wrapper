@@ -966,19 +966,26 @@ class QueryBuilder
      * Update rows matching the WHERE conditions.
      *
      * Requires at least one WHERE condition for safety.
-     * Does not support LIMIT, OFFSET, ORDER BY, JOIN, GROUP BY or HAVING (not part of the generated
+     *
+     * On MySQL/MariaDB, limit() updates at most that many rows, in orderBy() order when given
+     * (`UPDATE ... ORDER BY ... LIMIT n`, for updating in batches; order by a unique key, or add one
+     * as tie-breaker, so that the batch is deterministic). UPDATE ... LIMIT is not portable: on the
+     * other dialects limit() throws instead of silently updating every matching row. OFFSET, JOIN,
+     * GROUP BY, HAVING and an orderBy() without limit() are not supported (not part of the generated
      * statement); select(), distinct() and a row lock are ignored.
      *
      * @param array<string, mixed> $data Column => value pairs to update
      *
      * @throws QueryException When no WHERE conditions set (safety)
-     * @throws QueryException When limit(), offset(), orderBy(), join(), groupBy() or having() is set (not supported)
+     * @throws QueryException When offset(), join(), groupBy(), having() or an orderBy() without limit() is set, or limit() is used on a dialect other than MySQL
      *
      * @return int Number of affected rows
      */
     public function update(array $data): int
     {
-        $this->guardAgainstSelectClauses('update');
+        // Only MySQL/MariaDB render UPDATE ... [ORDER BY ...] LIMIT n; elsewhere the guard throws as before
+        $limited = $this->limit !== null && $this->dialect === self::DIALECT_MYSQL;
+        $this->guardAgainstSelectClauses('update', $limited);
 
         if (empty($this->wheres)) {
             throw new QueryException(
@@ -1017,6 +1024,9 @@ class QueryBuilder
             implode(', ', $setClauses),
             $whereSql
         );
+        if ($limited) {
+            $sql .= $this->orderByClause() . ' LIMIT ' . $this->limit;
+        }
 
         return $this->db->execute($sql, $params);
     }
@@ -1414,7 +1424,7 @@ class QueryBuilder
      * (the statement takes its own row locks), so a builder locked for a first() may be reused.
      *
      * @param string $operation Operation name for error message ('update' or 'delete')
-     * @param bool $orderedLimitAllowed True when the statement renders ORDER BY ... LIMIT (delete() on MySQL/MariaDB)
+     * @param bool $orderedLimitAllowed True when the statement renders ORDER BY ... LIMIT (update()/delete() on MySQL/MariaDB)
      *
      * @throws QueryException When limit, offset, orderBy, join, groupBy or having is set (limit and orderBy allowed together when $orderedLimitAllowed)
      */
@@ -1442,8 +1452,8 @@ class QueryBuilder
         }
 
         if (!empty($unsupported)) {
-            $hint = ($operation === 'delete' && $this->limit !== null && $this->dialect !== self::DIALECT_MYSQL)
-                ? sprintf(' delete() with limit() would need DELETE ... LIMIT, which only MySQL/MariaDB support (dialect "%s"): use a subquery in raw execute() instead.', $this->dialect)
+            $hint = ($this->limit !== null && $this->dialect !== self::DIALECT_MYSQL)
+                ? sprintf(' %s() with limit() would need %s ... LIMIT, which only MySQL/MariaDB support (dialect "%s"): use a subquery in raw execute() instead.', $operation, strtoupper($operation), $this->dialect)
                 : '';
             throw new QueryException(
                 message: ucfirst($operation) . ' failed',

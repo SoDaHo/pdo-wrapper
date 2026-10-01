@@ -289,6 +289,42 @@ class MySqlQueryBuilderTest extends TestCase
         $this->db->execute('DROP TABLE IF EXISTS qb_profiles');
     }
 
+    public function testUpdateWithLimitUpdatesTheFirstRowsInOrder(): void
+    {
+        $sql = [];
+        $this->db->on('query', static function (array $context) use (&$sql): void {
+            $sql[] = (string) $context['sql'];
+        });
+
+        $affected = $this->db->table('qb_test')->where('age', '>', 0)->orderBy('age', 'DESC')->orderBy('id')->limit(1)->update(['name' => 'oldest']);
+
+        $this->assertSame(1, $affected);
+        $this->assertSame(['UPDATE `qb_test` SET `name` = ? WHERE `age` > ? ORDER BY `age` DESC, `id` ASC LIMIT 1'], $sql);
+        $this->assertSame(['Max', 'oldest'], array_column($this->db->table('qb_test')->orderBy('id')->get(), 'name'), 'only Anna (age 30) was renamed');
+    }
+
+    public function testUpdateWithLimitBindsTheSetValuesBeforeTheWhereBindings(): void
+    {
+        $captured = [];
+        $this->db->on('query', static function (array $context) use (&$captured): void {
+            $captured[] = ['sql' => (string) $context['sql'], 'params' => (array) $context['params']];
+        });
+
+        $affected = $this->db->table('qb_test')
+            ->whereRaw('age > ?', [0])
+            ->where('name', '!=', 'nobody')
+            ->orderBy('id')
+            ->limit(1)
+            ->update(['name' => 'first', 'age' => Database::raw('age + 1')]);
+
+        $this->assertSame(1, $affected);
+        $this->assertSame([[
+            'sql' => 'UPDATE `qb_test` SET `name` = ?, `age` = age + 1 WHERE (age > ?) AND `name` != ? ORDER BY `id` ASC LIMIT 1',
+            'params' => ['first', 0, 'nobody'],
+        ]], $captured, 'SET values first, then the WHERE bindings in order; ORDER BY and LIMIT bind nothing');
+        $this->assertSame([['name' => 'first', 'age' => 26], ['name' => 'Anna', 'age' => 30]], $this->db->table('qb_test')->select(['name', 'age'])->orderBy('id')->get());
+    }
+
     /**
      * A boolean is bound as '1'/'0'. PDO alone sends false as '', which MySQL in strict mode
      * (the default) rejects for a numeric column: "Incorrect integer value: ''".

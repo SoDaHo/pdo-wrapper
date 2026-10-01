@@ -413,6 +413,13 @@ $deleted = $db->table('logs')
     ->limit(500)
     ->delete();
 
+// The same for update(): UPDATE ... ORDER BY ... LIMIT, MySQL/MariaDB only
+$claimed = $db->table('jobs')
+    ->where('status', 'queued')
+    ->orderBy('id')
+    ->limit(10)
+    ->update(['status' => 'claimed']);
+
 // Insert only when a condition holds, in one statement:
 // the row's values are bound first, then the condition's bindings
 $inserted = $db->table('codes')->insertWhen(
@@ -699,7 +706,7 @@ This library is designed for simple, common use cases. The following features ar
 
 - **UNION** - Combine queries manually or use raw SQL.
 
-- **LIMIT/ORDER BY/JOIN in update/delete** - `offset()`, `join()` (also `leftJoin()`/`rightJoin()`), `groupBy()` and `having()` are not supported with `update()` or `delete()`, nor are `limit()` and `orderBy()` with `update()`: they are not part of the generated statement, and ignoring them could silently change the affected rows. The QueryBuilder throws an exception if you try, also for combinations that happen to be row-neutral (such as `groupBy()` on the primary key). The one exception is `delete()->orderBy()->limit(n)` on MySQL/MariaDB (see above). On PostgreSQL and SQLite use a subquery (MySQL and MariaDB reject `LIMIT` inside `IN (...)`, MySQL also a subquery on the target table - there the builder form above is the way):
+- **LIMIT/ORDER BY/JOIN in update/delete** - `offset()`, `join()` (also `leftJoin()`/`rightJoin()`), `groupBy()`, `having()` and an `orderBy()` without `limit()` are not supported with `update()` or `delete()`: they are not part of the generated statement, and ignoring them could silently change the affected rows. The QueryBuilder throws an exception if you try, also for combinations that happen to be row-neutral (such as `groupBy()` on the primary key). The one exception is `orderBy()->limit(n)` with `update()` or `delete()` on MySQL/MariaDB (see above). On PostgreSQL and SQLite use a subquery (MySQL and MariaDB reject `LIMIT` inside `IN (...)`, MySQL also a subquery on the target table - there the builder form above is the way):
   ```php
   // Delete the 10 oldest logs - PostgreSQL and SQLite
   $db->execute(

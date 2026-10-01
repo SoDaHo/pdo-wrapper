@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Added
+- `update()->limit(n)` on the query builder for MySQL/MariaDB, like `delete()->limit(n)` since 1.3.0: `UPDATE ... SET ... WHERE ... [ORDER BY ...] LIMIT n`, `orderBy()` allowed with it (order by a unique key so the batch is deterministic). On PostgreSQL, SQLite and ANSI `limit()` on `update()` still throws, with the same hint as for `delete()`.
+
 ## [1.3.1] - 2026-10-01
 
 ### Changed

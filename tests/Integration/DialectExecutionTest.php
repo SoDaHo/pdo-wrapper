@@ -120,4 +120,16 @@ class DialectExecutionTest extends TestCase
             $this->assertStringContainsString('only MySQL/MariaDB support (dialect "sqlite")', $e->getDebugMessage() ?? '');
         }
     }
+
+    public function testUpdateWithLimitThrowsOnSqlite(): void
+    {
+        $before = $this->db->table('users')->orderBy('id')->get();
+        try {
+            $this->db->table('users')->where('id', '>', 0)->orderBy('id')->limit(1)->update(['name' => 'x']);
+            $this->fail('Expected QueryException');
+        } catch (QueryException $e) {
+            $this->assertStringContainsString('update() with limit() would need UPDATE ... LIMIT, which only MySQL/MariaDB support (dialect "sqlite")', $e->getDebugMessage() ?? '');
+        }
+        $this->assertSame($before, $this->db->table('users')->orderBy('id')->get(), 'nothing was updated');
+    }
 }

@@ -99,12 +99,33 @@ class QueryBuilderDialectTest extends TestCase
             $this->assertSame([], $rendered, 'nothing was executed');
         }
 
-        // still unsupported, also on MySQL: orderBy() without limit(), offset(), and limit() on update()
+        // update() with limit(): the same form, `UPDATE ... SET ... WHERE ... [ORDER BY ...] LIMIT n`, MySQL only
+        $rendered = [];
+        try {
+            (new QueryBuilder($db, 'users', '`', QueryBuilder::DIALECT_MYSQL))->where('id', '>', 5)->orderBy('id', 'desc')->limit(2)->update(['name' => 'x']);
+        } catch (QueryException) {
+            // SQLite without SQLITE_ENABLE_UPDATE_DELETE_LIMIT
+        }
+        $this->assertSame(['UPDATE `users` SET `name` = ? WHERE `id` > ? ORDER BY `id` DESC LIMIT 2'], $rendered);
+        foreach ([QueryBuilder::DIALECT_SQLITE, QueryBuilder::DIALECT_PGSQL, QueryBuilder::DIALECT_ANSI] as $dialect) {
+            $rendered = [];
+            try {
+                (new QueryBuilder($db, 'users', '"', $dialect))->where('id', '>', 5)->limit(2)->update(['name' => 'x']);
+                $this->fail("Expected QueryException for dialect {$dialect}");
+            } catch (QueryException $e) {
+                $this->assertSame('Update failed', $e->getMessage());
+                $this->assertStringContainsString("update() with limit() would need UPDATE ... LIMIT, which only MySQL/MariaDB support (dialect \"{$dialect}\")", $e->getDebugMessage() ?? '');
+            }
+            $this->assertSame([], $rendered, 'nothing was executed');
+        }
+
+        // still unsupported, also on MySQL: orderBy() without limit(), offset()
         $mysql = static fn (): QueryBuilder => new QueryBuilder($db, 'users', '`', QueryBuilder::DIALECT_MYSQL);
         foreach ([
             'orderBy() alone' => fn () => $mysql()->where('id', 1)->orderBy('id')->delete(),
             'offset()' => fn () => $mysql()->where('id', 1)->limit(2)->offset(1)->delete(),
-            'update()' => fn () => $mysql()->where('id', 1)->limit(2)->update(['name' => 'x']),
+            'update() orderBy() alone' => fn () => $mysql()->where('id', 1)->orderBy('id')->update(['name' => 'x']),
+            'update() offset()' => fn () => $mysql()->where('id', 1)->limit(2)->offset(1)->update(['name' => 'x']),
         ] as $name => $case) {
             try {
                 $case();

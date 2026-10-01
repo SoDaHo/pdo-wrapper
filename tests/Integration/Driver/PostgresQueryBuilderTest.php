@@ -76,6 +76,18 @@ class PostgresQueryBuilderTest extends TestCase
         $this->assertSame(2, $this->db->table('qb_test')->count(), 'nothing was deleted');
     }
 
+    public function testUpdateWithLimitThrowsInsteadOfUpdatingEverything(): void
+    {
+        try {
+            $this->db->table('qb_test')->where('id', '>', 0)->orderBy('id')->limit(1)->update(['name' => 'x']);
+            $this->fail('Expected QueryException');
+        } catch (QueryException $e) {
+            $this->assertStringContainsString('update() with limit() would need UPDATE ... LIMIT, which only MySQL/MariaDB support (dialect "pgsql")', $e->getDebugMessage() ?? '');
+        }
+
+        $this->assertSame(['Max', 'Anna'], array_column($this->db->table('qb_test')->orderBy('id')->get(), 'name'), 'nothing was updated');
+    }
+
     public function testInsertWhenExecutes(): void
     {
         $sql = [];
