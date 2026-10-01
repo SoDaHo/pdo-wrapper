@@ -100,7 +100,11 @@ abstract class AbstractDriver implements DatabaseInterface
 
     /**
      * Bind the parameters and execute the prepared statement: PDOStatement::execute($params), every
-     * value bound as text. A driver overrides this when its database needs typed bindings.
+     * value bound as text, a boolean as '1' or '0'. PDO alone sends false as '', which MySQL in strict
+     * mode and PostgreSQL reject for a numeric or boolean column. Text rather than a typed binding:
+     * PARAM_INT makes MySQL compare a text column numerically ('abc' = 0 is true), and PARAM_BOOL
+     * reaches PostgreSQL as 't'/'f', which an integer column rejects (measured on MySQL 8.0,
+     * MariaDB 11.4 and PostgreSQL 15). A driver overrides this when its database needs typed bindings.
      *
      * @param array<int|string, mixed> $params Positional (0-based) or named parameters
      *
@@ -108,7 +112,13 @@ abstract class AbstractDriver implements DatabaseInterface
      */
     protected function bindAndExecute(PDOStatement $stmt, array $params): bool
     {
-        return $stmt->execute($params);
+        // A new array, not an in-place rewrite: a reference inside $params would otherwise be written through
+        $bound = [];
+        foreach ($params as $key => $value) {
+            $bound[$key] = is_bool($value) ? ($value ? '1' : '0') : $value;
+        }
+
+        return $stmt->execute($bound);
     }
 
     /**

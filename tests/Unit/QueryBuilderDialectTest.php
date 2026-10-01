@@ -165,6 +165,38 @@ class QueryBuilderDialectTest extends TestCase
         $this->assertSame('SELECT * FROM `users` WHERE `created_at` < CURRENT_TIMESTAMP', $driver->table('users')->where('created_at', '<', $driver->now())->toSql()[0]);
     }
 
+    /**
+     * The default binding (MySQL/MariaDB, PostgreSQL, custom drivers) sends a boolean as '1'/'0':
+     * PDO alone sends false as '', which MySQL in strict mode and PostgreSQL reject for a numeric
+     * column. Shown here on SQLite through its affinity: the text '0' lands as the integer 0 in an
+     * INTEGER column (an '' would stay text), and a TEXT column keeps the '0'.
+     */
+    public function testAbstractDriverBindsBooleansAsOneAndZero(): void
+    {
+        $driver = new class () extends SqliteDriver {
+            protected function bindAndExecute(\PDOStatement $stmt, array $params): bool
+            {
+                return AbstractDriver::bindAndExecute($stmt, $params);
+            }
+        };
+        $driver->execute('CREATE TABLE flags (id INTEGER PRIMARY KEY, active INTEGER, note TEXT)');
+        $driver->insert('flags', ['active' => false, 'note' => false]);
+        $driver->insert('flags', ['active' => true, 'note' => true]);
+
+        $this->assertSame(
+            [['t' => 'integer', 'active' => 0, 'note' => '0'], ['t' => 'integer', 'active' => 1, 'note' => '1']],
+            $driver->query('SELECT typeof(active) AS t, active, note FROM flags ORDER BY id')->fetchAll()
+        );
+        $this->assertSame(1, $driver->table('flags')->where('active', false)->where('note', false)->count());
+        $this->assertSame(1, $driver->table('flags')->where('active', true)->update(['active' => false, 'note' => false]));
+        $this->assertSame(2, $driver->table('flags')->where('active', false)->count());
+        $this->assertSame(2, $driver->query('SELECT COUNT(*) FROM flags WHERE note = :note', ['note' => false])->fetchColumn(), 'named parameters are converted too');
+
+        $flag = false;
+        $this->assertSame(2, $driver->query('SELECT COUNT(*) FROM flags WHERE active = ?', [&$flag])->fetchColumn());
+        $this->assertFalse($flag, 'a referenced parameter is not rewritten in the caller');
+    }
+
     public function testIsAndIsNotAreNullSafeEqualityPerDialect(): void
     {
         [$sql, $params] = $this->builder(QueryBuilder::DIALECT_SQLITE)->where('name', 'IS', 'x')->where('role', 'IS NOT', 'y')->toSql();

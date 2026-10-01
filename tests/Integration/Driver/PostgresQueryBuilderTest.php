@@ -243,4 +243,32 @@ class PostgresQueryBuilderTest extends TestCase
 
         $this->assertCount(2, $results);
     }
+
+    /**
+     * A boolean is bound as '1'/'0'. PDO alone sends false as '', which PostgreSQL rejects for a
+     * boolean or integer column ("invalid input syntax"), in WHERE as well as on insert. Text rather
+     * than PARAM_BOOL: that reaches PostgreSQL as 't'/'f', which an integer column rejects.
+     */
+    public function testBooleansAreBoundAsOneAndZero(): void
+    {
+        $this->db->execute('DROP TABLE IF EXISTS qb_flags');
+        $this->db->execute('CREATE TABLE qb_flags (id SERIAL PRIMARY KEY, active BOOLEAN, n INTEGER, note VARCHAR(10))');
+
+        $this->db->insert('qb_flags', ['active' => false, 'n' => false, 'note' => false]);
+        $this->db->insert('qb_flags', ['active' => true, 'n' => true, 'note' => true]);
+
+        $this->assertSame(
+            [['active' => false, 'n' => 0, 'note' => '0'], ['active' => true, 'n' => 1, 'note' => '1']],
+            $this->db->table('qb_flags')->select(['active', 'n', 'note'])->orderBy('id')->get()
+        );
+        $this->assertSame(1, $this->db->table('qb_flags')->where('active', false)->where('n', false)->count());
+        // a text column is compared as text: only '0' matches, neither '' nor 'abc'
+        $this->db->execute("INSERT INTO qb_flags (active, n, note) VALUES (false, 0, 'abc'), (false, 0, '')");
+        $this->assertSame(1, $this->db->table('qb_flags')->where('note', false)->count());
+        $this->assertSame(1, $this->db->table('qb_flags')->where('active', true)->update(['active' => false, 'n' => false]));
+        $this->assertSame(4, $this->db->table('qb_flags')->where('active', false)->count());
+        $this->assertSame(1, $this->db->insertWhen('qb_flags', ['active' => false, 'n' => false, 'note' => false], 'NOT EXISTS (SELECT 1 FROM qb_flags WHERE active = ?)', [true]));
+
+        $this->db->execute('DROP TABLE IF EXISTS qb_flags');
+    }
 }

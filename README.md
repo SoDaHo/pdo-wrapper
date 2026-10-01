@@ -123,7 +123,7 @@ All drivers support configuration via environment variables:
 ## Raw Queries
 
 ```php
-// SELECT query
+// SELECT query (the returned PDOStatement is raw PDO: re-executing it skips the hooks and binds a boolean false as '')
 $stmt = $db->query('SELECT * FROM users WHERE id = ?', [1]);
 $users = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
@@ -134,7 +134,8 @@ $affected = $db->execute('UPDATE users SET active = ? WHERE id = ?', [1, 5]);
 $id = $db->lastInsertId();
 
 // Access underlying PDO — for features not covered by the wrapper
-// (e.g., LOCK TABLES, driver-specific methods, passing PDO to third-party tools)
+// (e.g., LOCK TABLES, driver-specific methods, passing PDO to third-party tools);
+// execute([...]) on raw PDO binds every value as text, a boolean false as ''
 $pdo = $db->getPdo();
 ```
 
@@ -151,6 +152,8 @@ $id = $db->insert('users', [
 // Conditional insert in one statement: 1 when inserted, 0 when the condition failed
 $inserted = $db->insertWhen('codes', ['user_id' => 7, 'code' => 'abc'], 'NOT EXISTS (SELECT 1 FROM codes WHERE user_id = ? AND used_at IS NULL)', [7]);
 ```
+
+Values are bound as prepared-statement parameters; a boolean arrives as `1`/`0` on every driver, so `['active' => false]` works in `insert()`, `update()` and `where()` alike (a text or binary column stores `'0'`; a MySQL `BIT` column does not store a bound `0`/`1` as bits, use `Database::raw('0')` or a `TINYINT(1)` column).
 
 ### Update
 

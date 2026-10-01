@@ -288,4 +288,31 @@ class MySqlQueryBuilderTest extends TestCase
 
         $this->db->execute('DROP TABLE IF EXISTS qb_profiles');
     }
+
+    /**
+     * A boolean is bound as '1'/'0'. PDO alone sends false as '', which MySQL in strict mode
+     * (the default) rejects for a numeric column: "Incorrect integer value: ''".
+     */
+    public function testBooleansAreBoundAsOneAndZero(): void
+    {
+        $this->db->execute('DROP TABLE IF EXISTS qb_flags');
+        $this->db->execute('CREATE TABLE qb_flags (id INT AUTO_INCREMENT PRIMARY KEY, active TINYINT(1), n INT, note VARCHAR(10))');
+
+        $this->db->insert('qb_flags', ['active' => false, 'n' => false, 'note' => false]);
+        $this->db->insert('qb_flags', ['active' => true, 'n' => true, 'note' => true]);
+
+        $this->assertSame(
+            [['active' => 0, 'n' => 0, 'note' => '0'], ['active' => 1, 'n' => 1, 'note' => '1']],
+            $this->db->table('qb_flags')->select(['active', 'n', 'note'])->orderBy('id')->get()
+        );
+        $this->assertSame(1, $this->db->table('qb_flags')->where('active', false)->where('n', false)->count());
+        // a text column is compared as text: only '0' matches, neither '' nor 'abc' (which a numeric 0 would match on MySQL)
+        $this->db->execute("INSERT INTO qb_flags (active, n, note) VALUES (0, 0, 'abc'), (0, 0, '')");
+        $this->assertSame(1, $this->db->table('qb_flags')->where('note', false)->count());
+        $this->assertSame(1, $this->db->table('qb_flags')->where('active', true)->update(['active' => false, 'n' => false]));
+        $this->assertSame(4, $this->db->table('qb_flags')->where('active', false)->count());
+        $this->assertSame(1, $this->db->insertWhen('qb_flags', ['active' => false, 'n' => false, 'note' => false], 'NOT EXISTS (SELECT 1 FROM qb_flags WHERE active = ?)', [true]));
+
+        $this->db->execute('DROP TABLE IF EXISTS qb_flags');
+    }
 }
