@@ -42,7 +42,9 @@ class SqliteDriverIntegrationTest extends TestCase
         $stmt = $driver->query('SELECT 1 as test');
 
         $this->assertInstanceOf(PDOStatement::class, $stmt);
-        $this->assertSame(1, $stmt->fetch()['test']);
+        $row = $stmt->fetch();
+        $this->assertIsArray($row);
+        $this->assertSame(1, $row['test']);
     }
 
     public function testExecuteReturnsAffectedRows(): void
@@ -111,6 +113,7 @@ class SqliteDriverIntegrationTest extends TestCase
 
         $result = $driver->query('PRAGMA foreign_keys')->fetch();
 
+        $this->assertIsArray($result);
         $this->assertSame(1, $result['foreign_keys']);
     }
 

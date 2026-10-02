@@ -12,10 +12,11 @@ use Sodaho\PdoWrapper\Driver\MySqlDriver;
 use Sodaho\PdoWrapper\Driver\PostgresDriver;
 use Sodaho\PdoWrapper\Driver\SqliteDriver;
 use Sodaho\PdoWrapper\Exception\ConnectionException;
+use Sodaho\PdoWrapper\Tests\Support\TestEnvironment;
 
 class DatabaseTest extends TestCase
 {
-    /** @var array<string, array{env: string|null, process: string|false}> */
+    /** @var array<string, array{env: mixed, process: string|false}> */
     private array $savedEnvironment = [];
 
     /**
@@ -266,11 +267,7 @@ class DatabaseTest extends TestCase
         foreach (['mysql', 'mariadb'] as $driver) {
             $this->assertInstanceOf(MySqlDriver::class, Database::connect([
                 'driver' => $driver,
-                'host' => $_ENV['MYSQL_HOST'] ?? '127.0.0.1',
-                'port' => (int) ($_ENV['MYSQL_PORT'] ?? 3306),
-                'database' => $_ENV['MYSQL_DATABASE'] ?? 'pdo_wrapper_test',
-                'username' => $_ENV['MYSQL_USERNAME'] ?? 'root',
-                'password' => $_ENV['MYSQL_PASSWORD'] ?? 'root',
+                ...TestEnvironment::mysql(),
             ]));
         }
     }
@@ -281,11 +278,7 @@ class DatabaseTest extends TestCase
         foreach (['pgsql', 'postgres', 'postgresql'] as $driver) {
             $this->assertInstanceOf(PostgresDriver::class, Database::connect([
                 'driver' => $driver,
-                'host' => $_ENV['POSTGRES_HOST'] ?? '127.0.0.1',
-                'port' => (int) ($_ENV['POSTGRES_PORT'] ?? 5432),
-                'database' => $_ENV['POSTGRES_DATABASE'] ?? 'pdo_wrapper_test',
-                'username' => $_ENV['POSTGRES_USERNAME'] ?? 'postgres',
-                'password' => $_ENV['POSTGRES_PASSWORD'] ?? 'postgres',
+                ...TestEnvironment::postgres(),
             ]));
         }
     }
@@ -333,13 +326,7 @@ class DatabaseTest extends TestCase
     #[Group('mysql')]
     public function testMysqlReturnsDriver(): void
     {
-        $driver = Database::mysql([
-            'host' => $_ENV['MYSQL_HOST'] ?? '127.0.0.1',
-            'port' => (int) ($_ENV['MYSQL_PORT'] ?? 3306),
-            'database' => $_ENV['MYSQL_DATABASE'] ?? 'pdo_wrapper_test',
-            'username' => $_ENV['MYSQL_USERNAME'] ?? 'root',
-            'password' => $_ENV['MYSQL_PASSWORD'] ?? 'root',
-        ]);
+        $driver = Database::mysql(TestEnvironment::mysql());
 
         $this->assertInstanceOf(MySqlDriver::class, $driver);
     }
@@ -347,13 +334,7 @@ class DatabaseTest extends TestCase
     #[Group('postgres')]
     public function testPostgresReturnsDriver(): void
     {
-        $driver = Database::postgres([
-            'host' => $_ENV['POSTGRES_HOST'] ?? '127.0.0.1',
-            'port' => (int) ($_ENV['POSTGRES_PORT'] ?? 5432),
-            'database' => $_ENV['POSTGRES_DATABASE'] ?? 'pdo_wrapper_test',
-            'username' => $_ENV['POSTGRES_USERNAME'] ?? 'postgres',
-            'password' => $_ENV['POSTGRES_PASSWORD'] ?? 'postgres',
-        ]);
+        $driver = Database::postgres(TestEnvironment::postgres());
 
         $this->assertInstanceOf(PostgresDriver::class, $driver);
     }

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Sodaho\PdoWrapper\Tests\Integration\TransactionEnd;
 
+use Closure;
 use LogicException;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
@@ -12,6 +13,7 @@ use Sodaho\PdoWrapper\Exception\CommitFailedException;
 use Sodaho\PdoWrapper\Exception\CommitHookException;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Exception\TransactionException;
+use Sodaho\PdoWrapper\Tests\Support\Fetched;
 use Throwable;
 
 /**
@@ -33,9 +35,9 @@ abstract class AbstractTransactionEndScenarios extends TestCase
     private const ROLLED_BACK = DatabaseInterface::TRANSACTION_ROLLED_BACK;
     private const LOST = DatabaseInterface::TRANSACTION_LOST;
 
-    protected DatabaseInterface $db;
+    final protected DatabaseInterface $db;
 
-    protected ScenarioPdo $pdo;
+    final protected ScenarioPdo $pdo;
 
     protected ?DatabaseInterface $observer = null;
 
@@ -1421,14 +1423,17 @@ abstract class AbstractTransactionEndScenarios extends TestCase
         $this->db->on('transaction.end', function (): void {
             $this->pdo->stateUnreadable = false;
         });
-        $leftover = null;
         $caught = null;
-        $armed = false;
-        $this->db->on('transaction.commit', function () use (&$leftover, &$caught, &$armed): void {
-            if (!$armed) {
+        $state = new class () {
+            public bool $armed = false;
+
+            public Closure $leftover;
+        };
+        $this->db->on('transaction.commit', function () use (&$caught, $state): void {
+            if (!$state->armed) {
                 return;
             }
-            $armed = false;
+            $state->armed = false;
             $this->db->beginTransaction();
             $this->pdo->failCommit = true;
             try {
@@ -1436,12 +1441,13 @@ abstract class AbstractTransactionEndScenarios extends TestCase
             } catch (CommitFailedException $e) {
                 $caught = $e;
             }
-            $leftover();
+            ($state->leftover)();
         });
 
         foreach ($leftovers as $how => $leftover) {
+            $state->leftover = $leftover;
             $caught = null;
-            $armed = true;
+            $state->armed = true;
             try {
                 $this->db->transaction(function (DatabaseInterface $db) use (&$caught): void {
                     try {
@@ -1471,13 +1477,15 @@ abstract class AbstractTransactionEndScenarios extends TestCase
      */
     public function testAFailedCommitInsideAnEndOrRollbackListenerGetsNoOutcomeFromALaterEnd(): void
     {
-        $armed = null;
+        $state = new class () {
+            public ?string $armed = null;
+        };
         $caught = null;
-        $rawTransactionWithAFailedCommit = function (string $event) use (&$armed, &$caught): void {
-            if ($armed !== $event) {
+        $rawTransactionWithAFailedCommit = function (string $event) use ($state, &$caught): void {
+            if ($state->armed !== $event) {
                 return;
             }
-            $armed = null;
+            $state->armed = null;
             $this->pdo->hideTransaction = false;
             if ($this->pdo->reallyInTransaction()) {
                 $this->pdo->rollBack(); // what the 'lost' simulation left open
@@ -1496,20 +1504,20 @@ abstract class AbstractTransactionEndScenarios extends TestCase
         $this->db->on('transaction.rollback', static fn () => $rawTransactionWithAFailedCommit('transaction.rollback'));
 
         $endings = [
-            'an end listener after a commit' => function (DatabaseInterface $db) use (&$armed): void {
-                $armed = 'transaction.end';
+            'an end listener after a commit' => function (DatabaseInterface $db) use ($state): void {
+                $state->armed = 'transaction.end';
                 $db->commit();
             },
-            'a rollback listener' => function (DatabaseInterface $db) use (&$armed): void {
-                $armed = 'transaction.rollback';
+            'a rollback listener' => function (DatabaseInterface $db) use ($state): void {
+                $state->armed = 'transaction.rollback';
                 $db->rollback();
             },
-            'an end listener after a rollback' => function (DatabaseInterface $db) use (&$armed): void {
-                $armed = 'transaction.end';
+            'an end listener after a rollback' => function (DatabaseInterface $db) use ($state): void {
+                $state->armed = 'transaction.end';
                 $db->rollback();
             },
-            'an end listener after a lost end' => function (DatabaseInterface $db) use (&$armed): void {
-                $armed = 'transaction.end';
+            'an end listener after a lost end' => function (DatabaseInterface $db) use ($state): void {
+                $state->armed = 'transaction.end';
                 $this->pdo->failCommit = true;
                 $this->pdo->vanishOnFailedCommit = true;
                 try {
@@ -1544,13 +1552,15 @@ abstract class AbstractTransactionEndScenarios extends TestCase
      */
     public function testAnEndListenerThatThrowsTheFailedCommitAgainDoesNotRewriteItsOutcome(): void
     {
-        $inner = null;
-        $this->db->on('transaction.end', function (array $data) use (&$inner): void {
-            if ($inner === null || !$data['error'] instanceof CommitFailedException) {
+        $state = new class () {
+            public ?Closure $inner = null;
+        };
+        $this->db->on('transaction.end', function (array $data) use ($state): void {
+            if ($state->inner === null || !$data['error'] instanceof CommitFailedException) {
                 return;
             }
-            $prepare = $inner;
-            $inner = null;
+            $prepare = $state->inner;
+            $state->inner = null;
             $prepare();
             try {
                 $this->db->transaction(static function () use ($data): void {
@@ -1562,7 +1572,7 @@ abstract class AbstractTransactionEndScenarios extends TestCase
         });
 
         // rolled back - then the listener's transaction is lost with the same exception
-        $inner = function (): void {
+        $state->inner = function (): void {
             $this->pdo->failRollBackAlways = true;
         };
         try {
@@ -1581,7 +1591,7 @@ abstract class AbstractTransactionEndScenarios extends TestCase
 
         // lost - then the listener's transaction is rolled back with the same exception
         $this->ends = [];
-        $inner = function (): void {
+        $state->inner = function (): void {
             $this->pdo->failRollBackAlways = false;
             $this->pdo->rollBack(); // what the failed rollback left open
         };
@@ -1709,16 +1719,18 @@ abstract class AbstractTransactionEndScenarios extends TestCase
             $this->db->beginTransaction();
             $this->db->insert(self::TABLE, ['id' => 2, 'name' => 'listener']);
         };
-        $armed = 'error';
-        $this->db->on('error', static function () use (&$armed, $takeOver): void {
-            if ($armed === 'error') {
-                $armed = null;
+        $state = new class () {
+            public ?string $armed = 'error';
+        };
+        $this->db->on('error', static function () use ($state, $takeOver): void {
+            if ($state->armed === 'error') {
+                $state->armed = null;
                 $takeOver();
             }
         });
-        $this->db->on('query', static function (array $data) use (&$armed, $takeOver): void {
-            if ($armed === 'query' && str_starts_with((string) $data['sql'], 'UPDATE')) {
-                $armed = null;
+        $this->db->on('query', static function (array $data) use ($state, $takeOver): void {
+            if ($state->armed === 'query' && str_starts_with((string) $data['sql'], 'UPDATE')) {
+                $state->armed = null;
                 $takeOver();
             }
         });
@@ -1736,7 +1748,7 @@ abstract class AbstractTransactionEndScenarios extends TestCase
 
         $this->db->delete(self::TABLE, ['id' => 2]);
         $this->events = [];
-        $armed = 'query';
+        $state->armed = 'query';
         try {
             $this->db->updateMultiple(self::TABLE, [['id' => 1, 'name' => 'x']]);
             $this->fail('Expected CommitFailedException: the batch\'s transaction is over');
@@ -1944,9 +1956,11 @@ abstract class AbstractTransactionEndScenarios extends TestCase
      */
     public function testNoBeginListenerRunsAfterOneThatEndedTheTransaction(): void
     {
-        $armed = true;
-        $this->db->on('transaction.begin', function () use (&$armed): void {
-            if ($armed) {
+        $state = new class () {
+            public bool $armed = true;
+        };
+        $this->db->on('transaction.begin', function () use ($state): void {
+            if ($state->armed) {
                 $this->db->rollback();
             }
         });
@@ -1963,7 +1977,7 @@ abstract class AbstractTransactionEndScenarios extends TestCase
         $this->assertSame(['rollback', 'end'], $this->events);
         $this->assertVisible([], 'the second listener did not write in autocommit');
 
-        $armed = false;
+        $state->armed = false;
         $this->db->transaction(static fn (): null => null);
         $this->assertVisible([3], 'both listeners run for a transaction that stays open');
     }
@@ -2026,18 +2040,20 @@ abstract class AbstractTransactionEndScenarios extends TestCase
     public function testAThrowingBeginListenerThatEndedTheTransactionOnRawPdoTellsItAsLost(): void
     {
         $failure = new RuntimeException('begin listener failed');
-        $mode = 'commit and throw';
-        $this->db->on('transaction.begin', function () use (&$mode, $failure): void {
-            if ($mode === 'commit and throw') {
+        $state = new class () {
+            public string $mode = 'commit and throw';
+        };
+        $this->db->on('transaction.begin', function () use ($state, $failure): void {
+            if ($state->mode === 'commit and throw') {
                 $this->db->insert(self::TABLE, ['id' => 1, 'name' => 'listener']);
                 $this->pdo->commit();
                 throw $failure;
             }
-            if ($mode === 'commit and throw a PDOException') {
+            if ($state->mode === 'commit and throw a PDOException') {
                 $this->pdo->commit();
                 throw new \PDOException('begin listener failed (PDO)');
             }
-            if ($mode === 'throw') {
+            if ($state->mode === 'throw') {
                 $this->db->insert(self::TABLE, ['id' => 2, 'name' => 'rolled back']);
                 throw $failure;
             }
@@ -2052,7 +2068,7 @@ abstract class AbstractTransactionEndScenarios extends TestCase
         $this->assertSame([['outcome' => self::LOST, 'error' => $failure]], $this->ends);
         $this->assertVisible([1], 'what the listener committed itself');
 
-        $mode = 'commit and throw a PDOException';
+        $state->mode = 'commit and throw a PDOException';
         $this->ends = [];
         try {
             $this->db->beginTransaction();
@@ -2063,7 +2079,7 @@ abstract class AbstractTransactionEndScenarios extends TestCase
             $this->assertSame([['outcome' => self::LOST, 'error' => $e]], $this->ends, 'the exception the caller gets');
         }
 
-        $mode = 'throw';
+        $state->mode = 'throw';
         $this->ends = [];
         $this->events = [];
         try {
@@ -2075,7 +2091,7 @@ abstract class AbstractTransactionEndScenarios extends TestCase
         $this->assertSame([], $this->events, 'still open when the listener threw: rolled back raw, no event');
         $this->assertVisible([1]);
 
-        $mode = 'none';
+        $state->mode = 'none';
         $this->db->transaction(static fn (): null => null);
         $this->assertSame(['commit', 'end'], $this->events, 'no end of an earlier transaction is owed any more');
     }
@@ -2158,7 +2174,7 @@ abstract class AbstractTransactionEndScenarios extends TestCase
 
     // ---- helpers -----------------------------------------------------------------------------------
 
-    /** @return list<array<string, mixed>> */
+    /** @return array<int, array<string, mixed>> */
     protected function rows(): array
     {
         return ($this->observer ?? $this->db)->table(self::TABLE)->orderBy('id')->get();
@@ -2173,7 +2189,7 @@ abstract class AbstractTransactionEndScenarios extends TestCase
     protected function assertVisible(array $ids, string $message = ''): void
     {
         $this->assertFalse($this->pdo->reallyInTransaction(), 'no transaction may be left open');
-        $this->assertSame($ids, array_map(static fn (array $row): int => (int) $row['id'], $this->rows()), $message);
+        $this->assertSame($ids, array_map(static fn (array $row): int => Fetched::int($row['id']), $this->rows()), $message);
     }
 
     /**

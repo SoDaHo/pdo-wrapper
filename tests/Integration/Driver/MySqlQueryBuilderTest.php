@@ -9,21 +9,20 @@ use PHPUnit\Framework\TestCase;
 use Sodaho\PdoWrapper\Database;
 use Sodaho\PdoWrapper\Driver\MySqlDriver;
 use Sodaho\PdoWrapper\Exception\QueryException;
+use Sodaho\PdoWrapper\Tests\Support\Fetched;
+use Sodaho\PdoWrapper\Tests\Support\ReadsPdoErrorInfo;
+use Sodaho\PdoWrapper\Tests\Support\TestEnvironment;
 
 #[Group('mysql')]
 class MySqlQueryBuilderTest extends TestCase
 {
+    use ReadsPdoErrorInfo;
+
     private MySqlDriver $db;
 
     protected function setUp(): void
     {
-        $this->db = Database::mysql([
-            'host' => $_ENV['MYSQL_HOST'] ?? '127.0.0.1',
-            'port' => (int) ($_ENV['MYSQL_PORT'] ?? 3306),
-            'database' => $_ENV['MYSQL_DATABASE'] ?? 'pdo_wrapper_test',
-            'username' => $_ENV['MYSQL_USERNAME'] ?? 'root',
-            'password' => $_ENV['MYSQL_PASSWORD'] ?? 'root',
-        ]);
+        $this->db = Database::mysql(TestEnvironment::mysql());
 
         $this->db->execute('DROP TABLE IF EXISTS qb_test');
         $this->db->execute('CREATE TABLE qb_test (id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(255), age INT)');
@@ -102,9 +101,9 @@ class MySqlQueryBuilderTest extends TestCase
 
         $this->assertSame(2, $this->db->table('qb_test')->where('id', '>', 0)->orderBy('id')->limit(2)->delete());
         $this->assertSame('DELETE FROM `qb_test` WHERE `id` > ? ORDER BY `id` ASC LIMIT 2', $sql[0]);
-        $this->assertSame([3, 4, 5], array_map('intval', array_column($this->db->table('qb_test')->orderBy('id')->get(), 'id')), 'the two oldest rows are gone');
+        $this->assertSame([3, 4, 5], array_map(Fetched::int(...), array_column($this->db->table('qb_test')->orderBy('id')->get(), 'id')), 'the two oldest rows are gone');
         $this->assertSame(1, $this->db->table('qb_test')->where('age', 20)->orderBy('id', 'DESC')->limit(1)->delete(), 'the newest of the matching rows');
-        $this->assertSame([3, 4], array_map('intval', array_column($this->db->table('qb_test')->orderBy('id')->get(), 'id')));
+        $this->assertSame([3, 4], array_map(Fetched::int(...), array_column($this->db->table('qb_test')->orderBy('id')->get(), 'id')));
         $this->assertSame(2, $this->db->table('qb_test')->where('id', '>', 0)->limit(10)->delete(), 'limit() without orderBy(): any order');
     }
 
@@ -120,7 +119,7 @@ class MySqlQueryBuilderTest extends TestCase
         $this->assertSame(0, $this->db->insertWhen('qb_test', ['name' => 'Tom', 'age' => 51], $condition, ['Tom']));
         $this->assertSame(1, $this->db->table('qb_test')->insertWhen(['name' => 'Eva', 'age' => Database::raw('40 + 2')], '? < ?', [1, 2]));
         $this->assertSame('INSERT INTO `qb_test` (`name`, `age`) SELECT ?, ? FROM DUAL WHERE (NOT EXISTS (SELECT 1 FROM qb_test WHERE name = ?))', $sql[0]);
-        $this->assertSame([['Tom', 50], ['Eva', 42]], array_map(static fn (array $r): array => [$r['name'], (int) $r['age']], $this->db->table('qb_test')->where('age', '>=', 40)->orderBy('id')->get()));
+        $this->assertSame([['Tom', 50], ['Eva', 42]], array_map(static fn (array $r): array => [$r['name'], Fetched::int($r['age'])], $this->db->table('qb_test')->where('age', '>=', 40)->orderBy('id')->get()));
     }
 
     /**
@@ -129,13 +128,7 @@ class MySqlQueryBuilderTest extends TestCase
      */
     public function testSharedLockIsVisibleToAnotherConnection(): void
     {
-        $other = Database::mysql([
-            'host' => $_ENV['MYSQL_HOST'] ?? '127.0.0.1',
-            'port' => (int) ($_ENV['MYSQL_PORT'] ?? 3306),
-            'database' => $_ENV['MYSQL_DATABASE'] ?? 'pdo_wrapper_test',
-            'username' => $_ENV['MYSQL_USERNAME'] ?? 'root',
-            'password' => $_ENV['MYSQL_PASSWORD'] ?? 'root',
-        ]);
+        $other = Database::mysql(TestEnvironment::mysql());
         $other->execute('SET SESSION innodb_lock_wait_timeout = 1');
         // NOWAIT exists since MySQL 8.0 / MariaDB 10.3 (the supported matrix starts at 8.0 / 10.11)
         $exclusiveProbe = static fn (): mixed => $other->query('SELECT id FROM qb_test WHERE id = 1 FOR UPDATE NOWAIT')->fetch();
@@ -150,7 +143,7 @@ class MySqlQueryBuilderTest extends TestCase
                 $exclusiveProbe();
                 $this->fail('Expected the exclusive probe to fail while the row is share-locked');
             } catch (QueryException $e) {
-                $this->assertContains($e->getPrevious()?->errorInfo[1] ?? null, [3572, 1205], 'lock conflict, not some other error');
+                $this->assertContains($this->errorInfoBehind($e, 1), [3572, 1205], 'lock conflict, not some other error');
             }
         } finally {
             $other->rollback();
@@ -196,13 +189,7 @@ class MySqlQueryBuilderTest extends TestCase
      */
     public function testRowLockIsVisibleToAnotherConnection(): void
     {
-        $other = Database::mysql([
-            'host' => $_ENV['MYSQL_HOST'] ?? '127.0.0.1',
-            'port' => (int) ($_ENV['MYSQL_PORT'] ?? 3306),
-            'database' => $_ENV['MYSQL_DATABASE'] ?? 'pdo_wrapper_test',
-            'username' => $_ENV['MYSQL_USERNAME'] ?? 'root',
-            'password' => $_ENV['MYSQL_PASSWORD'] ?? 'root',
-        ]);
+        $other = Database::mysql(TestEnvironment::mysql());
         $probe = static fn (): mixed => $other->query('SELECT id FROM qb_test WHERE id = 1 FOR UPDATE NOWAIT')->fetch();
 
         foreach (['first', 'exists'] as $method) {
@@ -214,7 +201,7 @@ class MySqlQueryBuilderTest extends TestCase
                 $probe();
                 $this->fail("Expected the probe to fail while the row is locked via {$method}()");
             } catch (QueryException $e) {
-                $this->assertContains($e->getPrevious()?->errorInfo[1] ?? null, [3572, 1205], 'lock conflict: NOWAIT (MySQL 3572) or lock wait timeout (MariaDB 1205)');
+                $this->assertContains($this->errorInfoBehind($e, 1), [3572, 1205], 'lock conflict: NOWAIT (MySQL 3572) or lock wait timeout (MariaDB 1205)');
             } finally {
                 $other->rollback();
             }

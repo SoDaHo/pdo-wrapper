@@ -8,6 +8,7 @@ use PDO;
 use PHPUnit\Framework\Attributes\Group;
 use Sodaho\PdoWrapper\DatabaseInterface;
 use Sodaho\PdoWrapper\Driver\PostgresDriver;
+use Sodaho\PdoWrapper\Tests\Support\TestEnvironment;
 
 #[Group('postgres')]
 class PostgresTransactionEndScenariosTest extends AbstractTransactionEndScenarios
@@ -15,13 +16,7 @@ class PostgresTransactionEndScenariosTest extends AbstractTransactionEndScenario
     /** @return array{host: string, port: int, database: string, username: string, password: string} */
     private static function config(): array
     {
-        return [
-            'host' => (string) ($_ENV['POSTGRES_HOST'] ?? '127.0.0.1'),
-            'port' => (int) ($_ENV['POSTGRES_PORT'] ?? 5432),
-            'database' => (string) ($_ENV['POSTGRES_DATABASE'] ?? 'pdo_wrapper_test'),
-            'username' => (string) ($_ENV['POSTGRES_USERNAME'] ?? 'postgres'),
-            'password' => (string) ($_ENV['POSTGRES_PASSWORD'] ?? 'postgres'),
-        ];
+        return TestEnvironment::postgres();
     }
 
     protected function makeScenarioPdo(): ScenarioPdo

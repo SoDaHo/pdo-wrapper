@@ -9,6 +9,7 @@ use PHPUnit\Framework\TestCase;
 use Sodaho\PdoWrapper\Database;
 use Sodaho\PdoWrapper\Driver\MySqlDriver;
 use Sodaho\PdoWrapper\Exception\QueryException;
+use Sodaho\PdoWrapper\Tests\Support\TestEnvironment;
 
 #[Group('mysql')]
 class MySqlCrudTest extends TestCase
@@ -17,13 +18,7 @@ class MySqlCrudTest extends TestCase
 
     protected function setUp(): void
     {
-        $this->db = Database::mysql([
-            'host' => $_ENV['MYSQL_HOST'] ?? '127.0.0.1',
-            'port' => (int) ($_ENV['MYSQL_PORT'] ?? 3306),
-            'database' => $_ENV['MYSQL_DATABASE'] ?? 'pdo_wrapper_test',
-            'username' => $_ENV['MYSQL_USERNAME'] ?? 'root',
-            'password' => $_ENV['MYSQL_PASSWORD'] ?? 'root',
-        ]);
+        $this->db = Database::mysql(TestEnvironment::mysql());
 
         $this->db->execute('DROP TABLE IF EXISTS crud_test');
         $this->db->execute('CREATE TABLE crud_test (id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(255), email VARCHAR(255))');
@@ -102,6 +97,7 @@ class MySqlCrudTest extends TestCase
 
         $row = $this->db->findOne('crud_test', ['id' => 1]);
 
+        $this->assertNotNull($row);
         $this->assertSame('Max', $row['name']);
         $this->assertSame('max@example.com', $row['email']);
     }
@@ -144,6 +140,8 @@ class MySqlCrudTest extends TestCase
         $row1 = $this->db->findOne('crud_test', ['id' => 1]);
         $row2 = $this->db->findOne('crud_test', ['id' => 2]);
 
+        $this->assertNotNull($row1);
+        $this->assertNotNull($row2);
         $this->assertSame('Maximilian', $row1['name']);
         $this->assertSame('Annette', $row2['name']);
     }

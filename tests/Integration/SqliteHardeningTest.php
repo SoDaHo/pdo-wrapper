@@ -131,7 +131,9 @@ class SqliteHardeningTest extends TestCase
         $this->assertSame(1, $this->db->table('settings')->where('value', -3)->count());
         $converted = ['retries', 'offset', 'max', 'min'];
         foreach ($rows as [$name, $value]) {
-            [$type, $stored] = $this->db->query('SELECT typeof(value), value FROM settings WHERE name = ?', [$name])->fetch(PDO::FETCH_NUM);
+            $row = $this->db->query('SELECT typeof(value), value FROM settings WHERE name = ?', [$name])->fetch(PDO::FETCH_NUM);
+            $this->assertIsArray($row);
+            [$type, $stored] = $row;
             if (in_array($name, $converted, true)) {
                 $this->assertSame('integer', $type, $name);
                 $this->assertSame((int) $value, $stored, $name);

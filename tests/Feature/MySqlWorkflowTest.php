@@ -14,6 +14,8 @@ use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Exception\TransactionException;
 use Sodaho\PdoWrapper\Exception\UniqueViolationException;
 use Sodaho\PdoWrapper\Tests\Feature\Concerns\AbstractWorkflowTest;
+use Sodaho\PdoWrapper\Tests\Support\Fetched;
+use Sodaho\PdoWrapper\Tests\Support\TestEnvironment;
 
 /**
  * Workflow tests for MySQL driver.
@@ -23,13 +25,7 @@ class MySqlWorkflowTest extends AbstractWorkflowTest
 {
     protected function createDatabase(): DatabaseInterface
     {
-        return Database::mysql([
-            'host' => $_ENV['MYSQL_HOST'] ?? '127.0.0.1',
-            'port' => (int) ($_ENV['MYSQL_PORT'] ?? 3306),
-            'database' => $_ENV['MYSQL_DATABASE'] ?? 'pdo_wrapper_test',
-            'username' => $_ENV['MYSQL_USERNAME'] ?? 'root',
-            'password' => $_ENV['MYSQL_PASSWORD'] ?? 'root',
-        ]);
+        return Database::mysql(TestEnvironment::mysql());
     }
 
     protected function getCreateUsersTableSql(): string
@@ -126,13 +122,7 @@ class MySqlWorkflowTest extends AbstractWorkflowTest
     public function testInsertIgnoreRefusesAConnectionThatCountsFoundRows(): void
     {
         $option = \Pdo\Mysql::ATTR_FOUND_ROWS;
-        $config = [
-            'host' => $_ENV['MYSQL_HOST'] ?? '127.0.0.1',
-            'port' => (int) ($_ENV['MYSQL_PORT'] ?? 3306),
-            'database' => $_ENV['MYSQL_DATABASE'] ?? 'pdo_wrapper_test',
-            'username' => $_ENV['MYSQL_USERNAME'] ?? 'root',
-            'password' => $_ENV['MYSQL_PASSWORD'] ?? 'root',
-        ];
+        $config = TestEnvironment::mysql();
         $this->db->insert('users', ['email' => 'a@test.com', 'name' => 'A']);
 
         $counting = Database::mysql($config + ['options' => [$option => true]]);
@@ -208,7 +198,7 @@ class MySqlWorkflowTest extends AbstractWorkflowTest
             $this->assertSame(1, $this->db->insertIgnore('ignore_seen', ['email' => 'a@test.com']));
             $this->assertSame(0, $this->db->insertIgnore('ignore_seen', ['email' => 'a@test.com']));
             $this->assertSame(0, $this->db->table('ignore_seen')->insertIgnore(['email' => 'a@test.com']));
-            $this->assertSame(2, (int) ($this->db->findOne('ignore_seen', ['email' => 'a@test.com'])['seen'] ?? 0), 'the trigger ran for both skipped inserts');
+            $this->assertSame(2, Fetched::int($this->db->findOne('ignore_seen', ['email' => 'a@test.com'])['seen'] ?? 0), 'the trigger ran for both skipped inserts');
             $this->assertSame(1, $this->db->table('ignore_seen')->count());
         } finally {
             $this->db->execute('DROP TABLE IF EXISTS ignore_seen');
@@ -234,10 +224,11 @@ class MySqlWorkflowTest extends AbstractWorkflowTest
      */
     public function testFailedCommitWrapperBranchWithPdoSubclass(): void
     {
+        $c = TestEnvironment::mysql();
         $pdo = new class (
-            sprintf('mysql:host=%s;port=%d;dbname=%s;charset=utf8mb4', $_ENV['MYSQL_HOST'] ?? '127.0.0.1', (int) ($_ENV['MYSQL_PORT'] ?? 3306), $_ENV['MYSQL_DATABASE'] ?? 'pdo_wrapper_test'),
-            $_ENV['MYSQL_USERNAME'] ?? 'root',
-            $_ENV['MYSQL_PASSWORD'] ?? 'root',
+            sprintf('mysql:host=%s;port=%d;dbname=%s;charset=utf8mb4', $c['host'], $c['port'], $c['database']),
+            $c['username'],
+            $c['password'],
             [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC],
         ) extends PDO {
             public function commit(): bool
@@ -288,6 +279,7 @@ class MySqlWorkflowTest extends AbstractWorkflowTest
 
         // findOne with database prefix
         $user = $this->db->findOne('pdo_wrapper_test.users', ['id' => $id]);
+        $this->assertNotNull($user);
         $this->assertSame('DB Qualified Test', $user['name']);
 
         // update with database prefix

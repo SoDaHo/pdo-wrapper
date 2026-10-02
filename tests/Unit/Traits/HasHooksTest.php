@@ -8,27 +8,14 @@ use PHPUnit\Framework\TestCase;
 use Sodaho\PdoWrapper\Database;
 use Sodaho\PdoWrapper\Driver\SqliteDriver;
 use Sodaho\PdoWrapper\Exception\DatabaseException;
-use Sodaho\PdoWrapper\Traits\HasHooks;
 
 class HasHooksTest extends TestCase
 {
-    private object $subject;
+    private HooksSubject $subject;
 
     protected function setUp(): void
     {
-        $this->subject = new class () {
-            use HasHooks;
-
-            public function fireEvent(string $event, array $data): void
-            {
-                $this->trigger($event, $data);
-            }
-
-            protected function knownEvents(): array
-            {
-                return ['test', 'query', 'eventA', 'eventB'];
-            }
-        };
+        $this->subject = new HooksSubject();
     }
 
     /**

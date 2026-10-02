@@ -8,6 +8,7 @@ use PHPUnit\Framework\TestCase;
 use Sodaho\PdoWrapper\Database;
 use Sodaho\PdoWrapper\Driver\MySqlDriver;
 use Sodaho\PdoWrapper\Exception\ConnectionException;
+use Sodaho\PdoWrapper\Tests\Support\Untyped;
 
 class MySqlDriverTest extends TestCase
 {
@@ -60,7 +61,7 @@ class MySqlDriverTest extends TestCase
 
         foreach (['abc', '3306;host=evil', '', 0, -1, 65536, 3306.5, true] as $port) {
             try {
-                new MySqlDriver(['port' => $port] + $base);
+                Untyped::create(MySqlDriver::class, ['port' => $port] + $base); // not all of them are a port by type
                 $this->fail('Expected ConnectionException for port ' . var_export($port, true));
             } catch (ConnectionException $e) {
                 $this->assertSame('Invalid config value "port": expected a whole number between 1 and 65535', $e->getDebugMessage());
@@ -193,7 +194,7 @@ class MySqlDriverTest extends TestCase
         try {
             Database::fromEnv(['driver' => 'mysql']);
         } catch (ConnectionException $e) {
-            $this->assertStringContainsString('getenv-host-invalid', $e->getDebugMessage());
+            $this->assertStringContainsString('getenv-host-invalid', $e->getDebugMessage() ?? '');
             throw $e;
         }
     }
@@ -213,8 +214,8 @@ class MySqlDriverTest extends TestCase
         try {
             Database::fromEnv(['driver' => 'mysql']);
         } catch (ConnectionException $e) {
-            $this->assertStringContainsString('env-host-invalid', $e->getDebugMessage());
-            $this->assertStringNotContainsString('getenv-host', $e->getDebugMessage());
+            $this->assertStringContainsString('env-host-invalid', $e->getDebugMessage() ?? '');
+            $this->assertStringNotContainsString('getenv-host', $e->getDebugMessage() ?? '');
             throw $e;
         }
     }
@@ -262,7 +263,7 @@ class MySqlDriverTest extends TestCase
                 'username' => 'root',
             ]);
         } catch (ConnectionException $e) {
-            $this->assertStringContainsString(':3306', $e->getDebugMessage());
+            $this->assertStringContainsString(':3306', $e->getDebugMessage() ?? '');
             throw $e;
         }
     }
@@ -279,7 +280,7 @@ class MySqlDriverTest extends TestCase
                 'port' => 3307,
             ]);
         } catch (ConnectionException $e) {
-            $this->assertStringContainsString(':3307', $e->getDebugMessage());
+            $this->assertStringContainsString(':3307', $e->getDebugMessage() ?? '');
             throw $e;
         }
     }
@@ -312,7 +313,7 @@ class MySqlDriverTest extends TestCase
         try {
             Database::fromEnv(['driver' => 'mysql']);
         } catch (ConnectionException $e) {
-            $this->assertStringContainsString(':3308', $e->getDebugMessage());
+            $this->assertStringContainsString(':3308', $e->getDebugMessage() ?? '');
             throw $e;
         }
     }

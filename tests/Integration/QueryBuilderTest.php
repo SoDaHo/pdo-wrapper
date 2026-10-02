@@ -51,6 +51,7 @@ class QueryBuilderTest extends TestCase
     {
         $user = $this->db->table('users')->first();
 
+        $this->assertNotNull($user);
         $this->assertSame('Max', $user['name']);
     }
 
@@ -84,6 +85,7 @@ class QueryBuilderTest extends TestCase
     {
         $user = $this->db->table('users')->select(['name', 'email'])->first();
 
+        $this->assertNotNull($user);
         $this->assertArrayHasKey('name', $user);
         $this->assertArrayHasKey('email', $user);
         $this->assertArrayNotHasKey('age', $user);
@@ -93,6 +95,7 @@ class QueryBuilderTest extends TestCase
     {
         $user = $this->db->table('users')->select('name, email')->first();
 
+        $this->assertNotNull($user);
         $this->assertArrayHasKey('name', $user);
         $this->assertArrayHasKey('email', $user);
     }
@@ -475,6 +478,7 @@ class QueryBuilderTest extends TestCase
         $this->assertSame(1, $affected);
 
         $user = $this->db->findOne('users', ['id' => 1]);
+        $this->assertNotNull($user);
         $this->assertSame('Maximilian', $user['name']);
     }
 

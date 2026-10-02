@@ -10,6 +10,7 @@ use Sodaho\PdoWrapper\DatabaseInterface;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Exception\UniqueViolationException;
 use Sodaho\PdoWrapper\Tests\Feature\Concerns\AbstractWorkflowTest;
+use Sodaho\PdoWrapper\Tests\Support\TestEnvironment;
 
 /**
  * Workflow tests for PostgreSQL driver.
@@ -19,13 +20,7 @@ class PostgresWorkflowTest extends AbstractWorkflowTest
 {
     protected function createDatabase(): DatabaseInterface
     {
-        return Database::postgres([
-            'host' => $_ENV['POSTGRES_HOST'] ?? '127.0.0.1',
-            'port' => (int) ($_ENV['POSTGRES_PORT'] ?? 5432),
-            'database' => $_ENV['POSTGRES_DATABASE'] ?? 'pdo_wrapper_test',
-            'username' => $_ENV['POSTGRES_USERNAME'] ?? 'postgres',
-            'password' => $_ENV['POSTGRES_PASSWORD'] ?? 'postgres',
-        ]);
+        return Database::postgres(TestEnvironment::postgres());
     }
 
     protected function getCreateUsersTableSql(): string
@@ -164,6 +159,7 @@ class PostgresWorkflowTest extends AbstractWorkflowTest
 
         // findOne with schema
         $user = $this->db->findOne('public.users', ['id' => $id]);
+        $this->assertNotNull($user);
         $this->assertSame('Schema Test', $user['name']);
 
         // update with schema

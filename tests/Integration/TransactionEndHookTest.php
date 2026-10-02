@@ -657,18 +657,20 @@ class TransactionEndHookTest extends TestCase
     public function testASelfRolledBackCallbackWhoseInnerTransactionFailsToStartReportsNoLost(): void
     {
         $db = $this->driver();
-        $armed = false;
-        $db->on('transaction.begin', static function () use (&$armed): void {
-            if ($armed) {
-                $armed = false;
+        $state = new class () {
+            public bool $armed = false;
+        };
+        $db->on('transaction.begin', static function () use ($state): void {
+            if ($state->armed) {
+                $state->armed = false;
                 throw new RuntimeException('begin listener failed');
             }
         });
 
         try {
-            $db->transaction(static function (DatabaseInterface $db) use (&$armed): void {
+            $db->transaction(static function (DatabaseInterface $db) use ($state): void {
                 $db->rollback();
-                $armed = true;
+                $state->armed = true;
                 $db->transaction(static fn (): int => 1);
             });
             $this->fail('Expected the begin listener exception');
@@ -691,25 +693,27 @@ class TransactionEndHookTest extends TestCase
         $db = $this->driver();
         $cause = new RuntimeException('domain error');
         $innerFailure = new LogicException('inner end listener failed');
-        $depth = 0;
+        $state = new class () {
+            public int $depth = 0;
+        };
         $started = false;
         $innerException = null;
-        $db->on('transaction.end', static function () use ($db, &$depth, &$started, &$innerException): void {
+        $db->on('transaction.end', static function () use ($db, $state, &$started, &$innerException): void {
             if ($started) {
                 return;
             }
             $started = true;
-            $depth = 1;
+            $state->depth = 1;
             $db->beginTransaction();
             try {
                 $db->rollback();
             } catch (TransactionException $e) {
                 $innerException = $e;
             }
-            $depth = 0;
+            $state->depth = 0;
         });
-        $db->on('transaction.end', static function () use (&$depth, $innerFailure): void {
-            if ($depth === 1) {
+        $db->on('transaction.end', static function () use ($state, $innerFailure): void {
+            if ($state->depth === 1) {
                 throw $innerFailure;
             }
         });
@@ -794,27 +798,29 @@ class TransactionEndHookTest extends TestCase
         $db = $this->driver($pdo);
         $cause = new RuntimeException('statement failed');
         $innerFailure = new LogicException('inner end listener failed');
-        $depth = 0;
+        $state = new class () {
+            public int $depth = 0;
+        };
         $started = false;
         $innerException = null;
-        $db->on('transaction.end', static function () use ($db, $pdo, &$depth, &$started, &$innerException): void {
+        $db->on('transaction.end', static function () use ($db, $pdo, $state, &$started, &$innerException): void {
             if ($started) {
                 return;
             }
             $started = true;
             $pdo->stateUnreadable = false;
             $pdo->rollBack(); // clear the lost transaction raw, as an application discarding it would
-            $depth = 1;
+            $state->depth = 1;
             $db->beginTransaction();
             try {
                 $db->rollback();
             } catch (TransactionException $e) {
                 $innerException = $e;
             }
-            $depth = 0;
+            $state->depth = 0;
         });
-        $db->on('transaction.end', static function () use (&$depth, $innerFailure): void {
-            if ($depth === 1) {
+        $db->on('transaction.end', static function () use ($state, $innerFailure): void {
+            if ($state->depth === 1) {
                 throw $innerFailure;
             }
         });
@@ -1127,7 +1133,7 @@ class TransactionEndHookTest extends TestCase
         };
         $db = $this->driver($pdo);
         $commits = 0;
-        $db->on('transaction.commit', static function () use ($db, $pdo, &$commits): void {
+        $db->on('transaction.commit', static function () use ($db, &$commits): void {
             $commits++;
             if ($commits === 1) {
                 $db->beginTransaction(); // left open, cleaned up raw

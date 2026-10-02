@@ -111,7 +111,7 @@ class CrudTest extends TestCase
         $driver = new class (':memory:') extends SqliteDriver {
             public string $reported = '';
 
-            public function lastInsertId(?string $name = null): string|false
+            public function lastInsertId(?string $name = null): string
             {
                 return $this->reported;
             }
@@ -135,7 +135,7 @@ class CrudTest extends TestCase
             $this->db->insert('users', []);
         } catch (QueryException $e) {
             $this->assertSame('Insert failed', $e->getMessage());
-            $this->assertStringContainsString('empty', $e->getDebugMessage());
+            $this->assertStringContainsString('empty', $e->getDebugMessage() ?? '');
             return;
         }
 
@@ -162,6 +162,7 @@ class CrudTest extends TestCase
         $this->db->update('users', ['name' => 'Maximilian'], ['id' => 1]);
 
         $user = $this->db->findOne('users', ['id' => 1]);
+        $this->assertNotNull($user);
         $this->assertSame('Maximilian', $user['name']);
     }
 
@@ -172,6 +173,7 @@ class CrudTest extends TestCase
         $this->db->update('users', ['name' => 'Maximilian', 'email' => 'maximilian@example.com'], ['id' => 1]);
 
         $user = $this->db->findOne('users', ['id' => 1]);
+        $this->assertNotNull($user);
         $this->assertSame('Maximilian', $user['name']);
         $this->assertSame('maximilian@example.com', $user['email']);
     }
@@ -206,7 +208,7 @@ class CrudTest extends TestCase
             $this->db->update('users', ['name' => 'Max'], []);
         } catch (QueryException $e) {
             $this->assertSame('Update failed', $e->getMessage());
-            $this->assertStringContainsString('WHERE', $e->getDebugMessage());
+            $this->assertStringContainsString('WHERE', $e->getDebugMessage() ?? '');
             return;
         }
 
@@ -262,7 +264,7 @@ class CrudTest extends TestCase
             $this->db->delete('users', []);
         } catch (QueryException $e) {
             $this->assertSame('Delete failed', $e->getMessage());
-            $this->assertStringContainsString('WHERE', $e->getDebugMessage());
+            $this->assertStringContainsString('WHERE', $e->getDebugMessage() ?? '');
             return;
         }
 
@@ -279,6 +281,7 @@ class CrudTest extends TestCase
 
         $user = $this->db->findOne('users', ['id' => 1]);
 
+        $this->assertNotNull($user);
         $this->assertSame('Max', $user['name']);
         $this->assertSame('max@example.com', $user['email']);
     }
@@ -297,6 +300,7 @@ class CrudTest extends TestCase
 
         $user = $this->db->findOne('users', ['name' => 'Max', 'active' => 1]);
 
+        $this->assertNotNull($user);
         $this->assertSame('max@example.com', $user['email']);
     }
 
@@ -307,6 +311,7 @@ class CrudTest extends TestCase
 
         $user = $this->db->findOne('users', ['name' => 'Max']);
 
+        $this->assertNotNull($user);
         $this->assertSame('max1@example.com', $user['email']);
     }
 
@@ -382,6 +387,8 @@ class CrudTest extends TestCase
         $user1 = $this->db->findOne('users', ['id' => 1]);
         $user2 = $this->db->findOne('users', ['id' => 2]);
 
+        $this->assertNotNull($user1);
+        $this->assertNotNull($user2);
         $this->assertSame('Maximilian', $user1['name']);
         $this->assertSame('Annette', $user2['name']);
     }

@@ -12,6 +12,7 @@ use Sodaho\PdoWrapper\Driver\PostgresDriver;
 use Sodaho\PdoWrapper\Driver\SqliteDriver;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Exception\UniqueViolationException;
+use Sodaho\PdoWrapper\Tests\Support\Untyped;
 
 /**
  * Edge case tests for bugs found by code review.
@@ -59,6 +60,7 @@ class EdgeCaseTest extends TestCase
             ->join('users', 'users.id', '=', 'posts.user_id')
             ->first();
 
+        $this->assertNotNull($result);
         $this->assertSame('First Post', $result['title']);
         $this->assertSame('John', $result['author']);
     }
@@ -179,6 +181,7 @@ class EdgeCaseTest extends TestCase
         $db->insert('test', ['my"column' => 'value']);
 
         $result = $db->findOne('test', ['id' => 1]);
+        $this->assertNotNull($result);
         $this->assertSame('value', $result['my"column']);
     }
 
@@ -273,7 +276,7 @@ class EdgeCaseTest extends TestCase
     public function testInsertThrowsExceptionWhenLastInsertIdReturnsFalse(): void
     {
         // Create a driver that returns false from lastInsertId()
-        $driver = new class (':memory:') extends SqliteDriver {
+        $driver = new class () extends SqliteDriver {
             public function __construct()
             {
                 parent::__construct(':memory:');
@@ -296,7 +299,7 @@ class EdgeCaseTest extends TestCase
     public function testInsertThrowsExceptionWithDebugMessageContainingSqlAndParams(): void
     {
         // Create a driver that returns false from lastInsertId()
-        $driver = new class (':memory:') extends SqliteDriver {
+        $driver = new class () extends SqliteDriver {
             public function __construct()
             {
                 parent::__construct(':memory:');
@@ -314,9 +317,9 @@ class EdgeCaseTest extends TestCase
             $driver->insert('users', ['name' => 'Test']);
             $this->fail('Expected QueryException was not thrown');
         } catch (QueryException $e) {
-            $this->assertStringContainsString('Failed to retrieve last insert ID', $e->getDebugMessage());
-            $this->assertStringContainsString('SQL:', $e->getDebugMessage());
-            $this->assertStringContainsString('Params:', $e->getDebugMessage());
+            $this->assertStringContainsString('Failed to retrieve last insert ID', $e->getDebugMessage() ?? '');
+            $this->assertStringContainsString('SQL:', $e->getDebugMessage() ?? '');
+            $this->assertStringContainsString('Params:', $e->getDebugMessage() ?? '');
         }
     }
 
@@ -868,7 +871,7 @@ class EdgeCaseTest extends TestCase
         $db = Database::sqlite(':memory:');
 
         try {
-            $db->table('users')->where(['active', 1]);
+            Untyped::call($db->table('users')->where(...), ['active', 1]); // a list is no array<string, mixed>
             $this->fail('A list given to where() must throw');
         } catch (QueryException $e) {
             $this->assertSame(
@@ -879,7 +882,7 @@ class EdgeCaseTest extends TestCase
 
         // PHP turns the key '2024' into the integer 2024: a numeric column name needs the two-argument form
         try {
-            $db->table('users')->where(['name' => 'x', '2024' => 1]);
+            Untyped::call($db->table('users')->where(...), ['name' => 'x', '2024' => 1]);
             $this->fail('A numeric key in where() must throw');
         } catch (QueryException $e) {
             $this->assertStringContainsString('got the numeric key 2024', (string) $e->getDebugMessage());
@@ -1043,17 +1046,21 @@ class EdgeCaseTest extends TestCase
 
         // A listener that inserts when the statement sent ahead is told, and again when the INSERT is
         // told: the outer step survives the first and has run before the second
-        $busy = false;
-        $driver->on('query', static function (array $data) use ($driver, &$busy): void {
-            if (!$busy && ($data['params'] === ['session setting'] || str_contains($data['sql'], '`users`'))) {
-                $busy = true;
+        $state = new class () {
+            public bool $busy = false;
+        };
+        $driver->on('query', static function (array $data) use ($driver, $state): void {
+            if (!$state->busy && ($data['params'] === ['session setting'] || str_contains($data['sql'], '`users`'))) {
+                $state->busy = true;
                 $driver->insert('audit', ['note' => 'from the listener']);
-                $busy = false;
+                $state->busy = false;
             }
         });
         $this->assertSame(2, $driver->insert('users', ['name' => 'B']));
         // counted on raw PDO: a query through the driver would trigger the listener once more
-        $this->assertSame(7, (int) $driver->getPdo()->query('SELECT COUNT(*) FROM audit')->fetchColumn());
+        $audit = $driver->getPdo()->query('SELECT COUNT(*) FROM audit');
+        $this->assertInstanceOf(\PDOStatement::class, $audit);
+        $this->assertSame(7, (int) $audit->fetchColumn());
     }
 
     /**
@@ -1169,10 +1176,13 @@ class EdgeCaseTest extends TestCase
      */
     public function testAPdoExceptionWithoutErrorInfoIsStillAFailedQuery(): void
     {
-        $driver = new class (':memory:') extends SqliteDriver {
+        $driver = new class () extends SqliteDriver {
             public function __construct()
             {
                 $this->pdo = new class ('sqlite::memory:') extends \PDO {
+                    /**
+                     * @param array<int, mixed> $options
+                     */
                     public function prepare(string $query, array $options = []): \PDOStatement|false
                     {
                         throw new \PDOException('no errorInfo on this one');
@@ -1202,7 +1212,7 @@ class EdgeCaseTest extends TestCase
     /**
      * Each driver with a connection whose prepare() fails the way the given server would.
      *
-     * @param class-string<SqliteDriver|MySqlDriver|PostgresDriver> $driverClass
+     * @param SqliteDriver::class|MySqlDriver::class|PostgresDriver::class $driverClass
      * @param array{string, int, string}|null $errorInfo
      * @param string $serverVersion What the connection reports as PDO::ATTR_SERVER_VERSION
      */
@@ -1213,6 +1223,9 @@ class EdgeCaseTest extends TestCase
 
             public string $serverVersion = '';
 
+            /**
+             * @param array<int, mixed> $options
+             */
             public function prepare(string $query, array $options = []): \PDOStatement|false
             {
                 throw $this->failure ?? new \PDOException('unset');
@@ -1359,7 +1372,7 @@ class EdgeCaseTest extends TestCase
                 return str_starts_with(self::driverMessage($failure), 'UNIQUE constraint failed');
             }
 
-            protected function violatedConstraint(\PDOException $failure): ?string
+            protected function violatedConstraint(\PDOException $failure): string
             {
                 return 'named by the driver';
             }
@@ -1420,7 +1433,7 @@ class EdgeCaseTest extends TestCase
             protected function bindAndExecute(\PDOStatement $stmt, array $params): bool
             {
                 foreach ($params as $key => $value) {
-                    $stmt->bindValue($key + 1, $value, is_resource($value) ? \PDO::PARAM_LOB : \PDO::PARAM_STR);
+                    $stmt->bindValue(is_int($key) ? $key + 1 : $key, $value, is_resource($value) ? \PDO::PARAM_LOB : \PDO::PARAM_STR);
                 }
 
                 return $stmt->execute();

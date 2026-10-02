@@ -8,6 +8,7 @@ use PHPUnit\Framework\TestCase;
 use Sodaho\PdoWrapper\Database;
 use Sodaho\PdoWrapper\Driver\PostgresDriver;
 use Sodaho\PdoWrapper\Exception\ConnectionException;
+use Sodaho\PdoWrapper\Tests\Support\Untyped;
 
 class PostgresDriverTest extends TestCase
 {
@@ -55,7 +56,7 @@ class PostgresDriverTest extends TestCase
 
         foreach (['abc', '5432 host=evil', 0, 65536, 5432.5] as $port) {
             try {
-                new PostgresDriver(['port' => $port] + $base);
+                Untyped::create(PostgresDriver::class, ['port' => $port] + $base); // not all of them are a port by type
                 $this->fail('Expected ConnectionException for port ' . var_export($port, true));
             } catch (ConnectionException $e) {
                 $this->assertSame('Invalid config value "port": expected a whole number between 1 and 65535', $e->getDebugMessage());
@@ -150,7 +151,7 @@ class PostgresDriverTest extends TestCase
         try {
             Database::fromEnv(['driver' => 'pgsql']);
         } catch (ConnectionException $e) {
-            $this->assertStringContainsString('getenv-host-invalid', $e->getDebugMessage());
+            $this->assertStringContainsString('getenv-host-invalid', $e->getDebugMessage() ?? '');
             throw $e;
         }
     }
@@ -170,8 +171,8 @@ class PostgresDriverTest extends TestCase
         try {
             Database::fromEnv(['driver' => 'pgsql']);
         } catch (ConnectionException $e) {
-            $this->assertStringContainsString('env-host-invalid', $e->getDebugMessage());
-            $this->assertStringNotContainsString('getenv-host', $e->getDebugMessage());
+            $this->assertStringContainsString('env-host-invalid', $e->getDebugMessage() ?? '');
+            $this->assertStringNotContainsString('getenv-host', $e->getDebugMessage() ?? '');
             throw $e;
         }
     }
@@ -219,7 +220,7 @@ class PostgresDriverTest extends TestCase
                 'username' => 'postgres',
             ]);
         } catch (ConnectionException $e) {
-            $this->assertStringContainsString(':5432', $e->getDebugMessage());
+            $this->assertStringContainsString(':5432', $e->getDebugMessage() ?? '');
             throw $e;
         }
     }
@@ -236,7 +237,7 @@ class PostgresDriverTest extends TestCase
                 'port' => 5433,
             ]);
         } catch (ConnectionException $e) {
-            $this->assertStringContainsString(':5433', $e->getDebugMessage());
+            $this->assertStringContainsString(':5433', $e->getDebugMessage() ?? '');
             throw $e;
         }
     }
@@ -253,7 +254,7 @@ class PostgresDriverTest extends TestCase
         try {
             Database::fromEnv(['driver' => 'pgsql']);
         } catch (ConnectionException $e) {
-            $this->assertStringContainsString(':5434', $e->getDebugMessage());
+            $this->assertStringContainsString(':5434', $e->getDebugMessage() ?? '');
             throw $e;
         }
     }

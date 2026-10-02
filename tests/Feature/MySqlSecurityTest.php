@@ -9,6 +9,8 @@ use Sodaho\PdoWrapper\Database;
 use Sodaho\PdoWrapper\DatabaseInterface;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Tests\Feature\Concerns\AbstractSecurityTest;
+use Sodaho\PdoWrapper\Tests\Support\ReadsPdoErrorInfo;
+use Sodaho\PdoWrapper\Tests\Support\TestEnvironment;
 
 /**
  * Security tests for MySQL driver.
@@ -16,15 +18,11 @@ use Sodaho\PdoWrapper\Tests\Feature\Concerns\AbstractSecurityTest;
 #[Group('mysql')]
 class MySqlSecurityTest extends AbstractSecurityTest
 {
+    use ReadsPdoErrorInfo;
+
     protected function createDatabase(): DatabaseInterface
     {
-        return Database::mysql([
-            'host' => $_ENV['MYSQL_HOST'] ?? '127.0.0.1',
-            'port' => (int) ($_ENV['MYSQL_PORT'] ?? 3306),
-            'database' => $_ENV['MYSQL_DATABASE'] ?? 'pdo_wrapper_test',
-            'username' => $_ENV['MYSQL_USERNAME'] ?? 'root',
-            'password' => $_ENV['MYSQL_PASSWORD'] ?? 'root',
-        ]);
+        return Database::mysql(TestEnvironment::mysql());
     }
 
     protected function getCreateUsersTableSql(): string
@@ -73,11 +71,7 @@ class MySqlSecurityTest extends AbstractSecurityTest
     public function testEscapeLikeHoldsWithEmulatedPrepares(): void
     {
         $this->db = Database::mysql([
-            'host' => $_ENV['MYSQL_HOST'] ?? '127.0.0.1',
-            'port' => (int) ($_ENV['MYSQL_PORT'] ?? 3306),
-            'database' => $_ENV['MYSQL_DATABASE'] ?? 'pdo_wrapper_test',
-            'username' => $_ENV['MYSQL_USERNAME'] ?? 'root',
-            'password' => $_ENV['MYSQL_PASSWORD'] ?? 'root',
+            ...TestEnvironment::mysql(),
             'options' => [\PDO::ATTR_EMULATE_PREPARES => true],
         ]);
         $this->seedLikeNames();
@@ -110,7 +104,7 @@ class MySqlSecurityTest extends AbstractSecurityTest
                 $this->db->table('backtick_names')->where('id` = 1 OR `id', 999)->get();
                 $this->fail('Expected QueryException: the name is one unknown column');
             } catch (QueryException $e) {
-                $this->assertSame(1054, $e->getPrevious()?->errorInfo[1] ?? null, 'ER_BAD_FIELD_ERROR');
+                $this->assertSame(1054, $this->errorInfoBehind($e, 1), 'ER_BAD_FIELD_ERROR');
             }
             $this->assertSame(1, $this->db->table('backtick_names')->count(), 'the row is untouched');
         } finally {

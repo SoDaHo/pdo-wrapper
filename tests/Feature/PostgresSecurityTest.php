@@ -8,6 +8,7 @@ use PHPUnit\Framework\Attributes\Group;
 use Sodaho\PdoWrapper\Database;
 use Sodaho\PdoWrapper\DatabaseInterface;
 use Sodaho\PdoWrapper\Tests\Feature\Concerns\AbstractSecurityTest;
+use Sodaho\PdoWrapper\Tests\Support\TestEnvironment;
 
 /**
  * Security tests for PostgreSQL driver.
@@ -17,13 +18,7 @@ class PostgresSecurityTest extends AbstractSecurityTest
 {
     protected function createDatabase(): DatabaseInterface
     {
-        return Database::postgres([
-            'host' => $_ENV['POSTGRES_HOST'] ?? '127.0.0.1',
-            'port' => (int) ($_ENV['POSTGRES_PORT'] ?? 5432),
-            'database' => $_ENV['POSTGRES_DATABASE'] ?? 'pdo_wrapper_test',
-            'username' => $_ENV['POSTGRES_USERNAME'] ?? 'postgres',
-            'password' => $_ENV['POSTGRES_PASSWORD'] ?? 'postgres',
-        ]);
+        return Database::postgres(TestEnvironment::postgres());
     }
 
     protected function getCreateUsersTableSql(): string

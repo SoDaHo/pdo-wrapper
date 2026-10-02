@@ -6,6 +6,7 @@ namespace Sodaho\PdoWrapper\Tests\Unit;
 
 use PHPUnit\Framework\TestCase;
 use Sodaho\PdoWrapper\Database;
+use Sodaho\PdoWrapper\DatabaseInterface;
 use Sodaho\PdoWrapper\Query\RawExpression;
 
 /**
@@ -14,7 +15,7 @@ use Sodaho\PdoWrapper\Query\RawExpression;
  */
 class RawExpressionSecurityTest extends TestCase
 {
-    private $db;
+    private DatabaseInterface $db;
 
     protected function setUp(): void
     {

@@ -11,6 +11,7 @@ use Sodaho\PdoWrapper\Exception\CommitHookException;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Exception\TransactionException;
 use Sodaho\PdoWrapper\Exception\UniqueViolationException;
+use Sodaho\PdoWrapper\Tests\Support\Fetched;
 
 /**
  * Abstract base class for workflow tests.
@@ -124,6 +125,7 @@ abstract class AbstractWorkflowTest extends TestCase
         $user = $this->db->table('users')
             ->where('id', $userId)
             ->first();
+        $this->assertNotNull($user);
         $this->assertSame('new@example.com', $user['email']);
 
         // 4. Verify can't register duplicate email
@@ -156,6 +158,7 @@ abstract class AbstractWorkflowTest extends TestCase
 
         // 2. Verify it's a draft
         $post = $this->db->findOne('posts', ['id' => $postId]);
+        $this->assertNotNull($post);
         $this->assertSame('draft', $post['status']);
 
         // 3. Publish the post
@@ -165,6 +168,7 @@ abstract class AbstractWorkflowTest extends TestCase
 
         // 4. Verify published
         $post = $this->db->findOne('posts', ['id' => $postId]);
+        $this->assertNotNull($post);
         $this->assertSame('published', $post['status']);
 
         // 5. Increment views
@@ -174,7 +178,8 @@ abstract class AbstractWorkflowTest extends TestCase
         );
 
         $post = $this->db->findOne('posts', ['id' => $postId]);
-        $this->assertSame(1, (int)$post['views']);
+        $this->assertNotNull($post);
+        $this->assertSame(1, Fetched::int($post['views']));
     }
 
     public function testBlogPostWithTagsWorkflow(): void
@@ -279,7 +284,7 @@ abstract class AbstractWorkflowTest extends TestCase
             ->orderBy('AuthorId')
             ->get();
         $this->assertSame(['AuthorId', 'n'], array_keys($rows[0]));
-        $this->assertSame([[$ada, 1], [$bob, 2]], array_map(static fn (array $row): array => [(int) $row['AuthorId'], (int) $row['n']], $rows));
+        $this->assertSame([[$ada, 1], [$bob, 2]], array_map(static fn (array $row): array => [Fetched::int($row['AuthorId']), Fetched::int($row['n'])], $rows));
 
         $rows = $this->db->table('posts as P')
             ->join('users as U', 'U.id', '=', 'P.user_id')
@@ -474,6 +479,7 @@ abstract class AbstractWorkflowTest extends TestCase
         $result = $this->db->transaction(fn () => $this->db->insert('users', ['email' => 'result@test.com', 'name' => 'Result User']));
 
         $user = $this->db->table('users')->where('email', 'result@test.com')->first();
+        $this->assertNotNull($user);
         $this->assertSame((string) $user['id'], (string) $result);
         $this->assertSame(1, $calls);
     }
@@ -1007,9 +1013,9 @@ abstract class AbstractWorkflowTest extends TestCase
         $this->assertFalse($this->db->table('users')->select('role')->distinct()->groupBy('role')->having(Database::raw('COUNT(*)'), '>', 2)->exists());
         $this->assertFalse($this->db->table('users')->where('role', 'guest')->select('role')->distinct()->groupBy('role')->exists());
 
-        $between = $this->db->table('users')->whereBetween('id', [Database::raw((string) (int) $ids[0] . ' + 1'), $ids[2]])->orderBy('id')->get();
+        $between = $this->db->table('users')->whereBetween('id', [Database::raw((string) Fetched::int($ids[0]) . ' + 1'), $ids[2]])->orderBy('id')->get();
         $this->assertSame(['Bert', 'Cleo'], array_column($between, 'name'));
-        $notBetween = $this->db->table('users')->whereNotBetween('id', [$ids[1], Database::raw((string) (int) $ids[2] . ' + 0')])->get();
+        $notBetween = $this->db->table('users')->whereNotBetween('id', [$ids[1], Database::raw((string) Fetched::int($ids[2]) . ' + 0')])->get();
         $this->assertSame(['Anna'], array_column($notBetween, 'name'));
     }
 
@@ -1145,8 +1151,8 @@ abstract class AbstractWorkflowTest extends TestCase
             $this->assertSame(1, $affected);
             $this->assertSame([[1, 'first', 10, 1, 'new', 'old']], $seen, 'SET values in array order, raw bindings in place, then WHERE');
             $row = $this->db->findOne('set_order', ['id' => 1]);
-            $this->assertSame(2, (int) ($row['attempts'] ?? 0));
-            $this->assertSame($this->laterAssignmentsSeeEarlierOnes() ? 20 : 10, (int) ($row['pause_s'] ?? 0));
+            $this->assertSame(2, Fetched::int($row['attempts'] ?? 0));
+            $this->assertSame($this->laterAssignmentsSeeEarlierOnes() ? 20 : 10, Fetched::int($row['pause_s'] ?? 0));
 
             // the other way round the pause is computed first, from the old counter, on every database
             $this->db->update('set_order', [
@@ -1154,8 +1160,8 @@ abstract class AbstractWorkflowTest extends TestCase
                 'attempts' => Database::raw('attempts + ?', [1]),
             ], ['id' => 2, 'note' => Database::raw('LOWER(?)', ['NEW'])]);
             $row = $this->db->findOne('set_order', ['id' => 2]);
-            $this->assertSame(2, (int) ($row['attempts'] ?? 0));
-            $this->assertSame(10, (int) ($row['pause_s'] ?? 0));
+            $this->assertSame(2, Fetched::int($row['attempts'] ?? 0));
+            $this->assertSame(10, Fetched::int($row['pause_s'] ?? 0));
         } finally {
             $this->db->execute('DROP TABLE IF EXISTS set_order');
         }

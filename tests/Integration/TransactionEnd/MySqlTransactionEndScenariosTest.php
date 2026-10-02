@@ -11,20 +11,18 @@ use Sodaho\PdoWrapper\Driver\MySqlDriver;
 use Sodaho\PdoWrapper\Exception\CommitFailedException;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Exception\TransactionException;
+use Sodaho\PdoWrapper\Tests\Support\ReadsPdoErrorInfo;
+use Sodaho\PdoWrapper\Tests\Support\TestEnvironment;
 
 #[Group('mysql')]
 class MySqlTransactionEndScenariosTest extends AbstractTransactionEndScenarios
 {
+    use ReadsPdoErrorInfo;
+
     /** @return array{host: string, port: int, database: string, username: string, password: string} */
     private static function config(): array
     {
-        return [
-            'host' => (string) ($_ENV['MYSQL_HOST'] ?? '127.0.0.1'),
-            'port' => (int) ($_ENV['MYSQL_PORT'] ?? 3306),
-            'database' => (string) ($_ENV['MYSQL_DATABASE'] ?? 'pdo_wrapper_test'),
-            'username' => (string) ($_ENV['MYSQL_USERNAME'] ?? 'root'),
-            'password' => (string) ($_ENV['MYSQL_PASSWORD'] ?? 'root'),
-        ];
+        return TestEnvironment::mysql();
     }
 
     protected function makeScenarioPdo(): ScenarioPdo
@@ -105,10 +103,10 @@ class MySqlTransactionEndScenariosTest extends AbstractTransactionEndScenarios
     public function testADdlStatementInABeginListenerMakesTheBeginFailAsLost(): void
     {
         $this->db->execute('DROP TABLE IF EXISTS end_scenarios_ddl');
-        $this->db->on('transaction.begin', static function () use (&$db): void {
+        $db = $this->db;
+        $this->db->on('transaction.begin', static function () use ($db): void {
             $db->execute('CREATE TABLE end_scenarios_ddl (id INT PRIMARY KEY)'); // implicit COMMIT
         });
-        $db = $this->db;
         $this->events = [];
         $this->ends = [];
         $ran = false;
@@ -360,7 +358,9 @@ class MySqlTransactionEndScenariosTest extends AbstractTransactionEndScenarios
             }
             $this->assertSame(['end'], $this->events);
             $this->assertSame([DatabaseInterface::TRANSACTION_LOST], $this->chainedReports(), 'told once, with the outcome that was told');
-            $this->assertSame($thrown, $this->ends[array_key_last($this->ends)]['error']);
+            $last = array_key_last($this->ends);
+            $this->assertNotNull($last);
+            $this->assertSame($thrown, $this->ends[$last]['error']);
             $this->pdo->failExec = false;
             $this->db->execute('SET SESSION completion_type = NO_CHAIN');
             $this->pdo->rollBack();
@@ -504,7 +504,7 @@ class MySqlTransactionEndScenariosTest extends AbstractTransactionEndScenarios
         } catch (TransactionException $e) {
             $this->assertSame('Failed to commit transaction', $e->getMessage());
             $this->assertStringContainsString('The server reports no transaction any more', (string) $e->getDebugMessage());
-            $this->assertSame(1205, $e->getPrevious()?->errorInfo[1] ?? null);
+            $this->assertSame(1205, $this->errorInfoBehind($e, 1));
             $this->assertSame([['outcome' => DatabaseInterface::TRANSACTION_LOST, 'error' => $e]], $this->ends);
             $this->assertInstanceOf(CommitFailedException::class, $e);
             $this->assertSame(DatabaseInterface::TRANSACTION_LOST, $e->outcome);
@@ -522,15 +522,16 @@ class MySqlTransactionEndScenariosTest extends AbstractTransactionEndScenarios
      */
     public function testALockWaitTimeoutThatEndedTheTransactionAndLeavesTheCallbackIsToldAsLost(): void
     {
-        $this->assertNotNull($this->observer);
+        $observer = $this->observer;
+        $this->assertNotNull($observer);
         $this->db->insert(self::TABLE, ['id' => 1, 'name' => 'locked by the observer']);
         $this->db->execute('SET SESSION innodb_lock_wait_timeout = 1');
         $this->events = [];
         $thrown = null;
 
-        $this->observer->beginTransaction();
+        $observer->beginTransaction();
         try {
-            $this->observer->update(self::TABLE, ['name' => 'held'], ['id' => 1]);
+            $observer->update(self::TABLE, ['name' => 'held'], ['id' => 1]);
             $this->pdo->vanishOnExec = true;
             $this->db->transaction(static function (DatabaseInterface $db): void {
                 $db->insert(self::TABLE, ['id' => 2, 'name' => 'before the timeout']);
@@ -546,10 +547,10 @@ class MySqlTransactionEndScenariosTest extends AbstractTransactionEndScenarios
             if ($this->pdo->reallyInTransaction()) {
                 $this->pdo->rollBack();
             }
-            $this->observer->rollback();
+            $observer->rollback();
         }
 
-        $this->assertSame(1205, $thrown->getPrevious()?->errorInfo[1] ?? null);
+        $this->assertSame(1205, $this->errorInfoBehind($thrown, 1));
         $this->assertSame(['end'], $this->events, 'no rollback listener');
         $this->assertSame([['outcome' => DatabaseInterface::TRANSACTION_LOST, 'error' => $thrown]], $this->ends);
     }
@@ -575,22 +576,25 @@ class MySqlTransactionEndScenariosTest extends AbstractTransactionEndScenarios
      */
     private function runIntoALockWaitTimeout(bool $endedByTheServer): ?int
     {
-        $this->assertNotNull($this->observer);
+        $observer = $this->observer;
+        $this->assertNotNull($observer);
         $this->db->insert(self::TABLE, ['id' => 1, 'name' => 'locked by the observer']);
         $this->db->execute('SET SESSION innodb_lock_wait_timeout = 1');
         $this->events = [];
         $code = null;
 
-        $this->observer->beginTransaction();
+        $observer->beginTransaction();
         try {
-            $this->observer->update(self::TABLE, ['name' => 'held'], ['id' => 1]);
+            $observer->update(self::TABLE, ['name' => 'held'], ['id' => 1]);
 
             $this->db->transaction(function (DatabaseInterface $db) use (&$code, $endedByTheServer): void {
                 $db->insert(self::TABLE, ['id' => 2, 'name' => 'before the timeout']);
                 try {
                     $db->update(self::TABLE, ['name' => 'waits'], ['id' => 1]);
                 } catch (QueryException $e) {
-                    $code = $e->getPrevious()?->errorInfo[1] ?? null; // swallowed: the callback goes on
+                    $swallowed = $this->errorInfoBehind($e, 1); // swallowed: the callback goes on
+                    $this->assertIsInt($swallowed);
+                    $code = $swallowed;
                 }
                 if (!$endedByTheServer) {
                     // the transaction lives on: unlike after a deadlock, further statements are sent
@@ -600,7 +604,7 @@ class MySqlTransactionEndScenariosTest extends AbstractTransactionEndScenarios
             });
         } finally {
             $this->pdo->hideTransaction = false;
-            $this->observer->rollback();
+            $observer->rollback();
         }
 
         return $code;

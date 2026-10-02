@@ -6,6 +6,7 @@ namespace Sodaho\PdoWrapper\Tests\Integration\Driver;
 
 use Closure;
 use PDO;
+use PDOException;
 use PDOStatement;
 use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\TestCase;
@@ -13,23 +14,26 @@ use Sodaho\PdoWrapper\DatabaseInterface;
 use Sodaho\PdoWrapper\Driver\MySqlDriver;
 use Sodaho\PdoWrapper\Exception\CommitFailedException;
 use Sodaho\PdoWrapper\Exception\CommitHookException;
+use Sodaho\PdoWrapper\Exception\DatabaseException;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Exception\TransactionException;
+use Sodaho\PdoWrapper\Tests\Support\ReadsPdoErrorInfo;
+use Sodaho\PdoWrapper\Tests\Support\Recorder;
+use Sodaho\PdoWrapper\Tests\Support\TestEnvironment;
 
 #[Group('mysql')]
 class MySqlDriverIntegrationTest extends TestCase
 {
+    use ReadsPdoErrorInfo;
+
     private MySqlDriver $driver;
 
+    /**
+     * @return array{host: string, port: int, database: string, username: string, password: string}
+     */
     private static function getConfig(): array
     {
-        return [
-            'host' => $_ENV['MYSQL_HOST'] ?? '127.0.0.1',
-            'port' => (int) ($_ENV['MYSQL_PORT'] ?? 3306),
-            'database' => $_ENV['MYSQL_DATABASE'] ?? 'pdo_wrapper_test',
-            'username' => $_ENV['MYSQL_USERNAME'] ?? 'root',
-            'password' => $_ENV['MYSQL_PASSWORD'] ?? 'root',
-        ];
+        return TestEnvironment::mysql();
     }
 
     protected function setUp(): void
@@ -52,7 +56,9 @@ class MySqlDriverIntegrationTest extends TestCase
         $stmt = $this->driver->query('SELECT 1 as test');
 
         $this->assertInstanceOf(PDOStatement::class, $stmt);
-        $this->assertSame(1, $stmt->fetch()['test']);
+        $row = $stmt->fetch();
+        $this->assertIsArray($row);
+        $this->assertSame(1, $row['test']);
     }
 
     public function testExecuteReturnsAffectedRows(): void
@@ -111,6 +117,7 @@ class MySqlDriverIntegrationTest extends TestCase
         $stmt = $this->driver->query("SHOW VARIABLES LIKE 'character_set_client'");
         $result = $stmt->fetch();
 
+        $this->assertIsArray($result);
         $this->assertSame('utf8mb4', $result['Value']);
     }
 
@@ -206,7 +213,7 @@ class MySqlDriverIntegrationTest extends TestCase
         try {
             $db->execute('SET SESSION completion_type = CHAIN');
             try {
-                $db->transaction(static fn (DatabaseInterface $db): int|string => $db->insert('chain_rows', ['id' => 1]));
+                $db->transaction(static fn (DatabaseInterface $db): int => $db->insert('chain_rows', ['id' => 1]));
                 $this->fail('Expected CommitHookException');
             } catch (CommitHookException $e) {
                 $this->assertTrue($e->connectionInTransaction);
@@ -248,10 +255,8 @@ class MySqlDriverIntegrationTest extends TestCase
         $db->on('transaction.end', static function (array $data) use (&$events): void {
             $events[] = $data['outcome'];
         });
-        $reported = [];
-        $db->on('error', static function (array $data) use (&$reported): void {
-            $reported[] = $data;
-        });
+        $reported = new Recorder(static fn (array $data): array => $data);
+        $db->on('error', $reported);
 
         try {
             $db->execute('SET SESSION completion_type = CHAIN');
@@ -265,7 +270,7 @@ class MySqlDriverIntegrationTest extends TestCase
                 $this->assertStringContainsString('right after ROLLBACK', (string) $e->getDebugMessage());
             }
             $this->assertSame(['rollback', 'rolled_back'], $events);
-            $this->assertSame([], $reported, 'thrown to the caller: the error hook is not told as well');
+            $this->assertSame([], $reported->all(), 'thrown to the caller: the error hook is not told as well');
             $this->assertTrue($db->inTransaction(), 'the chained transaction is open');
 
             $db->getPdo()->exec('SET SESSION completion_type = NO_CHAIN');
@@ -283,11 +288,11 @@ class MySqlDriverIntegrationTest extends TestCase
                 $this->assertSame($cause, $e);
             }
             $this->assertSame(['rollback', 'rolled_back'], $events);
-            $this->assertCount(1, $reported, 'the error hook is where the chained transaction is told');
-            $this->assertSame(['sql', 'params', 'error', 'code', 'outcome', 'exception'], array_keys($reported[0]));
-            $this->assertSame('Connection is in a new transaction', $reported[0]['error']);
-            $this->assertSame('rolled_back', $reported[0]['outcome']);
-            $this->assertInstanceOf(TransactionException::class, $reported[0]['exception']);
+            $this->assertCount(1, $reported->all(), 'the error hook is where the chained transaction is told');
+            $this->assertSame(['sql', 'params', 'error', 'code', 'outcome', 'exception'], array_keys($reported->all()[0]));
+            $this->assertSame('Connection is in a new transaction', $reported->all()[0]['error']);
+            $this->assertSame('rolled_back', $reported->all()[0]['outcome']);
+            $this->assertInstanceOf(TransactionException::class, $reported->all()[0]['exception']);
         } finally {
             $db->getPdo()->exec('SET SESSION completion_type = NO_CHAIN');
             if ($db->getPdo()->inTransaction()) {
@@ -340,7 +345,7 @@ class MySqlDriverIntegrationTest extends TestCase
         try {
             $this->driver->getPdo()->exec($two);
             $this->fail('Expected a syntax error on raw PDO');
-        } catch (\PDOException $e) {
+        } catch (PDOException $e) {
             $this->assertSame(1064, $e->errorInfo[1] ?? null);
         }
 
@@ -349,7 +354,7 @@ class MySqlDriverIntegrationTest extends TestCase
             $emulated->query($two);
             $this->fail('Expected a syntax error with emulated prepares');
         } catch (QueryException $e) {
-            $this->assertSame(1064, $e->getPrevious()?->errorInfo[1] ?? null);
+            $this->assertSame(1064, $this->errorInfoBehind($e, 1));
         }
 
         $optedIn = new MySqlDriver(self::getConfig() + ['options' => [\Pdo\Mysql::ATTR_MULTI_STATEMENTS => true]]);
@@ -366,17 +371,19 @@ class MySqlDriverIntegrationTest extends TestCase
     {
         [$e, $listenerRuns, $measured] = $this->runSwallowedDeadlock();
 
-        $this->assertSame(1213, $measured['swallowed']?->errorInfo[1] ?? null, 'ER_LOCK_DEADLOCK: this connection was the victim');
+        $swallowed = $measured->swallowed;
+        $this->assertInstanceOf(PDOException::class, $swallowed);
+        $this->assertSame(1213, $swallowed->errorInfo[1] ?? null, 'ER_LOCK_DEADLOCK: this connection was the victim');
         $this->assertSame('Failed to commit transaction', $e->getMessage());
-        $this->assertSame($measured['swallowed'], $e->getPrevious());
+        $this->assertSame($measured->swallowed, $e->getPrevious());
         $this->assertStringContainsString('deadlock (error 1213', (string) $e->getDebugMessage());
-        $this->assertSame([['outcome' => 'rolled_back', 'error' => $e]], $measured['ends']);
+        $this->assertSame([['outcome' => 'rolled_back', 'error' => $e]], $measured->ends);
         $this->assertInstanceOf(CommitFailedException::class, $e);
         $this->assertSame('rolled_back', $e->outcome, 'refused before it was sent and the rollback is confirmed: nothing is committed');
         $this->assertSame(1, $listenerRuns);
-        $this->assertFalse($measured['inTransactionAfterwards']);
-        $this->assertSame('Max', $measured['user1Name'], 'the update before the deadlock is gone, and nobody was told it was committed');
-        $this->assertSame('Anna', $measured['user2Name']);
+        $this->assertFalse($measured->inTransactionAfterwards);
+        $this->assertSame('Max', $measured->user1Name, 'the update before the deadlock is gone, and nobody was told it was committed');
+        $this->assertSame('Anna', $measured->user2Name);
     }
 
     /**
@@ -411,12 +418,12 @@ class MySqlDriverIntegrationTest extends TestCase
         $this->assertCount(2, $blocked);
         foreach ($blocked as $refused) {
             $this->assertSame('Query failed', $refused->getMessage());
-            $this->assertSame($measured['swallowed'], $refused->getPrevious(), 'the deadlock, for retry logic that looks at the cause');
+            $this->assertSame($measured->swallowed, $refused->getPrevious(), 'the deadlock, for retry logic that looks at the cause');
             $this->assertStringContainsString('Not sent: the server rolled the open transaction back', (string) $refused->getDebugMessage());
         }
         $this->assertSame([], $hooks, 'not sent: neither query nor error hook');
-        $this->assertSame('Anna', $measured['user2Name'], 'nothing was written outside the transaction');
-        $this->assertSame([['outcome' => 'rolled_back', 'error' => $e]], $measured['ends']);
+        $this->assertSame('Anna', $measured->user2Name, 'nothing was written outside the transaction');
+        $this->assertSame([['outcome' => 'rolled_back', 'error' => $e]], $measured->ends);
         $this->assertSame(1, $listenerRuns);
         $this->assertStringContainsString('deadlock (error 1213', (string) $e->getDebugMessage());
     }
@@ -432,11 +439,11 @@ class MySqlDriverIntegrationTest extends TestCase
             afterwards: static fn (MySqlDriver $db): int|false => $db->getPdo()->exec("UPDATE lock_users SET name = 'after the deadlock' WHERE id = 2")
         );
 
-        $this->assertSame(1213, $e->getPrevious()?->errorInfo[1] ?? null);
-        $this->assertSame([['outcome' => 'lost', 'error' => $e]], $measured['ends']);
+        $this->assertSame(1213, $this->errorInfoBehind($e, 1));
+        $this->assertSame([['outcome' => 'lost', 'error' => $e]], $measured->ends);
         $this->assertSame(0, $listenerRuns);
-        $this->assertSame('Max', $measured['user1Name'], 'before the deadlock: rolled back by the server');
-        $this->assertSame('after the deadlock', $measured['user2Name'], 'after the deadlock, on raw PDO: committed on its own');
+        $this->assertSame('Max', $measured->user1Name, 'before the deadlock: rolled back by the server');
+        $this->assertSame('after the deadlock', $measured->user2Name, 'after the deadlock, on raw PDO: committed on its own');
     }
 
     /**
@@ -461,17 +468,17 @@ class MySqlDriverIntegrationTest extends TestCase
                     $this->fail('Expected TransactionException: no new transaction over the dead one');
                 } catch (TransactionException $e) {
                     $this->assertSame('Failed to begin transaction', $e->getMessage());
-                    $this->assertSame(1213, $e->getPrevious()?->errorInfo[1] ?? null);
+                    $this->assertSame(1213, $this->errorInfoBehind($e, 1));
                 }
             }
         );
 
         $this->assertSame('Failed to commit transaction', $e->getMessage());
         $this->assertStringContainsString('deadlock (error 1213', (string) $e->getDebugMessage());
-        $this->assertSame([['outcome' => 'lost', 'error' => $e]], $measured['ends']);
+        $this->assertSame([['outcome' => 'lost', 'error' => $e]], $measured->ends);
         $this->assertInstanceOf(CommitFailedException::class, $e);
         $this->assertSame('lost', $e->outcome);
-        $this->assertSame('Anna', $measured['user2Name'], 'nothing was written after the deadlock');
+        $this->assertSame('Anna', $measured->user2Name, 'nothing was written after the deadlock');
     }
 
     /**
@@ -490,8 +497,8 @@ class MySqlDriverIntegrationTest extends TestCase
 
         $this->assertStringContainsString('no active transaction', strtolower((string) $e->getDebugMessage()), 'the commit after the rollback: nothing is open');
         $this->assertSame(0, $listenerRuns, 'no ROLLBACK was sent, no rollback listener ran');
-        $this->assertSame(['lost', 'committed'], array_column($measured['ends'], 'outcome'));
-        $this->assertSame($measured['swallowed'], $measured['ends'][0]['error']);
+        $this->assertSame(['lost', 'committed'], array_column($measured->ends, 'outcome'));
+        $this->assertSame($measured->swallowed, $measured->ends[0]['error']);
     }
 
     /**
@@ -517,9 +524,9 @@ class MySqlDriverIntegrationTest extends TestCase
         );
 
         $this->assertStringStartsWith('Not committed: the transaction this call began has already been ended through this driver', (string) $e->getDebugMessage(), 'the callback ended the transaction itself');
-        $this->assertSame([['outcome' => 'rolled_back', 'error' => null]], $measured['ends'], "the callback's own rollback() told the end");
+        $this->assertSame([['outcome' => 'rolled_back', 'error' => null]], $measured->ends, "the callback's own rollback() told the end");
         $this->assertSame(1, $listenerRuns);
-        $this->assertSame('after rollback()', $measured['user2Name']);
+        $this->assertSame('after rollback()', $measured->user2Name);
     }
 
     /**
@@ -539,9 +546,9 @@ class MySqlDriverIntegrationTest extends TestCase
             }
         );
 
-        $this->assertSame([['outcome' => 'lost', 'error' => $e]], $measured['ends']);
+        $this->assertSame([['outcome' => 'lost', 'error' => $e]], $measured->ends);
         $this->assertSame(0, $listenerRuns, 'no rollback was sent for the listener\'s transaction');
-        $this->assertTrue($measured['inTransactionAfterwards'], "the listener's transaction is still open");
+        $this->assertTrue($measured->inTransactionAfterwards, "the listener's transaction is still open");
     }
 
     /**
@@ -562,10 +569,10 @@ class MySqlDriverIntegrationTest extends TestCase
             }
         );
 
-        $this->assertSame(['lost', 'committed'], array_column($measured['ends'], 'outcome'), "the refused transaction, then the listener's own");
-        $this->assertSame($e, $measured['ends'][0]['error']);
+        $this->assertSame(['lost', 'committed'], array_column($measured->ends, 'outcome'), "the refused transaction, then the listener's own");
+        $this->assertSame($e, $measured->ends[0]['error']);
         $this->assertSame(0, $listenerRuns, 'no rollback was sent for the transaction the listener left open');
-        $this->assertTrue($measured['inTransactionAfterwards']);
+        $this->assertTrue($measured->inTransactionAfterwards);
     }
 
     /**
@@ -590,7 +597,7 @@ class MySqlDriverIntegrationTest extends TestCase
             $db->query('SELECT 1');
             $this->fail('Expected QueryException: the deadlock is still remembered');
         } catch (QueryException $e) {
-            $this->assertSame(1213, $e->getPrevious()?->errorInfo[1] ?? null);
+            $this->assertSame(1213, $this->errorInfoBehind($e, 1));
         }
         $db->rollback();
         $this->assertSame('1', (string) $db->query('SELECT 1')->fetchColumn());
@@ -617,14 +624,14 @@ class MySqlDriverIntegrationTest extends TestCase
             autocommitOff: true
         );
 
-        $this->assertSame(1213, $e->getPrevious()?->errorInfo[1] ?? null);
+        $this->assertSame(1213, $this->errorInfoBehind($e, 1));
         $this->assertStringContainsString('deadlock (error 1213', (string) $e->getDebugMessage());
-        $this->assertSame([['outcome' => 'rolled_back', 'error' => $e]], $measured['ends']);
+        $this->assertSame([['outcome' => 'rolled_back', 'error' => $e]], $measured->ends);
         $this->assertInstanceOf(CommitFailedException::class, $e);
         $this->assertSame('rolled_back', $e->outcome);
         $this->assertSame(1, $listenerRuns);
-        $this->assertSame('Max', $measured['user1Name']);
-        $this->assertSame('Anna', $measured['user2Name'], 'nothing of the half transaction is committed');
+        $this->assertSame('Max', $measured->user1Name);
+        $this->assertSame('Anna', $measured->user2Name, 'nothing of the half transaction is committed');
     }
 
     /**
@@ -640,10 +647,10 @@ class MySqlDriverIntegrationTest extends TestCase
         );
 
         $this->assertSame('Failed to commit transaction', $e->getMessage());
-        $this->assertFalse($measured['inTransactionAfterwards']);
+        $this->assertFalse($measured->inTransactionAfterwards);
         $this->assertSame(0, $listenerRuns);
-        $this->assertSame(['lost', 'committed'], array_column($measured['ends'], 'outcome'), 'the refused one, then the next transaction');
-        $this->assertSame($e, $measured['ends'][0]['error']);
+        $this->assertSame(['lost', 'committed'], array_column($measured->ends, 'outcome'), 'the refused one, then the next transaction');
+        $this->assertSame($e, $measured->ends[0]['error']);
         $this->assertInstanceOf(CommitFailedException::class, $e);
         $this->assertSame('lost', $e->outcome, 'on a direct commit() too, once the library has told the end');
     }
@@ -697,7 +704,7 @@ class MySqlDriverIntegrationTest extends TestCase
      * @param (Closure(MySqlDriver): mixed)|null $afterwards What the callback does after it swallowed the deadlock
      * @param bool $manual beginTransaction()/commit() instead of transaction(), followed by one more (empty) transaction
      *
-     * @return array{\Throwable, int, array<string, mixed>}
+     * @return array{DatabaseException, int, LockMeasurements}
      */
     private function runSwallowedDeadlock(?Closure $afterwards = null, bool $autocommitOff = false, bool $manual = false): array
     {
@@ -711,20 +718,20 @@ class MySqlDriverIntegrationTest extends TestCase
                 echo 'committed';
                 PHP,
             function (MySqlDriver $db, Closure $startChild) use ($afterwards, $autocommitOff, $manual): array {
-                $measured = ['ends' => [], 'swallowed' => null];
-                $db->on('transaction.end', static function (array $data) use (&$measured): void {
-                    $measured['ends'][] = $data;
+                $measured = new LockMeasurements();
+                $db->on('transaction.end', static function (array $data) use ($measured): void {
+                    $measured->ends[] = $data;
                 });
                 if ($autocommitOff) {
                     $db->execute('SET autocommit = 0');
                 }
-                $work = static function (MySqlDriver $db) use ($startChild, &$measured, $afterwards): void {
+                $work = static function (MySqlDriver $db) use ($startChild, $measured, $afterwards): void {
                     $db->execute('UPDATE lock_users SET name = ? WHERE id = 1', ['renamed']);
                     $startChild();
                     try {
                         $db->execute('UPDATE lock_attempts SET attempts = attempts + 1 WHERE user_id = 1');
                     } catch (QueryException $e) {
-                        $measured['swallowed'] = $e->getPrevious(); // swallowed: the callback goes on
+                        $measured->swallowed = $e->getPrevious(); // swallowed: the callback goes on
                     }
                     if ($afterwards !== null) {
                         $afterwards($db);
@@ -740,7 +747,7 @@ class MySqlDriverIntegrationTest extends TestCase
                     }
                     $this->fail('Expected TransactionException: nothing was committed');
                 } catch (TransactionException $e) {
-                    $measured['inTransactionAfterwards'] = $db->inTransaction();
+                    $measured->inTransactionAfterwards = $db->inTransaction();
                     if ($manual) {
                         $db->transaction(static fn (): null => null);
                     }
@@ -774,35 +781,35 @@ class MySqlDriverIntegrationTest extends TestCase
                 echo 'committed';
                 PHP,
             function (MySqlDriver $db, Closure $startChild): array {
-                $measured = ['ends' => []];
-                $db->on('transaction.end', static function (array $data) use (&$measured): void {
-                    $measured['ends'][] = $data;
+                $measured = new LockMeasurements();
+                $db->on('transaction.end', static function (array $data) use ($measured): void {
+                    $measured->ends[] = $data;
                 });
                 try {
-                    $db->transaction(static function (MySqlDriver $db) use ($startChild, &$measured): void {
+                    $db->transaction(static function (MySqlDriver $db) use ($startChild, $measured): void {
                         $db->query('SELECT id FROM lock_users WHERE id = 1 FOR UPDATE')->fetchAll();
                         $startChild(); // the child locks its rows only after this connection holds the users row
                         try {
                             $db->execute('UPDATE lock_attempts SET attempts = attempts + 1 WHERE user_id = 1');
                         } catch (QueryException $e) {
-                            $measured['inTransactionAfterError'] = $db->inTransaction();
+                            $measured->inTransactionAfterError = $db->inTransaction();
                             throw $e;
                         }
                     });
                     $this->fail('Expected the deadlock');
                 } catch (QueryException $e) {
-                    $measured['inTransactionAfterwards'] = $db->inTransaction();
+                    $measured->inTransactionAfterwards = $db->inTransaction();
 
                     return [$e, $measured];
                 }
             }
         );
 
-        $this->assertSame(1213, $e->getPrevious()?->errorInfo[1] ?? null, 'ER_LOCK_DEADLOCK: this connection was the victim');
-        $this->assertTrue($measured['inTransactionAfterError'], 'PDO still reports the transaction after the server rolled it back');
+        $this->assertSame(1213, $this->errorInfoBehind($e, 1), 'ER_LOCK_DEADLOCK: this connection was the victim');
+        $this->assertTrue($measured->inTransactionAfterError, 'PDO still reports the transaction after the server rolled it back');
         $this->assertSame(1, $listenerRuns, 'transaction() rolled back and fired the listener');
-        $this->assertSame([['outcome' => 'rolled_back', 'error' => $e]], $measured['ends'], 'transaction.end: rolled back, with the deadlock exception');
-        $this->assertFalse($measured['inTransactionAfterwards']);
+        $this->assertSame([['outcome' => 'rolled_back', 'error' => $e]], $measured->ends, 'transaction.end: rolled back, with the deadlock exception');
+        $this->assertFalse($measured->inTransactionAfterwards);
         $this->assertSame('committed', $childOutput);
     }
 
@@ -823,37 +830,37 @@ class MySqlDriverIntegrationTest extends TestCase
                 PHP,
             function (MySqlDriver $db, Closure $startChild): array {
                 $db->execute('SET SESSION innodb_lock_wait_timeout = 1');
-                $measured = ['ends' => []];
-                $db->on('transaction.end', static function (array $data) use (&$measured): void {
-                    $measured['ends'][] = $data;
+                $measured = new LockMeasurements();
+                $db->on('transaction.end', static function (array $data) use ($measured): void {
+                    $measured->ends[] = $data;
                 });
                 try {
-                    $db->transaction(static function (MySqlDriver $db) use ($startChild, &$measured): void {
+                    $db->transaction(static function (MySqlDriver $db) use ($startChild, $measured): void {
                         $db->execute('UPDATE lock_users SET name = ? WHERE id = 1', ['touched']);
                         $startChild();
                         try {
                             $db->execute('UPDATE lock_attempts SET attempts = attempts + 1 WHERE user_id = 1');
                         } catch (QueryException $e) {
-                            $measured['inTransactionAfterError'] = $db->inTransaction();
+                            $measured->inTransactionAfterError = $db->inTransaction();
                             throw $e;
                         }
                     });
                     $this->fail('Expected the lock wait timeout');
                 } catch (QueryException $e) {
-                    $measured['inTransactionAfterwards'] = $db->inTransaction();
+                    $measured->inTransactionAfterwards = $db->inTransaction();
 
                     return [$e, $measured];
                 }
             }
         );
 
-        $this->assertSame(1205, $e->getPrevious()?->errorInfo[1] ?? null, 'ER_LOCK_WAIT_TIMEOUT');
-        $this->assertTrue($measured['inTransactionAfterError'], 'only the statement was rolled back, the transaction is open');
+        $this->assertSame(1205, $this->errorInfoBehind($e, 1), 'ER_LOCK_WAIT_TIMEOUT');
+        $this->assertTrue($measured->inTransactionAfterError, 'only the statement was rolled back, the transaction is open');
         $this->assertSame(1, $listenerRuns);
-        $this->assertSame([['outcome' => 'rolled_back', 'error' => $e]], $measured['ends'], 'transaction.end: rolled back, with the timeout exception');
-        $this->assertFalse($measured['inTransactionAfterwards']);
+        $this->assertSame([['outcome' => 'rolled_back', 'error' => $e]], $measured->ends, 'transaction.end: rolled back, with the timeout exception');
+        $this->assertFalse($measured->inTransactionAfterwards);
         $this->assertSame('committed', $childOutput);
-        $this->assertSame('Max', $measured['user1Name'], "the test connection's own update was rolled back");
+        $this->assertSame('Max', $measured->user1Name, "the test connection's own update was rolled back");
     }
 
     /**
@@ -874,12 +881,12 @@ class MySqlDriverIntegrationTest extends TestCase
                     [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
                 );
                 $connectionId = (int) $db->query('SELECT CONNECTION_ID()')->fetchColumn();
-                $measured = ['ends' => []];
-                $db->on('transaction.end', static function (array $data) use (&$measured): void {
-                    $measured['ends'][] = $data;
+                $measured = new LockMeasurements();
+                $db->on('transaction.end', static function (array $data) use ($measured): void {
+                    $measured->ends[] = $data;
                 });
                 try {
-                    $db->transaction(static function (MySqlDriver $db) use ($killer, $connectionId, &$measured): void {
+                    $db->transaction(static function (MySqlDriver $db) use ($killer, $connectionId, $measured): void {
                         $db->execute('UPDATE lock_users SET name = ? WHERE id = 1', ['touched']);
                         $killer->exec('KILL ' . $connectionId);
                         // wait until the server has dropped the connection (not just scheduled the kill)
@@ -898,25 +905,25 @@ class MySqlDriverIntegrationTest extends TestCase
                         try {
                             $db->execute('UPDATE lock_attempts SET attempts = attempts + 1 WHERE user_id = 1');
                         } catch (QueryException $e) {
-                            $measured['inTransactionAfterError'] = $db->inTransaction();
+                            $measured->inTransactionAfterError = $db->inTransaction();
                             throw $e;
                         }
                     });
                     $this->fail('Expected the lost connection');
                 } catch (QueryException $e) {
-                    $measured['inTransactionAfterwards'] = $db->inTransaction();
+                    $measured->inTransactionAfterwards = $db->inTransaction();
 
                     return [$e, $measured];
                 }
             }
         );
 
-        $this->assertContains($e->getPrevious()?->errorInfo[1] ?? null, [2006, 2013], 'server has gone away / lost connection');
+        $this->assertContains($this->errorInfoBehind($e, 1), [2006, 2013], 'server has gone away / lost connection');
         $this->assertSame(0, $listenerRuns, 'the rollback failed with the connection: no listener');
-        $this->assertSame([['outcome' => 'lost', 'error' => $e]], $measured['ends'], 'transaction.end reports lost with the statement exception');
-        $this->assertSame('Max', $measured['user1Name'], 'the server rolled the killed connection back');
-        $this->assertTrue($measured['inTransactionAfterError'], 'PDO still reports the transaction right after the error');
-        $this->assertTrue($measured['inTransactionAfterwards'], 'and still after the failed rollback');
+        $this->assertSame([['outcome' => 'lost', 'error' => $e]], $measured->ends, 'transaction.end reports lost with the statement exception');
+        $this->assertSame('Max', $measured->user1Name, 'the server rolled the killed connection back');
+        $this->assertTrue($measured->inTransactionAfterError, 'PDO still reports the transaction right after the error');
+        $this->assertTrue($measured->inTransactionAfterwards, 'and still after the failed rollback');
     }
 
     /**
@@ -925,9 +932,9 @@ class MySqlDriverIntegrationTest extends TestCase
      * $pdo, $marker and $awaitRelease() are available there - and returns once the child touched
      * $marker ("I hold my locks"); the child is released after the scenario and ended with a deadline.
      *
-     * @param Closure(MySqlDriver, Closure): array{\Throwable, array<string, mixed>} $scenario
+     * @param Closure(MySqlDriver, Closure(): void): array{DatabaseException, LockMeasurements} $scenario
      *
-     * @return array{\Throwable, int, array<string, mixed>, string} exception, rollback listener runs, measurements, child output
+     * @return array{DatabaseException, int, LockMeasurements, string} exception, rollback listener runs, measurements, child output
      */
     private function runLockScenario(?string $childBody, Closure $scenario): array
     {
@@ -980,8 +987,8 @@ class MySqlDriverIntegrationTest extends TestCase
 
             [$e, $measured] = $scenario($db, $startChild);
             touch($release);
-            $measured['user1Name'] = (string) ($this->driver->table('lock_users')->where('id', 1)->first()['name'] ?? '');
-            $measured['user2Name'] = (string) ($this->driver->table('lock_users')->where('id', 2)->first()['name'] ?? '');
+            $measured->user1Name = (string) ($this->driver->table('lock_users')->where('id', 1)->first()['name'] ?? '');
+            $measured->user2Name = (string) ($this->driver->table('lock_users')->where('id', 2)->first()['name'] ?? '');
 
             if ($child !== null) {
                 $childOutput = $this->collectChildOutput($child, $pipes, 10.0);

@@ -15,21 +15,22 @@ use Sodaho\PdoWrapper\Exception\CommitFailedException;
 use Sodaho\PdoWrapper\Exception\ConnectionException;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Exception\TransactionException;
+use Sodaho\PdoWrapper\Tests\Support\ReadsPdoErrorInfo;
+use Sodaho\PdoWrapper\Tests\Support\TestEnvironment;
 
 #[Group('postgres')]
 class PostgresDriverIntegrationTest extends TestCase
 {
+    use ReadsPdoErrorInfo;
+
     private PostgresDriver $driver;
 
+    /**
+     * @return array{host: string, port: int, database: string, username: string, password: string}
+     */
     private static function getConfig(): array
     {
-        return [
-            'host' => $_ENV['POSTGRES_HOST'] ?? '127.0.0.1',
-            'port' => (int) ($_ENV['POSTGRES_PORT'] ?? 5432),
-            'database' => $_ENV['POSTGRES_DATABASE'] ?? 'pdo_wrapper_test',
-            'username' => $_ENV['POSTGRES_USERNAME'] ?? 'postgres',
-            'password' => $_ENV['POSTGRES_PASSWORD'] ?? 'postgres',
-        ];
+        return TestEnvironment::postgres();
     }
 
     protected function setUp(): void
@@ -52,7 +53,9 @@ class PostgresDriverIntegrationTest extends TestCase
         $stmt = $this->driver->query('SELECT 1 as test');
 
         $this->assertInstanceOf(PDOStatement::class, $stmt);
-        $this->assertSame(1, $stmt->fetch()['test']);
+        $row = $stmt->fetch();
+        $this->assertIsArray($row);
+        $this->assertSame(1, $row['test']);
     }
 
     public function testExecuteReturnsAffectedRows(): void
@@ -155,7 +158,7 @@ class PostgresDriverIntegrationTest extends TestCase
         $this->driver->execute('CREATE TEMPORARY TABLE test_tx_explicit (id SERIAL PRIMARY KEY, name TEXT)');
 
         $id = $this->driver->transaction(
-            fn (DatabaseInterface $db): int|string => $db->insert('test_tx_explicit', ['id' => 1000, 'name' => 'explicit'])
+            fn (DatabaseInterface $db): int => $db->insert('test_tx_explicit', ['id' => 1000, 'name' => 'explicit'])
         );
 
         $this->assertSame(0, $id);
@@ -172,7 +175,7 @@ class PostgresDriverIntegrationTest extends TestCase
         $driver->execute('CREATE TEMPORARY TABLE test_silent_tokens (token TEXT PRIMARY KEY, name TEXT)');
 
         $id = $driver->transaction(
-            fn (DatabaseInterface $db): int|string => $db->insert('test_silent_tokens', ['token' => 'tok', 'name' => 'silent'])
+            fn (DatabaseInterface $db): int => $db->insert('test_silent_tokens', ['token' => 'tok', 'name' => 'silent'])
         );
 
         $this->assertSame(0, $id);
@@ -333,7 +336,7 @@ class PostgresDriverIntegrationTest extends TestCase
         $this->assertNotContains('SELECT 1', $queries, 'the probe is not a statement of the caller');
 
         // The next transaction starts clean
-        $this->driver->transaction(static fn (DatabaseInterface $db): int|string => $db->insert('test_aborted', ['id' => 2]));
+        $this->driver->transaction(static fn (DatabaseInterface $db): int => $db->insert('test_aborted', ['id' => 2]));
         $this->assertSame(1, $this->driver->table('test_aborted')->count());
     }
 
@@ -499,7 +502,7 @@ class PostgresDriverIntegrationTest extends TestCase
 
         $this->assertSame(1, $driver->insert('test_ahead_users', ['name' => 'A']));
         $this->assertSame(2, $driver->insert('test_ahead_users', ['name' => 'B']));
-        $this->assertSame(3, $driver->transaction(static fn (DatabaseInterface $db): int|string => $db->insert('test_ahead_users', ['name' => 'C'])));
+        $this->assertSame(3, $driver->transaction(static fn (DatabaseInterface $db): int => $db->insert('test_ahead_users', ['name' => 'C'])));
     }
 
     /**
@@ -560,7 +563,7 @@ class PostgresDriverIntegrationTest extends TestCase
                     $this->fail('Expected QueryException');
                 } catch (QueryException $e) {
                     $this->assertStringContainsString('division by zero', (string) $e->getDebugMessage());
-                    $this->assertSame('22012', $e->getPrevious()?->errorInfo[0] ?? null, 'the failure PDO recorded');
+                    $this->assertSame('22012', $this->errorInfoBehind($e, 0), 'the failure PDO recorded');
                     $this->assertInstanceOf($thrown, $e->getPrevious()?->getPrevious(), 'the handler\'s exception is kept');
                 }
                 $driver->rollback();
@@ -866,11 +869,12 @@ class PostgresDriverIntegrationTest extends TestCase
     public function testConnectionExceptionHasDebugMessage(): void
     {
         try {
+            $config = self::getConfig();
             new PostgresDriver([
-                'host' => $_ENV['POSTGRES_HOST'] ?? '127.0.0.1',
+                'host' => $config['host'],
                 'database' => 'nonexistent_db_that_does_not_exist',
-                'username' => $_ENV['POSTGRES_USERNAME'] ?? 'postgres',
-                'password' => $_ENV['POSTGRES_PASSWORD'] ?? 'postgres',
+                'username' => $config['username'],
+                'password' => $config['password'],
             ]);
         } catch (ConnectionException $e) {
             $this->assertSame('Database connection failed', $e->getMessage());
@@ -901,10 +905,14 @@ class PostgresDriverIntegrationTest extends TestCase
         $db->on('transaction.end', static function (array $data) use (&$events): void {
             $events[] = $data;
         });
-        $measured = [];
+        $measured = new class () {
+            public ?bool $inTransactionAfterError = null;
+
+            public ?bool $inTransactionAfterwards = null;
+        };
 
         try {
-            $db->transaction(static function (PostgresDriver $db) use ($killer, $pid, &$measured): void {
+            $db->transaction(static function (PostgresDriver $db) use ($killer, $pid, $measured): void {
                 $db->insert('end_probe', ['name' => 'inside']);
                 $killer->query('SELECT pg_terminate_backend(?)', [$pid])->fetchColumn();
                 $gone = false;
@@ -920,20 +928,20 @@ class PostgresDriverIntegrationTest extends TestCase
                 try {
                     $db->execute('UPDATE end_probe SET name = ? WHERE id = 1', ['after']);
                 } catch (QueryException $e) {
-                    $measured['inTransactionAfterError'] = $db->inTransaction();
+                    $measured->inTransactionAfterError = $db->inTransaction();
                     throw $e;
                 }
             });
             $this->fail('Expected the lost connection');
         } catch (QueryException $e) {
-            $measured['inTransactionAfterwards'] = $db->inTransaction();
+            $measured->inTransactionAfterwards = $db->inTransaction();
         }
 
         $this->assertSame([['outcome' => 'lost', 'error' => $e]], $events, 'no rollback listener, transaction.end reports lost with the statement exception');
         $this->assertSame(0, $killer->table('end_probe')->count(), 'the server rolled the terminated backend back');
         // measured on PostgreSQL 15 with pdo_pgsql: like mysqlnd, PDO keeps reporting the transaction
-        $this->assertTrue($measured['inTransactionAfterError'], 'PDO still reports the transaction right after the error');
-        $this->assertTrue($measured['inTransactionAfterwards'], 'and after the failed rollback');
+        $this->assertTrue($measured->inTransactionAfterError, 'PDO still reports the transaction right after the error');
+        $this->assertTrue($measured->inTransactionAfterwards, 'and after the failed rollback');
         $killer->execute('DROP TABLE IF EXISTS end_probe');
     }
 

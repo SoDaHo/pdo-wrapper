@@ -9,21 +9,20 @@ use PHPUnit\Framework\TestCase;
 use Sodaho\PdoWrapper\Database;
 use Sodaho\PdoWrapper\Driver\PostgresDriver;
 use Sodaho\PdoWrapper\Exception\QueryException;
+use Sodaho\PdoWrapper\Tests\Support\Fetched;
+use Sodaho\PdoWrapper\Tests\Support\ReadsPdoErrorInfo;
+use Sodaho\PdoWrapper\Tests\Support\TestEnvironment;
 
 #[Group('postgres')]
 class PostgresQueryBuilderTest extends TestCase
 {
+    use ReadsPdoErrorInfo;
+
     private PostgresDriver $db;
 
     protected function setUp(): void
     {
-        $this->db = Database::postgres([
-            'host' => $_ENV['POSTGRES_HOST'] ?? '127.0.0.1',
-            'port' => (int) ($_ENV['POSTGRES_PORT'] ?? 5432),
-            'database' => $_ENV['POSTGRES_DATABASE'] ?? 'pdo_wrapper_test',
-            'username' => $_ENV['POSTGRES_USERNAME'] ?? 'postgres',
-            'password' => $_ENV['POSTGRES_PASSWORD'] ?? 'postgres',
-        ]);
+        $this->db = Database::postgres(TestEnvironment::postgres());
 
         $this->db->execute('DROP TABLE IF EXISTS qb_profiles');
         $this->db->execute('DROP TABLE IF EXISTS qb_test');
@@ -100,7 +99,7 @@ class PostgresQueryBuilderTest extends TestCase
         $this->assertSame(0, $this->db->insertWhen('qb_test', ['name' => 'Tom', 'age' => 51], $condition, ['Tom']));
         $this->assertSame(1, $this->db->table('qb_test')->insertWhen(['name' => 'Eva', 'age' => Database::raw('40 + 2')], '? < ?', [1, 2]));
         $this->assertSame('INSERT INTO "qb_test" ("name", "age") SELECT ?, ? WHERE (NOT EXISTS (SELECT 1 FROM qb_test WHERE name = ?))', $sql[0]);
-        $this->assertSame([['Tom', 50], ['Eva', 42]], array_map(static fn (array $r): array => [$r['name'], (int) $r['age']], $this->db->table('qb_test')->where('age', '>=', 40)->orderBy('id')->get()));
+        $this->assertSame([['Tom', 50], ['Eva', 42]], array_map(static fn (array $r): array => [$r['name'], Fetched::int($r['age'])], $this->db->table('qb_test')->where('age', '>=', 40)->orderBy('id')->get()));
     }
 
     /**
@@ -109,13 +108,7 @@ class PostgresQueryBuilderTest extends TestCase
      */
     public function testSharedLockIsVisibleToAnotherConnection(): void
     {
-        $other = Database::postgres([
-            'host' => $_ENV['POSTGRES_HOST'] ?? '127.0.0.1',
-            'port' => (int) ($_ENV['POSTGRES_PORT'] ?? 5432),
-            'database' => $_ENV['POSTGRES_DATABASE'] ?? 'pdo_wrapper_test',
-            'username' => $_ENV['POSTGRES_USERNAME'] ?? 'postgres',
-            'password' => $_ENV['POSTGRES_PASSWORD'] ?? 'postgres',
-        ]);
+        $other = Database::postgres(TestEnvironment::postgres());
         $exclusiveProbe = static fn (): mixed => $other->query('SELECT id FROM qb_test WHERE id = 1 FOR UPDATE NOWAIT')->fetch();
         $sharedProbe = static fn (): mixed => $other->query('SELECT id FROM qb_test WHERE id = 1 FOR SHARE NOWAIT')->fetch();
 
@@ -128,7 +121,7 @@ class PostgresQueryBuilderTest extends TestCase
                 $exclusiveProbe();
                 $this->fail('Expected the exclusive probe to fail while the row is share-locked');
             } catch (QueryException $e) {
-                $this->assertSame('55P03', $e->getPrevious()?->errorInfo[0] ?? null, 'lock_not_available, not some other error');
+                $this->assertSame('55P03', $this->errorInfoBehind($e, 0), 'lock_not_available, not some other error');
             }
         } finally {
             $other->rollback();
@@ -166,13 +159,7 @@ class PostgresQueryBuilderTest extends TestCase
      */
     public function testRowLockIsVisibleToAnotherConnection(): void
     {
-        $other = Database::postgres([
-            'host' => $_ENV['POSTGRES_HOST'] ?? '127.0.0.1',
-            'port' => (int) ($_ENV['POSTGRES_PORT'] ?? 5432),
-            'database' => $_ENV['POSTGRES_DATABASE'] ?? 'pdo_wrapper_test',
-            'username' => $_ENV['POSTGRES_USERNAME'] ?? 'postgres',
-            'password' => $_ENV['POSTGRES_PASSWORD'] ?? 'postgres',
-        ]);
+        $other = Database::postgres(TestEnvironment::postgres());
         $probe = static fn (): mixed => $other->query('SELECT id FROM qb_test WHERE id = 1 FOR UPDATE NOWAIT')->fetch();
 
         foreach (['first', 'exists'] as $method) {
@@ -184,7 +171,7 @@ class PostgresQueryBuilderTest extends TestCase
                 $probe();
                 $this->fail("Expected the probe to fail while the row is locked via {$method}()");
             } catch (QueryException $e) {
-                $this->assertSame('55P03', $e->getPrevious()?->errorInfo[0] ?? null, 'lock_not_available: the row is locked');
+                $this->assertSame('55P03', $this->errorInfoBehind($e, 0), 'lock_not_available: the row is locked');
             } finally {
                 $other->rollback();
             }

@@ -21,6 +21,7 @@ use Sodaho\PdoWrapper\Exception\CommitHookException;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Exception\TransactionException;
 use Sodaho\PdoWrapper\Tests\Integration\TransactionEnd\ScenarioPdo;
+use Sodaho\PdoWrapper\Tests\Support\Fetched;
 use Throwable;
 
 class TransactionTest extends TestCase
@@ -418,6 +419,7 @@ class TransactionTest extends TestCase
         $this->db->rollback();
 
         $user = $this->db->findOne('users', ['id' => 1]);
+        $this->assertNotNull($user);
         $this->assertSame('Max', $user['name']);
     }
 
@@ -586,7 +588,7 @@ class TransactionTest extends TestCase
         // SQLite keeps the transaction open after a rejected COMMIT; the wrapper rolls it back.
         $this->assertSame(['rollback'], $events);
         $this->assertFalse($this->db->getPdo()->inTransaction());
-        $this->assertSame(0, (int) $this->db->query('SELECT COUNT(*) AS c FROM children')->fetch()['c']);
+        $this->assertSame(0, $this->rowCount($this->db, 'children'));
     }
 
     public function testCommitReturningFalseIsATransactionException(): void
@@ -612,7 +614,7 @@ class TransactionTest extends TestCase
 
         $this->assertSame(['rollback'], $events);
         $this->assertFalse($this->db->getPdo()->inTransaction());
-        $this->assertSame(0, (int) $this->db->query('SELECT COUNT(*) AS c FROM children')->fetch()['c']);
+        $this->assertSame(0, $this->rowCount($this->db, 'children'));
     }
 
     public function testAllCommitListenersRunAndFailuresKeepListenerOrder(): void
@@ -1059,6 +1061,14 @@ class TransactionTest extends TestCase
 
     private function userCount(DatabaseInterface $db): int
     {
-        return (int) $db->query('SELECT COUNT(*) AS c FROM users')->fetch()['c'];
+        return $this->rowCount($db, 'users');
+    }
+
+    private function rowCount(DatabaseInterface $db, string $table): int
+    {
+        $row = $db->query('SELECT COUNT(*) AS c FROM ' . $table)->fetch();
+        $this->assertIsArray($row);
+
+        return Fetched::int($row['c']);
     }
 }

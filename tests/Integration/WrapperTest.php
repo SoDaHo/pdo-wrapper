@@ -41,6 +41,7 @@ class WrapperTest extends TestCase
         $stmt = $this->db->query('SELECT * FROM users WHERE name = ?', ['Max']);
         $result = $stmt->fetch();
 
+        $this->assertIsArray($result);
         $this->assertSame('Max', $result['name']);
         $this->assertSame('max@example.com', $result['email']);
     }
@@ -74,7 +75,7 @@ class WrapperTest extends TestCase
             $this->db->query('INVALID SQL');
         } catch (QueryException $e) {
             $this->assertSame('Query failed', $e->getMessage());
-            $this->assertStringContainsString('INVALID SQL', $e->getDebugMessage());
+            $this->assertStringContainsString('INVALID SQL', $e->getDebugMessage() ?? '');
             return;
         }
 

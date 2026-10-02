@@ -62,9 +62,10 @@ class SqliteDriverTest extends TestCase
 
     public function testExplicitMemoryPath(): void
     {
-        $driver = new SqliteDriver(':memory:');
+        // Nothing to compare: the connection has to open without throwing
+        $this->expectNotToPerformAssertions();
 
-        $this->assertNotNull($driver->getPdo());
+        new SqliteDriver(':memory:');
     }
 
     /**
@@ -97,7 +98,7 @@ class SqliteDriverTest extends TestCase
             new SqliteDriver('/nonexistent/directory/test.db');
         } catch (ConnectionException $e) {
             $this->assertSame('Database connection failed', $e->getMessage());
-            $this->assertStringContainsString('SQLite', $e->getDebugMessage());
+            $this->assertStringContainsString('SQLite', $e->getDebugMessage() ?? '');
             return;
         }
 

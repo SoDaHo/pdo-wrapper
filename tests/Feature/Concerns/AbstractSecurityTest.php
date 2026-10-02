@@ -111,9 +111,11 @@ abstract class AbstractSecurityTest extends TestCase
 
         // Only the target user should be affected
         $admin = $this->db->table('users')->where('name', 'Admin')->first();
+        $this->assertNotNull($admin);
         $this->assertSame('admin', $admin['role']); // Still admin
 
         $user = $this->db->table('users')->where('name', 'User')->first();
+        $this->assertNotNull($user);
         $this->assertSame($maliciousRole, $user['role']); // Literal string, not executed
     }
 
@@ -332,6 +334,7 @@ abstract class AbstractSecurityTest extends TestCase
         $this->db->insert('users', ['name' => '', 'email' => 'empty@example.com']);
 
         $user = $this->db->table('users')->where('email', 'empty@example.com')->first();
+        $this->assertNotNull($user);
         $this->assertSame('', $user['name']);
     }
 
@@ -344,6 +347,7 @@ abstract class AbstractSecurityTest extends TestCase
         ]);
 
         $user = $this->db->table('users')->where('name', 'NullTest')->first();
+        $this->assertNotNull($user);
         $this->assertNull($user['role']);
     }
 
@@ -570,27 +574,25 @@ abstract class AbstractSecurityTest extends TestCase
 
     public function testValidOperatorsWork(): void
     {
+        // Nothing to compare: every statement below has to run without throwing
+        $this->expectNotToPerformAssertions();
+
         // Test comparison operators on integer column
         $comparisonOperators = ['=', '!=', '<>', '<', '>', '<=', '>='];
 
         foreach ($comparisonOperators as $operator) {
-            // Should not throw
-            $result = $this->db->table('users')
+            $this->db->table('users')
                 ->where('id', $operator, 1)
                 ->get();
-
-            $this->assertIsArray($result);
         }
 
         // Test LIKE operators on string column (PostgreSQL doesn't support LIKE on integers)
         $likeOperators = ['LIKE', 'NOT LIKE'];
 
         foreach ($likeOperators as $operator) {
-            $result = $this->db->table('users')
+            $this->db->table('users')
                 ->where('name', $operator, '%Admin%')
                 ->get();
-
-            $this->assertIsArray($result);
         }
     }
 
@@ -606,7 +608,7 @@ abstract class AbstractSecurityTest extends TestCase
 
                 $this->fail("Expected exception for invalid operator: {$operator}");
             } catch (\Sodaho\PdoWrapper\Exception\QueryException $e) {
-                $this->assertStringContainsString('Invalid operator', $e->getDebugMessage());
+                $this->assertStringContainsString('Invalid operator', $e->getDebugMessage() ?? '');
             }
         }
     }
@@ -621,11 +623,12 @@ abstract class AbstractSecurityTest extends TestCase
             $this->db->table('users')->update(['role' => 'admin']);
             $this->fail('Update without WHERE should throw exception');
         } catch (\Sodaho\PdoWrapper\Exception\QueryException $e) {
-            $this->assertStringContainsString('safety check', $e->getDebugMessage());
+            $this->assertStringContainsString('safety check', $e->getDebugMessage() ?? '');
         }
 
         // All users should still have original roles
         $admin = $this->db->table('users')->where('name', 'Admin')->first();
+        $this->assertNotNull($admin);
         $this->assertSame('admin', $admin['role']);
     }
 
@@ -635,7 +638,7 @@ abstract class AbstractSecurityTest extends TestCase
             $this->db->table('users')->delete();
             $this->fail('Delete without WHERE should throw exception');
         } catch (\Sodaho\PdoWrapper\Exception\QueryException $e) {
-            $this->assertStringContainsString('safety check', $e->getDebugMessage());
+            $this->assertStringContainsString('safety check', $e->getDebugMessage() ?? '');
         }
 
         // All users should still exist
@@ -649,7 +652,7 @@ abstract class AbstractSecurityTest extends TestCase
             $this->db->update('users', ['role' => 'admin'], []);
             $this->fail('Direct update with empty WHERE should throw exception');
         } catch (\Sodaho\PdoWrapper\Exception\QueryException $e) {
-            $this->assertStringContainsString('safety check', $e->getDebugMessage());
+            $this->assertStringContainsString('safety check', $e->getDebugMessage() ?? '');
         }
     }
 
@@ -659,7 +662,7 @@ abstract class AbstractSecurityTest extends TestCase
             $this->db->delete('users', []);
             $this->fail('Direct delete with empty WHERE should throw exception');
         } catch (\Sodaho\PdoWrapper\Exception\QueryException $e) {
-            $this->assertStringContainsString('safety check', $e->getDebugMessage());
+            $this->assertStringContainsString('safety check', $e->getDebugMessage() ?? '');
         }
     }
 }

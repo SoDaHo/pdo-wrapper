@@ -11,6 +11,7 @@ use Sodaho\PdoWrapper\Driver\SqliteDriver;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Query\QueryBuilder;
 use Sodaho\PdoWrapper\Query\RawExpression;
+use Sodaho\PdoWrapper\Tests\Support\Recorder;
 
 /**
  * The SQL the builder renders per dialect, without executing it: IS / IS NOT, OFFSET without LIMIT, row locks.
@@ -157,13 +158,9 @@ class QueryBuilderDialectTest extends TestCase
     {
         $db = Database::sqlite(':memory:');
         $db->execute('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)');
-        $rendered = [];
-        $db->on('query', static function (array $context) use (&$rendered): void {
-            $rendered[] = (string) $context['sql'];
-        });
-        $db->on('error', static function (array $context) use (&$rendered): void {
-            $rendered[] = (string) $context['sql'];
-        });
+        $rendered = new Recorder(static fn (array $context): string => (string) $context['sql']);
+        $db->on('query', $rendered);
+        $db->on('error', $rendered);
 
         // MySQL dialect over SQLite: the statement is rendered; whether SQLite accepts DELETE ... LIMIT depends on its build
         try {
@@ -171,35 +168,35 @@ class QueryBuilderDialectTest extends TestCase
         } catch (QueryException) {
             // SQLite without SQLITE_ENABLE_UPDATE_DELETE_LIMIT
         }
-        $this->assertSame(['DELETE FROM `users` WHERE `id` > ? ORDER BY `id` ASC LIMIT 2'], $rendered);
-        $rendered = [];
+        $this->assertSame(['DELETE FROM `users` WHERE `id` > ? ORDER BY `id` ASC LIMIT 2'], $rendered->all());
+        $rendered->clear();
         try {
             (new QueryBuilder($db, 'users', '`', QueryBuilder::DIALECT_MYSQL))->where('id', '>', 5)->limit(3)->delete();
         } catch (QueryException) {
         }
-        $this->assertSame(['DELETE FROM `users` WHERE `id` > ? LIMIT 3'], $rendered, 'orderBy() is optional');
+        $this->assertSame(['DELETE FROM `users` WHERE `id` > ? LIMIT 3'], $rendered->all(), 'orderBy() is optional');
 
         foreach ([QueryBuilder::DIALECT_SQLITE, QueryBuilder::DIALECT_PGSQL, QueryBuilder::DIALECT_ANSI] as $dialect) {
-            $rendered = [];
+            $rendered->clear();
             try {
                 (new QueryBuilder($db, 'users', '"', $dialect))->where('id', '>', 5)->orderBy('id')->limit(2)->delete();
                 $this->fail("Expected QueryException for dialect {$dialect}");
             } catch (QueryException $e) {
                 $this->assertStringContainsString("only MySQL/MariaDB support (dialect \"{$dialect}\")", $e->getDebugMessage() ?? '');
             }
-            $this->assertSame([], $rendered, 'nothing was executed');
+            $this->assertSame([], $rendered->all(), 'nothing was executed');
         }
 
         // update() with limit(): the same form, `UPDATE ... SET ... WHERE ... [ORDER BY ...] LIMIT n`, MySQL only
-        $rendered = [];
+        $rendered->clear();
         try {
             (new QueryBuilder($db, 'users', '`', QueryBuilder::DIALECT_MYSQL))->where('id', '>', 5)->orderBy('id', 'desc')->limit(2)->update(['name' => 'x']);
         } catch (QueryException) {
             // SQLite without SQLITE_ENABLE_UPDATE_DELETE_LIMIT
         }
-        $this->assertSame(['UPDATE `users` SET `name` = ? WHERE `id` > ? ORDER BY `id` DESC LIMIT 2'], $rendered);
+        $this->assertSame(['UPDATE `users` SET `name` = ? WHERE `id` > ? ORDER BY `id` DESC LIMIT 2'], $rendered->all());
         foreach ([QueryBuilder::DIALECT_SQLITE, QueryBuilder::DIALECT_PGSQL, QueryBuilder::DIALECT_ANSI] as $dialect) {
-            $rendered = [];
+            $rendered->clear();
             try {
                 (new QueryBuilder($db, 'users', '"', $dialect))->where('id', '>', 5)->limit(2)->update(['name' => 'x']);
                 $this->fail("Expected QueryException for dialect {$dialect}");
@@ -207,7 +204,7 @@ class QueryBuilderDialectTest extends TestCase
                 $this->assertSame('Update failed', $e->getMessage());
                 $this->assertStringContainsString("update() with limit() would need UPDATE ... LIMIT, which only MySQL/MariaDB support (dialect \"{$dialect}\")", $e->getDebugMessage() ?? '');
             }
-            $this->assertSame([], $rendered, 'nothing was executed');
+            $this->assertSame([], $rendered->all(), 'nothing was executed');
         }
 
         // still unsupported, also on MySQL: orderBy() without limit(), offset()
@@ -225,19 +222,19 @@ class QueryBuilderDialectTest extends TestCase
                 $this->assertStringContainsString('does not support', $e->getDebugMessage() ?? '', $name);
             }
         }
-        $this->assertSame([], $rendered, 'none of them reached the database');
+        $this->assertSame([], $rendered->all(), 'none of them reached the database');
         $this->assertSame(0, $mysql()->select(['name'])->where('id', 999)->delete(), 'select() is ignored on delete()');
         // a builder locked for a first() may be reused: distinct() and locks cannot change which rows are hit
-        $rendered = [];
+        $rendered->clear();
         $sqlite = static fn (): QueryBuilder => new QueryBuilder($db, 'users', '"', QueryBuilder::DIALECT_SQLITE);
         $this->assertSame(0, $sqlite()->where('id', 999)->lockForUpdate()->update(['name' => 'x']), 'a row lock is ignored on update()');
         $this->assertSame(0, $sqlite()->where('id', 999)->distinct()->sharedLock()->delete(), 'distinct() and a row lock are ignored on delete()');
-        $this->assertSame(['UPDATE "users" SET "name" = ? WHERE "id" = ?', 'DELETE FROM "users" WHERE "id" = ?'], $rendered);
+        $this->assertSame(['UPDATE "users" SET "name" = ? WHERE "id" = ?', 'DELETE FROM "users" WHERE "id" = ?'], $rendered->all());
 
         // an orderBy() direction that is not ASC/DESC (case and surrounding whitespace aside) used to
         // become ASC silently; now orderBy() itself refuses it, for selects and deletes alike
         foreach (['DESCENDING', 'down', 'DESC NULLS LAST', '', 'ASC;'] as $direction) {
-            $rendered = [];
+            $rendered->clear();
             foreach (['select' => $mysql(), 'delete' => $mysql()->where('id', '>', 0)->limit(1)] as $kind => $builder) {
                 try {
                     $builder->orderBy('id', $direction);
@@ -247,15 +244,15 @@ class QueryBuilderDialectTest extends TestCase
                     $this->assertSame(sprintf('Invalid orderBy() direction "%s" for "id". Allowed: ASC, DESC', $direction), $e->getDebugMessage());
                 }
             }
-            $this->assertSame([], $rendered);
+            $this->assertSame([], $rendered->all());
         }
         $this->assertSame('SELECT * FROM `users` ORDER BY `id` DESC', $mysql()->orderBy('id', ' Desc ')->toSql()[0], 'selects tolerate case and whitespace');
-        $rendered = [];
+        $rendered->clear();
         try {
             $mysql()->where('id', '>', 0)->orderBy('id', ' desc')->limit(1)->delete();
         } catch (QueryException) {
         }
-        $this->assertSame(['DELETE FROM `users` WHERE `id` > ? ORDER BY `id` DESC LIMIT 1'], $rendered, 'surrounding whitespace and case are tolerated');
+        $this->assertSame(['DELETE FROM `users` WHERE `id` > ? ORDER BY `id` DESC LIMIT 1'], $rendered->all(), 'surrounding whitespace and case are tolerated');
     }
 
     /**
@@ -307,9 +304,11 @@ class QueryBuilderDialectTest extends TestCase
         $this->assertSame(2, $driver->table('flags')->where('active', false)->count());
         $this->assertSame(2, $driver->query('SELECT COUNT(*) FROM flags WHERE note = :note', ['note' => false])->fetchColumn(), 'named parameters are converted too');
 
-        $flag = false;
-        $this->assertSame(2, $driver->query('SELECT COUNT(*) FROM flags WHERE active = ?', [&$flag])->fetchColumn());
-        $this->assertFalse($flag, 'a referenced parameter is not rewritten in the caller');
+        $caller = new class () {
+            public mixed $flag = false;
+        };
+        $this->assertSame(2, $driver->query('SELECT COUNT(*) FROM flags WHERE active = ?', [&$caller->flag])->fetchColumn());
+        $this->assertFalse($caller->flag, 'a referenced parameter is not rewritten in the caller');
     }
 
     public function testIsAndIsNotAreNullSafeEqualityPerDialect(): void
