@@ -2,6 +2,40 @@
 
 ## [Unreleased]
 
+### Added
+- `groupBy()` accepts `Database::raw()`, alone or inside the array, to group by an expression (`groupBy(Database::raw('DATE(created_at)'))`).
+- README: the table "Database Differences" lists what differs between MySQL/MariaDB, PostgreSQL and SQLite; SECURITY.md and the README name what the library cannot protect (parameters in logs, overridden PDO options, identifiers from request input without a whitelist).
+
+### Changed
+- `commit()` refuses a transaction the server has already ended: on PostgreSQL after a statement error that no savepoint caught (the server would answer `COMMIT` with a silent `ROLLBACK`), on MySQL/MariaDB after a deadlock, or - with autocommit, the default - a lock wait timeout under `innodb_rollback_on_timeout` (the `COMMIT` would succeed and commit nothing). It throws a `TransactionException` (`Failed to commit transaction`, `getPrevious()` is the statement's error) instead of sending the `COMMIT`: after a MySQL/MariaDB deadlock always, otherwise after asking the server with one probe statement, sent only when a statement failed in that transaction. While PDO still reports the transaction, `transaction()`/`updateMultiple()` roll back and `transaction.end` reports `rolled_back` (a manual `commit()` stays refused until `rollback()`). Before, a callback that swallowed such an error got `committed`. Failures on raw PDO are not seen; where nothing is left to roll back, the refusal itself reports `transaction.end` as `lost`: after a statement on raw PDO following a deadlock (committed on its own), and after a lock wait timeout that ended the transaction (later statements ran in autocommit).
+- After a MySQL/MariaDB deadlock the library accepts nothing on that connection but the end of the transaction: `query()` sends nothing and throws a `QueryException` (`getPrevious()` is the deadlock; no hook fires), because the statement would run outside the transaction and be committed on its own, and `beginTransaction()` refuses. PostgreSQL does the same by itself in an aborted transaction. `rollback()` ends it; a transaction begun through the library also when PDO no longer reports it (then as `lost`). A lock wait timeout holds nothing back.
+- A session with MySQL/MariaDB `completion_type=CHAIN` is reported instead of leaving the caller in a transaction nobody commits: after a commit as `CommitHookException` (first failure `Connection is in a new transaction`, commit hooks skipped, `connectionInTransaction` true), after a rollback as `TransactionException` once the rollback and end hooks ran (through the `error` hook where another exception reaches the caller). The message of `CommitHookException` names that case now (`..., the connection state after the commit could not be verified, or the connection is in a new chained transaction`).
+- MySQL/MariaDB connections switch multi-statements off by default; the driver option in `options` switches them back on.
+- Every `LIKE` / `NOT LIKE` of the builder is rendered as `LIKE ? ESCAPE ?` with the backslash bound, on every database, in `having()` and in join conditions too. `Database::escapeLike()` now also holds under MySQL's `NO_BACKSLASH_ESCAPES` and in `having()` on SQLite; `toSql()` returns one more parameter per `LIKE`.
+- A `QueryException` instead of a silently wrong result for: a parameter that is an array, a resource, an object without `__toString()` (PDO bound `Array` / `Resource id #n`; an object was a PHP `Error`) or a `Database::raw()` expression passed to `query()`/`execute()` (it was bound as its own text), also reported to the `error` hook with code 0; a negative `limit()` or `offset()`; `null` in `whereBetween()` / `whereNotBetween()` and in `having()` (except with `IS` / `IS NOT`); a numeric key in `where([...])` (was a `TypeError`).
+- A `ConnectionException` for a `port` that is not a whole number between 1 and 65535 (also from `DB_PORT`, where `abc` silently became the default port and `1e3` port 1000; surrounding whitespace is ignored) and for a SQLite path with a NUL byte.
+- With `PDO::ERRMODE_WARNING` and an error handler that throws, a failed statement arrives as `QueryException` and fires the `error` hook like in every other error mode, and a failed `lastInsertId()` as `QueryException` (both left the library as the handler's exception).
+
+### Upgrading
+What can break code that ran on 1.4:
+- a script that sends several statements in one `getPdo()->exec()` call on MySQL/MariaDB (switch multi-statements on in `options`);
+- code that takes SQL and parameters from `toSql()` and counts or rewrites them (one more parameter per `LIKE`);
+- input that was accepted before and throws now: negative limits, `null` bounds, unbindable parameters, an invalid `DB_PORT`;
+- a `transaction.end` listener or caller that saw `committed` for a transaction the server had ended: it sees a `TransactionException` and `rolled_back` or `lost` now;
+- a callback or an `error` hook that runs statements on the same connection after a MySQL/MariaDB deadlock: they throw until the rollback (give a database-logging hook its own connection);
+- code that caught the error handler's exception in `PDO::ERRMODE_WARNING`: a failed statement is a `QueryException` there too now;
+- statement auditing or a proxy that counts statements: after a failed statement inside a transaction, one probe statement precedes the `COMMIT` (`SELECT 1` on PostgreSQL; `DO 1` on MySQL/MariaDB unless the failure was a deadlock; none on SQLite);
+- a custom driver that binds streams overrides `unbindableParameter()`.
+
+### Fixed
+- A transaction that ended behind the library's back (an implicit commit by a MySQL DDL statement, a statement on raw PDO) and was followed by another `beginTransaction()` - also the one inside `updateMultiple()` or a nested `transaction()` - never got its `transaction.end`; the next transaction's `committed` could be taken for it. It is told as `lost` now, before the next transaction begins.
+- `insert()` returns the id of its own row when a `query` hook inserts on the same connection: the id is read before the hook runs.
+- A failing `lastInsertId()` inside a PostgreSQL transaction (an unknown sequence) is remembered like a failed statement: the commit is refused instead of rolling back silently.
+- PostgreSQL `insert()` reads the sequence in the table's own schema, quoted like the table (`"shop"."users_id_seq"`): a same-named table on the `search_path` no longer answers, and mixed-case table names get their id.
+- Aggregates no longer depend on the result key: with `PDO::ATTR_CASE` set, `count()` returned 0 and `sum()`/`min()`/`max()` null.
+- `distinct()->count()` no longer rejects two PostgreSQL columns whose names differ only in case.
+- The debug message of a failed query keeps its parameter list when a parameter is not valid UTF-8.
+
 ## [1.4.0] - 2026-10-01
 
 ### Added

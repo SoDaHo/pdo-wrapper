@@ -70,6 +70,8 @@ $db = Database::postgres([
 ]);
 ```
 
+`options` replace the library's PDO defaults, the security-relevant ones included: exceptions as error mode, native prepared statements (`PDO::ATTR_EMULATE_PREPARES => false`) and, on MySQL/MariaDB, multi-statements switched off. No statement of the library needs multi-statements; switched on, a string that reaches raw PDO (`getPdo()->exec()`) or an emulated prepare could carry a second statement. `Pdo\Mysql::ATTR_MULTI_STATEMENTS => true` (`PDO::MYSQL_ATTR_MULTI_STATEMENTS` before PHP 8.4) brings them back, for example for a migration that sends a whole file in one call. Set the connection charset with the `charset` key, never with `SET NAMES` at runtime: PDO's own escaping (emulated prepares, `PDO::quote()`) only knows the charset of the DSN. `port` must be a whole number between 1 and 65535, also when it comes from `DB_PORT` (an invalid value throws a `ConnectionException` instead of falling back to the default).
+
 ### SQLite
 
 ```php
@@ -155,6 +157,8 @@ $inserted = $db->insertWhen('codes', ['user_id' => 7, 'code' => 'abc'], 'NOT EXI
 
 Values are bound as prepared-statement parameters; a boolean arrives as `1`/`0` on every driver, so `['active' => false]` works in `insert()`, `update()` and `where()` alike (a text or binary column stores `'0'`; a MySQL `BIT` column does not store a bound `0`/`1` as bits, use `Database::raw('0')` or a `TINYINT(1)` column).
 
+A value must be `null`, a scalar or a `Stringable` object. An array, a resource or any other object (a `DateTime`, an enum) throws a `QueryException` before the statement is sent - PDO would store an array as the text `Array`. Pass `$date->format('Y-m-d H:i:s')`, `$enum->value`, `json_encode($array)`. This holds for every method and for `query()`/`execute()`. There, a `Database::raw()` expression as a parameter throws as well (it would be bound as its own text): write it into the SQL. A custom driver that binds more (a stream as LOB) overrides `unbindableParameter()` along with `bindAndExecute()`.
+
 ### Update
 
 ```php
@@ -194,7 +198,7 @@ $db->updateMultiple('users', [
 ], 'id');  // key column
 ```
 
-**Note:** This method executes one UPDATE query per row within a transaction. Best suited for batch sizes under ~100 rows. For larger datasets, consider using `execute()` with database-specific bulk update syntax (e.g., `INSERT ... ON DUPLICATE KEY UPDATE` for MySQL).
+A row that holds nothing but the key column is skipped (nothing to update). **Note:** This method executes one UPDATE query per row within a transaction. Best suited for batch sizes under ~100 rows. For larger datasets, consider using `execute()` with database-specific bulk update syntax (e.g., `INSERT ... ON DUPLICATE KEY UPDATE` for MySQL).
 
 ## Query Builder
 
@@ -289,6 +293,8 @@ $users = $db->table('users')
     ->get();
 ```
 
+The array form needs column names as keys; a list (`where(['active', 1])`) or a numeric column name as key throws a `QueryException` (use `where('2024', $value)` for the latter). `whereBetween()`/`whereNotBetween()` throw on a `null` bound: `BETWEEN` with NULL matches no row; an open range is a `where()` with `>=` or `<=`.
+
 `IS` and `IS NOT` with a bound value compare **null-safely**: `where('nick', 'IS NOT', 'anna')` also matches rows whose `nick` is NULL. The builder renders them in each database's own syntax (SQLite `IS`, MySQL/MariaDB `<=>`, PostgreSQL `IS NOT DISTINCT FROM`). With a raw value (`where('flag', 'IS', Database::raw('TRUE'))`) the SQL is passed through unchanged, so truth tests keep their database semantics. For a plain NULL test use `whereNull()` / `whereNotNull()`.
 
 `whereRaw()` takes a condition the other methods cannot express - an expression on the left, an OR group, a database function - with its values bound in order; it is joined to the other conditions with AND, in parentheses. The SQL is trusted developer code (never build it from user input; user input goes into the bindings):
@@ -336,7 +342,7 @@ $users = $db->table('users')
 
 The direction is `ASC` or `DESC` (any case, surrounding whitespace ignored); anything else (`'DESCENDING'`, `'down'`) throws a `QueryException` instead of silently sorting ascending.
 
-`offset()` works without `limit()` on every driver (MySQL/MariaDB and SQLite get the "no limit" value they require).
+`offset()` works without `limit()` on every driver (MySQL/MariaDB and SQLite get the "no limit" value they require). A negative `limit()` or `offset()` throws a `QueryException` (SQLite would read a negative limit as "no limit").
 
 ### Row Locks
 
@@ -361,7 +367,15 @@ $stats = $db->table('posts')
     ->groupBy('user_id')
     ->having(Database::raw('COUNT(*)'), '>', 5)
     ->get();
+
+// Group by an expression: Database::raw(), alone or inside the array
+$perDay = $db->table('orders')
+    ->select([Database::raw('DATE(created_at) AS day'), Database::raw('COUNT(*) AS orders')])
+    ->groupBy(Database::raw('DATE(created_at)'))
+    ->get();
 ```
+
+A string given to `groupBy()` (and `select()`) is split at commas into column names, so an expression belongs in `Database::raw()`. `having()` with `null` throws a `QueryException` (`= NULL` is never true) unless the operator is `IS` or `IS NOT`, the null-safe comparison.
 
 ### Aggregates
 
@@ -460,7 +474,7 @@ $db->table('sessions')->where('expires_at', '<', $db->now())->delete();
 
 "Local" is the database session's time zone; SQLite takes it from the operating system, not from PHP's `date.timezone`. When PHP and the database may run in different zones, `utcNow()` is the unambiguous choice. Both are **zoneless** values, meant for `DATETIME`, `TIMESTAMP WITHOUT TIME ZONE` or `TEXT` columns: a zone-aware column (PostgreSQL `TIMESTAMPTZ`, MySQL `TIMESTAMP`) would interpret `utcNow()` in the session's time zone and store a shifted instant unless the session runs in UTC.
 
-Any `Database::raw()` expression works the same way as a **value** in `insert()`, `update()`, `where()`, `whereIn()`, `whereBetween()` and `having()`, in the CRUD methods and in the query builder alike. It is inlined into the SQL instead of being bound, which allows expressions on the row itself (in `where()`, the automatic `ESCAPE '\'` clause of `LIKE` on PostgreSQL and SQLite applies to raw patterns too):
+Any `Database::raw()` expression works the same way as a **value** in `insert()`, `update()`, `where()`, `whereIn()`, `whereBetween()` and `having()`, in the CRUD methods and in the query builder alike. It is inlined into the SQL instead of being bound, which allows expressions on the row itself (the bound escape character of `LIKE`, see [LIKE Patterns with User Input](#like-patterns-with-user-input), applies to raw patterns too):
 
 ```php
 $db->update('counters', ['hits' => Database::raw('hits + 1')], ['id' => $id]);
@@ -537,9 +551,12 @@ try {
 - **The transaction cannot be started** (`BEGIN` fails, or a `transaction.begin` hook throws) - the callback does not run; after a throwing hook a rollback is attempted (best effort); the exception is re-thrown, a `PDOException` from the hook as `TransactionException`.
 - **The callback throws** - rollback attempted, the callback's exception is re-thrown unchanged. Best effort: if the rollback itself fails, the connection may still be in a transaction.
 - **The commit fails** - rollback attempted, `TransactionException` is thrown. The commit may or may not have taken effect (e.g. connection lost during `COMMIT`).
+- **The callback swallowed a statement error that ended the transaction on the server** - on PostgreSQL every statement error aborts the transaction (unless a savepoint caught it), on MySQL/MariaDB a deadlock rolls it back, and in both cases the server would answer `COMMIT` with success although nothing of the transaction is committed. The library therefore refuses to send that `COMMIT`: `TransactionException`, `getPrevious()` is the statement's error. The rollback follows (`transaction.end`: `rolled_back`), and a manual `commit()` stays refused until `rollback()`. After a MySQL/MariaDB deadlock the library accepts nothing on the connection but the end of that transaction: a statement would run outside of it and be committed on its own, so it throws a `QueryException` instead (`getPrevious()` is the deadlock; no hook fires for it) - what PostgreSQL does by itself in an aborted transaction - and `beginTransaction()` refuses. `rollback()` is the way out. Never carry on after a deadlock: let the exception end the transaction and run it again. After a failure other than a deadlock the library asks the server before it commits (one extra statement, only then). Raw PDO (`getPdo()`) is outside all of this: failures there are not seen, and a statement sent there after a deadlock is committed on its own - `commit()` is still refused, and with nothing left to roll back the refusal itself reports `transaction.end` as `lost`, on a manual `commit()` too. The same `lost` follows a swallowed lock wait timeout on a server that runs with `innodb_rollback_on_timeout`: nothing is held back after it, so later statements ran in autocommit, and the question to the server before the commit finds the transaction gone. After a deadlock, end the transaction with `rollback()`: for a transaction begun through the library it also works when PDO no longer reports it (nothing is sent, the end is `lost`), and a transaction ended and begun again on raw PDO stays refused, statements included, until `rollback()` is called. All of this describes autocommit, the default: with autocommit switched off, a statement after the transaction's end opens the next transaction instead of being committed on its own - after a deadlock the refusals hold all the same and the rollback undoes it; a swallowed lock wait timeout that ended the transaction is not detected there.
 - **A `transaction.commit` hook fails, or a `transaction.end` hook fails after the commit** (throws, or a commit hook leaves the connection in a state that cannot be verified or cleaned up) - the data **is committed**, the committed transaction is not rolled back (only what a commit hook left open is, raw), `CommitHookException` is thrown (see [Hooks](#hooks)). On the rollback and `lost` paths an end hook's failure never replaces the exception that ended the transaction.
 
 With a manual `commit()`, a failing commit hook likewise throws `CommitHookException` after the commit: the committed transaction cannot be rolled back and must not be retried. `$e->connectionInTransaction` is a fail-closed snapshot taken after the commit hooks and before the end hooks: `true` means a transaction a commit hook left open could not be cleaned up, or the connection state could not be read, so check `inTransaction()` again and roll back, or discard the connection; what an end hook leaves open is not checked.
+
+A session that chains transactions (MySQL/MariaDB `completion_type=CHAIN`) is not supported: every `COMMIT` and `ROLLBACK` opens the next transaction, which nobody would commit. The library reports it instead of continuing silently: after a commit as `CommitHookException` (first failure `Connection is in a new transaction`, commit hooks skipped, `connectionInTransaction` true), after a rollback as `TransactionException` once the rollback and end hooks ran (through the `error` hook instead where another exception reaches you: the callback's on the automatic rollback in `transaction()`, or a rollback hook's). The hooks of such a commit or rollback already run inside the chained transaction.
 
 ## Hooks
 
@@ -549,7 +566,7 @@ Register callbacks for query logging, debugging, or monitoring:
 // Log all queries
 $db->on('query', function (array $data) {
     echo "SQL: {$data['sql']}\n";
-    echo "Params: " . json_encode($data['params']) . "\n";
+    echo "Params: " . count($data['params']) . "\n"; // the values themselves may be secrets, see below
     echo "Duration: {$data['duration']}s\n";
     echo "Rows: {$data['rows']}\n";
 });
@@ -570,13 +587,16 @@ $db->on('transaction.end', function (array $data) use ($pending) {
 });
 ```
 
-`transaction.end` fires exactly once for every transaction the library ends, after the `transaction.commit` or `transaction.rollback` listeners, with `['outcome' => ..., 'error' => ?Throwable]`. `rolled_back` carries the exception that ended the transaction (null after a manual `rollback()`). `lost` is the case the rollback listeners never see: the library could not confirm a rollback, because the connection was lost, the raw cleanup of a commit hook's transaction did not end it (MySQL `completion_type=CHAIN`), PDO no longer reported the transaction, the connection state could not be read, or the commit failed and so did the rollback after it (then the data may be committed, fail-closed, and `error` is the commit's exception: PostgreSQL lands here when `COMMIT` fails on a deferred constraint, although the server rolled back, but so does a callback that committed itself with a raw `COMMIT` or a MySQL DDL statement, and then the data is committed). The connection may be gone, so listeners must not expect queries to work. If the transaction may in fact still be open, end it with `rollback()` or discard the connection: that `rollback()` runs the rollback listeners but tells no second end. Ending it on raw PDO instead leaves that mark in place: a transaction then begun on raw PDO and ended through the library tells no end (`beginTransaction()` clears the mark). All end listeners run; their failures land in `CommitHookException::$failures` after a commit (behind the commit listeners' failures: first the ends of transactions commit listeners left open, then the committed transaction's end), as `TransactionException` after a manual `rollback()` (unless a rollback listener threw: that exception wins), and only in the `error` hook (with `hook`, `outcome` and `exception` keys; a throwing `error` listener is ignored there) after the automatic rollback in `transaction()`/`updateMultiple()` and on a `lost` reported there, so the exception that ended the transaction reaches you unchanged. A failed manual `commit()` or `rollback()` fires nothing: that transaction is still yours to end. A transaction a commit listener starts through the library and leaves open is rolled back without rollback hooks but with its own `transaction.end` (after all commit listeners, before the outer end); one a rollback or end listener leaves open is not checked. Do not swallow database errors inside `transaction()` without a savepoint: on PostgreSQL the `COMMIT` of an aborted transaction is a silent `ROLLBACK`, and both `transaction.commit` and `transaction.end` would report `committed`.
+`transaction.end` fires exactly once for every transaction the library ends, after the `transaction.commit` or `transaction.rollback` listeners, with `['outcome' => ..., 'error' => ?Throwable]`. `rolled_back` carries the exception that ended the transaction (null after a manual `rollback()`). `lost` is the case the rollback listeners never see: the library could not confirm a rollback, because the connection was lost, the raw cleanup of a commit hook's transaction did not end it (MySQL `completion_type=CHAIN`), PDO no longer reported the transaction, the connection state could not be read, or the commit failed and so did the rollback after it (then the data may be committed, fail-closed, and `error` is the commit's exception: PostgreSQL lands here when `COMMIT` fails on a deferred constraint, although the server rolled back, but so does a callback that committed itself with a raw `COMMIT` or a MySQL DDL statement, and then the data is committed). The connection may be gone, so listeners must not expect queries to work. If the transaction may in fact still be open, end it with `rollback()` or discard the connection: that `rollback()` runs the rollback listeners but tells no second end. Ending it on raw PDO instead leaves that mark in place: a transaction then begun on raw PDO and ended through the library tells no end (`beginTransaction()` clears the mark). All end listeners run; their failures land in `CommitHookException::$failures` after a commit (behind the commit listeners' failures: first the ends of transactions commit listeners left open, then the committed transaction's end), as `TransactionException` after a manual `rollback()` (unless a rollback listener threw: that exception wins), and only in the `error` hook (with `hook`, `outcome` and `exception` keys; a throwing `error` listener is ignored there) after the automatic rollback in `transaction()`/`updateMultiple()` and on a `lost` reported there, so the exception that ended the transaction reaches you unchanged. A failed manual `commit()` or `rollback()` fires nothing: that transaction is still yours to end (one exception: a refused commit of a transaction PDO no longer reports tells `lost`, because nothing could end it afterwards). A transaction a commit listener starts through the library and leaves open is rolled back without rollback hooks but with its own `transaction.end` (after all commit listeners, before the outer end); one a rollback or end listener leaves open is not checked. A commit the library refuses (see [Transactions](#transactions): a swallowed statement error on PostgreSQL, a swallowed deadlock on MySQL/MariaDB) ends as `rolled_back`, or as `lost` when nothing was left to roll back (MySQL/MariaDB with autocommit, the default: after statements on raw PDO following a deadlock, or after a lock wait timeout that ended the transaction), never as `committed`. An `error` hook that writes to the database after a failed statement needs its own connection: on PostgreSQL every statement in an aborted transaction fails, and after a MySQL/MariaDB deadlock the library sends none.
 
-For `query`, `error` and `transaction.begin`, a throwing hook stops the remaining hooks of its event and its exception reaches the caller (a `PDOException` from a `query` hook arrives as `QueryException` with the message `Query hook failed`: the statement did run and no `error` hook fires); after a throwing `transaction.begin` hook a rollback of the transaction it was told about is attempted first (best effort, directly and without `transaction.rollback` hooks; if that rollback fails, the transaction may still be open). A throwing `transaction.rollback` hook does the same on a manual `rollback()`, but is ignored during the automatic rollback in `transaction()` and `updateMultiple()` (the original exception is re-thrown). `transaction.commit` hooks run after the commit and cannot undo it, so they work differently:
+**Parameters are secrets.** The `query` and `error` payloads carry the SQL and the parameters exactly as passed - password hashes, tokens, personal data - and `QueryException::getDebugMessage()` contains both as well. Never write them to a log or an error page unredacted: log the SQL and the error, and of the parameters at most their number or a whitelisted subset. The `error` hook also fires (with `code` 0) for a parameter that must not be bound.
+
+For `query`, `error` and `transaction.begin`, a throwing hook stops the remaining hooks of its event and its exception reaches the caller (a `PDOException` from a `query` hook arrives as `QueryException` with the message `Query hook failed`: the statement did run and no `error` hook fires); after a throwing `transaction.begin` hook a rollback of the transaction it was told about is attempted first (best effort, directly and without `transaction.rollback` hooks; if that rollback fails, the transaction may still be open). A throwing `transaction.rollback` hook does the same on a manual `rollback()`, but is ignored during the automatic rollback in `transaction()` and `updateMultiple()` (the original exception is re-thrown). A throwing `error` hook therefore replaces the `QueryException` of the failed statement. `insert()` reads the new id before the `query` hooks run, so a hook may itself insert on the same connection. `on()` accepts any event name (a custom driver may trigger its own): a misspelled name never fires. `transaction.commit` hooks run after the commit and cannot undo it, so they work differently:
 
 - **All of them run**, even if one throws (only exception: see the last point). Keep them independent: steps that depend on each other belong in one hook.
 - **Failures are reported together** as `CommitHookException`: `getPrevious()` is the first failure, `$e->failures` lists all of them in hook order.
 - **A transaction a hook leaves open** is rolled back before the next hook runs - directly, without `transaction.rollback` hooks - and reported as a `LogicException`. If that rollback fails or does not end the transaction (MySQL `completion_type=CHAIN` opens the next one), or the connection state cannot be read, the remaining hooks are skipped, listed as failures, and `$e->connectionInTransaction` is `true`: the connection is, or may still be, in a transaction (an unreadable state counts as `true`, fail-closed). Do not continue on that connection as if it were in autocommit: check `$db->inTransaction()` and roll back, or discard the connection.
+- **A hook that commits a transaction itself** (a `transaction()` inside a commit hook) runs every commit hook again for that inner commit, itself included: guard against the recursion.
 
 ## Exceptions
 
@@ -613,11 +633,12 @@ try {
 try {
     $db->transaction(fn($db) => $db->insert('users', ['name' => 'John']));
 } catch (CommitHookException $e) {
-    // Committed, but a transaction.commit or transaction.end hook failed, or the connection
-    // state after a commit hook could not be verified or cleaned up: do not retry
+    // Committed, but a transaction.commit or transaction.end hook failed, the connection state
+    // after the commit could not be verified or cleaned up, or the session chained a new
+    // transaction to the COMMIT: do not retry
     $firstFailure = $e->getPrevious(); // all of them: $e->failures
     if ($e->connectionInTransaction) {
-        // a transaction a commit hook left open may still be open: check inTransaction(), roll back or discard the connection
+        // a transaction a commit hook left open (or a chained one) may be open: check inTransaction(), roll back or discard the connection
     }
 } catch (TransactionException $e) {
     // Begin or commit failed; a failed commit may or may not have taken effect
@@ -625,7 +646,7 @@ try {
 // An exception thrown by the callback itself is re-thrown unchanged after the rollback.
 ```
 
-`CommitHookException` means the data is committed; a hook failed or the connection state could not be verified or cleaned up after a hook. It extends `DatabaseException`, not `TransactionException`: a broad `catch (DatabaseException)` also sees committed data, so catch `CommitHookException` first where that matters.
+`CommitHookException` means the data is committed; a hook failed, the connection state could not be verified or cleaned up after a hook, or the connection was in a new transaction right after the commit (MySQL/MariaDB `completion_type=CHAIN`: no commit hook ran). It extends `DatabaseException`, not `TransactionException`: a broad `catch (DatabaseException)` also sees committed data, so catch `CommitHookException` first where that matters.
 
 **Upgrading from 1.0:** a failing `transaction.commit` hook used to surface as its own exception (a `PDOException` from a hook even as `TransactionException`); it now arrives as `CommitHookException` with the hook's exception as `getPrevious()`.
 
@@ -643,6 +664,28 @@ $db->insert('mydb.users', ['name' => 'John']);
 $db->table('mydb.users')->where('id', 1)->first();
 ```
 
+## Database Differences
+
+The same call gives the same result on every database wherever the databases allow it. Where they do not, the library throws instead of doing something else silently. What differs:
+
+| | MySQL / MariaDB | PostgreSQL | SQLite |
+|---|---|---|---|
+| Identifier quoting | backticks | double quotes (names are case-sensitive) | backticks |
+| `update()` / `delete()` with `limit()` | `ORDER BY ... LIMIT n` | throws | throws |
+| `lockForUpdate()` / `sharedLock()` | `FOR UPDATE` / `LOCK IN SHARE MODE` | `FOR UPDATE` / `FOR SHARE` | omitted (one write lock per file) |
+| `insert()` returns | the `AUTO_INCREMENT` id, as a string | the value of `{table}_id_seq` as an integer, 0 without that sequence | the rowid, as a string |
+| `insertWhen()` | `... FROM DUAL WHERE` | `... WHERE` | `... WHERE` |
+| `IS` / `IS NOT` with a value | `<=>` | `IS [NOT] DISTINCT FROM` | `IS` / `IS NOT` |
+| Select alias in `having()` | allowed | rejected by the database | allowed |
+| Booleans as parameters | `'1'` / `'0'` | `'1'` / `'0'` | `1` / `0` (integer) |
+| Integers as parameters | sent as text, converted by the server | sent as text, typed by the server | integer |
+| Floats as parameters | sent as text, converted by the server | sent as text, typed by the server (an integer column rejects `1.5`) | text: a column converts it, an expression (`price * 2 > ?`, `HAVING SUM(price) > ?`) does not - write `CAST(? AS REAL)` in `whereRaw()`; `having()` has no place for it, use a raw query there |
+| A failed statement inside a transaction | only the statement is undone, except where the server ends the transaction: after a deadlock the library accepts nothing but `rollback()` (statements, `beginTransaction()` and `commit()` are refused); after a lock wait timeout under `innodb_rollback_on_timeout` later statements run in autocommit and `commit()` refuses (not detected with autocommit switched off) | aborts the transaction (unless a savepoint caught it): every later statement fails, `commit()` refuses | only the statement is undone (unless the statement itself asks for more: `ON CONFLICT ROLLBACK`) |
+| DDL inside a transaction | commits it implicitly (`transaction()` reports `lost`) | transactional | transactional |
+| `now()` / `utcNow()` | `NOW()` / `UTC_TIMESTAMP()` | `statement_timestamp()`, cast to seconds | `datetime('now', 'localtime')` / `datetime('now')` |
+
+Everything else - `where*()`, joins, `orderBy()`, `limit()`/`offset()`, `groupBy()`/`having()`, aggregates, `LIKE` with its bound escape character, CRUD methods, transactions and hooks - is rendered so that the same call means the same on all three; the test suite runs the same scenarios against MySQL 8.0/8.4, MariaDB 10.11/11.4, PostgreSQL 15-17 and SQLite.
+
 ## Security
 
 This library protects against SQL injection through:
@@ -650,7 +693,10 @@ This library protects against SQL injection through:
 - **Prepared statements** for all values (WHERE, INSERT, UPDATE) - the one exception is a `Database::raw()` expression given as a value, which is inlined by design
 - **Identifier quoting** for all column and table names
 - **Operator whitelist** validation (only `=`, `!=`, `<>`, `<`, `>`, `<=`, `>=`, `LIKE`, `NOT LIKE`, `IS`, `IS NOT`)
-- **Connection values that cannot redirect the connection**: `host`, `database` and (MySQL) `charset` are rejected with a `ConnectionException` before connecting if they contain a `;` (PDO's DSN separator) or NUL; PostgreSQL values are additionally quoted the libpq way, because libpq would otherwise treat a space inside a value (`app host=evil`) as the start of another parameter
+- **Connection values that cannot redirect the connection**: `host`, `database` and (MySQL) `charset` are rejected with a `ConnectionException` before connecting if they contain a `;` (PDO's DSN separator) or NUL; PostgreSQL values are additionally quoted the libpq way, because libpq would otherwise treat a space inside a value (`app host=evil`) as the start of another parameter; `port` must be a whole number between 1 and 65535, and a SQLite path with a NUL byte (which would cut the path short) is rejected
+- **No multi-statements on MySQL/MariaDB** by default (see [Connection Options](#connection-options))
+
+What it cannot protect: the SQL you pass yourself (`query()`, `execute()`, `whereRaw()`, `insertWhen()` conditions, `Database::raw()`), the PDO options you override, and what you do with the parameters in hooks and exception messages (see [Hooks](#hooks): parameters are secrets).
 
 ### Raw Expressions
 
@@ -674,10 +720,10 @@ $db->table('users')
 
 ### User Input in Column Names
 
-Column names are safely quoted against SQL injection, but you should still validate user input to provide meaningful error messages instead of database errors:
+Column names are safely quoted against SQL injection, but quoting only makes a name safe as SQL, not as a decision: whoever chooses the column decides what is read, filtered or sorted by (`select($_GET['fields'])` would hand out `password_hash`, `where($_GET['field'], ...)` would search it). The whitelist is the authorization boundary, and it gives meaningful error messages instead of database errors:
 
 ```php
-// ✅ RECOMMENDED - Whitelist for better error handling
+// ✅ REQUIRED for names from request input - the whitelist decides what may be asked
 $allowedColumns = ['id', 'name', 'email', 'created_at'];
 $column = $_GET['column'];
 
@@ -688,7 +734,7 @@ if (!in_array($column, $allowedColumns, true)) {
 $db->table('users')->orderBy($column)->get();
 ```
 
-This applies to `select()`, `orderBy()`, `groupBy()`, and `join()`. The same goes for a sort direction from request input: `orderBy()` throws on anything but `ASC`/`DESC`, so map the input to one of the two first.
+This applies to `select()`, `where*()`, `orderBy()`, `groupBy()`, and `join()`, and to table names. The same goes for a sort direction from request input: `orderBy()` throws on anything but `ASC`/`DESC`, so map the input to one of the two first.
 
 ### LIKE Patterns with User Input
 
@@ -704,6 +750,8 @@ $db->table('products')
     ->get();
 // Matches "Rabatt: 100%" but NOT "1000" or "10099"
 ```
+
+The builder renders every `LIKE` and `NOT LIKE` (`whereLike()`, `whereNotLike()`, and `where()`, `having()` and `join()` with the operator) as `LIKE ? ESCAPE ?` and binds the backslash as the escape character. The escape character therefore does not depend on the engine or its SQL mode (MySQL's `NO_BACKSLASH_ESCAPES` would otherwise turn the escaped `%` back into a wildcard), and `toSql()` returns one more parameter per `LIKE`. A `LIKE` you write yourself in `whereRaw()` or a raw query gets no escape clause: add `ESCAPE ?` and bind `'\\'` there.
 
 ## Limitations
 
@@ -732,7 +780,11 @@ This library is designed for simple, common use cases. The following features ar
 
 - **NULL in where()** - `where('column', null)` throws an exception because `column = NULL` is always false in SQL. Use `whereNull()` or `whereNotNull()` instead.
 
-- **PostgreSQL primary key convention** - `insert()` assumes the primary key column is named `id` and reads it from the `{table}_id_seq` sequence: for a table without that sequence it returns 0, and for a row inserted with an explicit `id` it returns 0 or, after an earlier sequence-based insert on the same connection, that earlier value. For custom PK names or explicit ids, use a raw query with `RETURNING`:
+- **Aliases** - `'column as alias'` renders the alias as written, unquoted: it must be a plain word (letters, digits, underscore), PostgreSQL folds it to lower case, and a reserved word fails. Quote it yourself in a `Database::raw()` entry if you need one.
+
+- **Builder clauses on `insert()`** - `table('t')->where(...)->insert($row)` inserts the row and ignores the clauses; use `insertWhen()` for a conditional insert (there, clauses throw).
+
+- **PostgreSQL primary key convention** - `insert()` assumes the primary key column is named `id` and reads it from the `{table}_id_seq` sequence in the table's schema: for a table without that sequence it returns 0, and for a row inserted with an explicit `id` it returns 0 or, after an earlier sequence-based insert on the same connection, that earlier value (with persistent connections that may be a value from an earlier request). A table name so long that PostgreSQL shortened the sequence name is not found either. For custom PK names or explicit ids, use a raw query with `RETURNING`:
   ```php
   $stmt = $db->query('INSERT INTO users (name) VALUES (?) RETURNING user_id', ['John']);
   $userId = $stmt->fetch()['user_id'];
@@ -753,12 +805,13 @@ These limitations keep the QueryBuilder simple and predictable. For complex quer
 composer install
 
 # Run SQLite tests only (no Docker needed)
-./vendor/bin/phpunit --exclude-group mysql,postgres
+./vendor/bin/phpunit --exclude-group mysql --exclude-group postgres
 
 # Run full test suite (requires Docker)
-docker-compose up -d
+docker compose up -d
 ./vendor/bin/phpunit
-docker-compose down
+MYSQL_PORT=3307 ./vendor/bin/phpunit --group mysql   # the same MySQL tests against MariaDB
+docker compose down
 ```
 
 ## Acknowledgments
