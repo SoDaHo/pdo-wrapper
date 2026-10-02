@@ -94,6 +94,18 @@ class SqliteWorkflowTest extends AbstractWorkflowTest
         return ['unknownTable' => ['HY000', 1], 'duplicate' => ['23000', 19]];
     }
 
+    protected function deliveredAggregates(): array
+    {
+        // An integer sum stays an integer; every average is a float, and so is everything in a
+        // DECIMAL column: SQLite has no decimal type and stores 0.1 as a float.
+        return [
+            'small' => [3, 1.5],
+            'big' => [18014398509481986, 9007199254740992.0],
+            'price' => [0.1 + 0.2, (0.1 + 0.2) / 2],
+            'ratio' => [0.75, 0.375],
+        ];
+    }
+
     protected function uniqueConstraintNames(): array
     {
         return ['email' => null, 'primary' => null];

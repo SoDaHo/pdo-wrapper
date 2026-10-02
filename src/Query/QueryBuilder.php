@@ -880,32 +880,53 @@ class QueryBuilder
     }
 
     /**
-     * Get the sum of a column.
+     * Get the sum of a column, as the database delivers it.
+     *
+     * Not converted: a float would lose what the database computed exactly - a sum of BIGINT
+     * values above 2^53, a DECIMAL sum. MySQL/MariaDB send the sum of integer and DECIMAL columns
+     * as a numeric string ('75', '0.3000'); PostgreSQL sends an integer for a sum of INT columns
+     * and a numeric string for BIGINT and NUMERIC sums; SQLite sends an integer, or a float once
+     * a value is no integer (it has no decimal type). A FLOAT/DOUBLE column gives a float on
+     * every database. Cast where a number is wanted: (int), (float), or pass the string to an
+     * arbitrary-precision library.
      *
      * With distinct(): SUM(DISTINCT col). With groupBy() the value is ambiguous (one per group) and a
      * QueryException is thrown; the same holds for avg(), min() and max().
      *
      * @param string $column Column to sum
      *
-     * @return float|int|null Sum or null if no rows
+     * @return int|float|string|null The sum in the driver's native type, or null without a value
+     *                               (no rows, or only NULL)
      */
-    public function sum(string $column): float|int|null
+    public function sum(string $column): int|float|string|null
     {
-        $result = $this->aggregate('SUM', $column);
-        return is_numeric($result) ? (float)$result : null;
+        return self::numberAsDelivered($this->aggregate('SUM', $column));
     }
 
     /**
-     * Get the average of a column.
+     * Get the average of a column, as the database delivers it.
+     *
+     * MySQL/MariaDB and PostgreSQL send a numeric string whose number of decimals is the
+     * database's ('1.5000', '1.5000000000000000') and a float for a FLOAT/DOUBLE column; SQLite
+     * always sends a float. See sum().
      *
      * @param string $column Column to average
      *
-     * @return float|int|null Average or null if no rows
+     * @return int|float|string|null The average in the driver's native type, or null without a
+     *                               value (no rows, or only NULL)
      */
-    public function avg(string $column): float|int|null
+    public function avg(string $column): int|float|string|null
     {
-        $result = $this->aggregate('AVG', $column);
-        return is_numeric($result) ? (float)$result : null;
+        return self::numberAsDelivered($this->aggregate('AVG', $column));
+    }
+
+    /**
+     * What a driver returns for a numeric aggregate: an integer, a float or a numeric string -
+     * handed on as it is. Null for SQL NULL (no rows, or only NULL).
+     */
+    private static function numberAsDelivered(mixed $value): int|float|string|null
+    {
+        return is_int($value) || is_float($value) || is_string($value) ? $value : null;
     }
 
     /**

@@ -203,8 +203,8 @@ class PostgresQueryBuilderTest extends TestCase
         $this->assertSame(2, $this->db->table('qb_test')->distinct()->count('name'));
         $this->assertSame(2, $this->db->table('qb_test')->groupBy('name')->count());
         $this->assertSame(1, $this->db->table('qb_test')->groupBy('name')->having(Database::raw('COUNT(*)'), '>', 1)->count());
-        $this->assertSame(120.0, $this->db->table('qb_test')->sum('age'));
-        $this->assertSame(95.0, $this->db->table('qb_test')->distinct()->sum('age'));
+        $this->assertSame(120, $this->db->table('qb_test')->sum('age'));
+        $this->assertSame(95, $this->db->table('qb_test')->distinct()->sum('age'));
         // group keys from two tables: four users, one of them with a profile (the orphan profile is not in a LEFT JOIN)
         $this->assertSame(4, $this->db->table('qb_test')->leftJoin('qb_profiles', 'qb_test.id', '=', 'qb_profiles.user_id')->groupBy(['qb_test.id', 'qb_profiles.id'])->count());
         $this->assertSame(5, $this->db->table('qb_test')->rightJoin('qb_profiles', 'qb_test.id', '=', 'qb_profiles.user_id')->groupBy(['qb_test.id', 'qb_profiles.id'])->count() + 3, 'right join: one matched and one orphan profile');

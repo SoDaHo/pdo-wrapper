@@ -101,6 +101,18 @@ class MySqlWorkflowTest extends AbstractWorkflowTest
         return ['unknownTable' => ['42S02', 1146], 'duplicate' => ['23000', 1062]];
     }
 
+    protected function deliveredAggregates(): array
+    {
+        // Sums and averages of integer and DECIMAL columns are DECIMAL (a numeric string), those of
+        // a DOUBLE column are DOUBLE (a float).
+        return [
+            'small' => ['3', '1.5000'],
+            'big' => ['18014398509481986', '9007199254740993.0000'],
+            'price' => ['0.3000', '0.15000000'],
+            'ratio' => [0.75, 0.375],
+        ];
+    }
+
     protected function uniqueConstraintNames(): array
     {
         return ['email' => 'email', 'primary' => 'PRIMARY'];

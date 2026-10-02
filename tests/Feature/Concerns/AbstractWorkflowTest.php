@@ -55,6 +55,14 @@ abstract class AbstractWorkflowTest extends TestCase
     abstract protected function failureCodes(): array;
 
     /**
+     * What sum() and avg() deliver on this database for 1 + 2 in an INT column, twice 2^53 + 1 in
+     * a BIGINT column, 0.1 + 0.2 in a DECIMAL(20,4) column and 0.5 + 0.25 in a DOUBLE column.
+     *
+     * @return array<string, array{int|float|string, int|float|string}> [sum, avg] by column
+     */
+    abstract protected function deliveredAggregates(): array;
+
+    /**
      * Whether a later assignment of an UPDATE sees the value an earlier one of the same statement
      * set (MySQL/MariaDB: SET is evaluated left to right) or the row as it was (standard SQL:
      * PostgreSQL, SQLite).
@@ -774,6 +782,39 @@ abstract class AbstractWorkflowTest extends TestCase
         // Min/Max views
         $this->assertEquals(50, $this->db->table('posts')->where('user_id', $userId)->min('views'));
         $this->assertEquals(250, $this->db->table('posts')->where('user_id', $userId)->max('views'));
+    }
+
+    /**
+     * sum() and avg() hand on what the database computed, in the type its driver delivers - not
+     * a float that has lost what the database had exactly: a BIGINT sum above 2^53 on every
+     * database, a DECIMAL sum where the database has decimals.
+     */
+    public function testSumAndAvgArriveAsTheDatabaseDeliversThem(): void
+    {
+        $this->db->execute('DROP TABLE IF EXISTS agg_types');
+        $this->db->execute('CREATE TABLE agg_types (id INT PRIMARY KEY, small INT, big BIGINT, price DECIMAL(20,4), ratio DOUBLE PRECISION)');
+
+        try {
+            $this->assertNull($this->db->table('agg_types')->sum('small'), 'no rows: SQL NULL');
+            $this->assertNull($this->db->table('agg_types')->avg('small'), 'no rows: SQL NULL');
+
+            // 9007199254740993 is 2^53 + 1: no float holds it, nor twice it
+            $this->db->insert('agg_types', ['id' => 1, 'small' => 1, 'big' => 9007199254740993, 'price' => '0.1000', 'ratio' => 0.5]);
+            $this->db->insert('agg_types', ['id' => 2, 'small' => 2, 'big' => 9007199254740993, 'price' => '0.2000', 'ratio' => 0.25]);
+
+            $delivered = [];
+            foreach (['small', 'big', 'price', 'ratio'] as $column) {
+                $delivered[$column] = [
+                    $this->db->table('agg_types')->sum($column),
+                    $this->db->table('agg_types')->avg($column),
+                ];
+            }
+
+            $this->assertSame($this->deliveredAggregates(), $delivered);
+            $this->assertSame('18014398509481986', (string) $delivered['big'][0], 'the exact sum on every database');
+        } finally {
+            $this->db->execute('DROP TABLE IF EXISTS agg_types');
+        }
     }
 
     public function testGroupByWithHavingAndWhere(): void

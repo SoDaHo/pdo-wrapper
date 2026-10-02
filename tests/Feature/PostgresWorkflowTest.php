@@ -94,6 +94,18 @@ class PostgresWorkflowTest extends AbstractWorkflowTest
         return ['unknownTable' => ['42P01', 7], 'duplicate' => ['23505', 7]];
     }
 
+    protected function deliveredAggregates(): array
+    {
+        // The sum of an INT column is a BIGINT (an integer); the sum of a BIGINT column and every
+        // average of an exact type are NUMERIC (a numeric string); DOUBLE PRECISION stays a float.
+        return [
+            'small' => [3, '1.5000000000000000'],
+            'big' => ['18014398509481986', '9007199254740993.0000'],
+            'price' => ['0.3000', '0.15000000000000000000'],
+            'ratio' => [0.75, 0.375],
+        ];
+    }
+
     protected function uniqueConstraintNames(): array
     {
         return ['email' => 'users_email_key', 'primary' => 'users_pkey'];

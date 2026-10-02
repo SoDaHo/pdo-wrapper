@@ -904,7 +904,7 @@ class EdgeCaseTest extends TestCase
         $db->getPdo()->setAttribute(\PDO::ATTR_CASE, \PDO::CASE_UPPER);
 
         $this->assertSame(2, $db->table('orders')->count());
-        $this->assertSame(40.0, $db->table('orders')->sum('amount'));
+        $this->assertSame(40, $db->table('orders')->sum('amount'));
         $this->assertSame(30, $db->table('orders')->max('amount'));
         $this->assertSame(2, $db->table('orders')->groupBy('status')->count());
         $this->assertSame(2, $db->table('orders')->select('status')->distinct()->count());

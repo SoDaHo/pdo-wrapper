@@ -128,8 +128,8 @@ class AggregateTest extends TestCase
 
     public function testOtherAggregatesRespectDistinctAndRefuseGroupBy(): void
     {
-        $this->assertSame(90.0, $this->db->table('users')->sum('score'));
-        $this->assertSame(60.0, $this->db->table('users')->distinct()->sum('score'), 'SUM(DISTINCT score): 10 + 20 + 30');
+        $this->assertSame(90, $this->db->table('users')->sum('score'));
+        $this->assertSame(60, $this->db->table('users')->distinct()->sum('score'), 'SUM(DISTINCT score): 10 + 20 + 30');
         $this->assertSame(18.0, $this->db->table('users')->avg('score'));
         $this->assertSame(20.0, $this->db->table('users')->distinct()->avg('score'), 'AVG(DISTINCT score)');
 

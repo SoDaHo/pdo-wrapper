@@ -355,11 +355,11 @@ class QueryBuilderTest extends TestCase
 
         // sum() should sum all rows, not limited
         $builder = $this->db->table('users')->limit(1);
-        $this->assertEquals(75, $builder->sum('age')); // 25 + 30 + 20
+        $this->assertSame(75, $builder->sum('age')); // 25 + 30 + 20
 
         // avg() should average all rows
         $builder = $this->db->table('users')->limit(1);
-        $this->assertEquals(25, $builder->avg('age'));
+        $this->assertSame(25.0, $builder->avg('age'));
 
         // min/max should consider all rows
         $builder = $this->db->table('users')->limit(1)->orderBy('age', 'DESC');
@@ -402,14 +402,14 @@ class QueryBuilderTest extends TestCase
     {
         $sum = $this->db->table('users')->sum('age');
 
-        $this->assertEquals(75, $sum); // 25 + 30 + 20
+        $this->assertSame(75, $sum); // 25 + 30 + 20
     }
 
     public function testAvg(): void
     {
         $avg = $this->db->table('users')->avg('age');
 
-        $this->assertEquals(25, $avg);
+        $this->assertSame(25.0, $avg);
     }
 
     public function testMin(): void
