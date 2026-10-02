@@ -94,12 +94,12 @@ class RawValueTest extends TestCase
     public function testRawLikePatternKeepsTheEscapeClause(): void
     {
         [$sql, $params] = $this->db->table('counters')->whereLike('name', '100%')->toSql();
-        $this->assertSame('SELECT * FROM `counters` WHERE `name` LIKE ? ESCAPE \'\\\'', $sql);
-        $this->assertSame(['100%'], $params);
+        $this->assertSame('SELECT * FROM `counters` WHERE `name` LIKE ? ESCAPE ?', $sql);
+        $this->assertSame(['100%', '\\'], $params);
 
         [$sql, $params] = $this->db->table('counters')->where('name', 'LIKE', Database::raw("'a' || '%'"))->toSql();
-        $this->assertSame('SELECT * FROM `counters` WHERE `name` LIKE \'a\' || \'%\' ESCAPE \'\\\'', $sql);
-        $this->assertSame([], $params);
+        $this->assertSame('SELECT * FROM `counters` WHERE `name` LIKE \'a\' || \'%\' ESCAPE ?', $sql);
+        $this->assertSame(['\\'], $params);
         $this->assertSame(1, $this->db->table('counters')->where('name', 'LIKE', Database::raw("'a' || '%'"))->count());
     }
 

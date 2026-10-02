@@ -82,7 +82,8 @@ class AggregateTest extends TestCase
 
     public function testDistinctCountWithoutAJoinStillNeedsUniqueOutputNames(): void
     {
-        foreach ([['id', 'users.id'], ['users.*', 'score'], ['*', 'score']] as $columns) {
+        // 'ID' next to 'id': SQLite (like MySQL) compares column names without case
+        foreach ([['id', 'users.id'], ['id', 'ID'], ['users.*', 'score'], ['*', 'score']] as $columns) {
             try {
                 $this->db->table('users')->select($columns)->distinct()->count();
                 $this->fail('Expected QueryException was not thrown for ' . implode(', ', $columns));

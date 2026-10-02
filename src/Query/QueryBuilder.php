@@ -26,6 +26,14 @@ class QueryBuilder
     ];
 
     /**
+     * Escape character of every LIKE the builder renders, the one Database::escapeLike() writes.
+     * It is bound (`LIKE ? ESCAPE ?`), never written into the SQL: a backslash literal means
+     * different things depending on the engine and its SQL mode (MySQL's NO_BACKSLASH_ESCAPES),
+     * a bound value means the same everywhere.
+     */
+    private const LIKE_ESCAPE = '\\';
+
+    /**
      * SQL dialects the builder renders for: row locks, IS / IS NOT and OFFSET without LIMIT differ.
      */
     public const DIALECT_ANSI = 'ansi';
@@ -53,7 +61,7 @@ class QueryBuilder
     private ?int $limit = null;
     private ?int $offset = null;
 
-    /** @var array<int, string> */
+    /** @var array<int, string|RawExpression> */
     private array $groupBy = [];
 
     /** @var array<int, array{column: string|RawExpression, operator: string, value: mixed}> */
@@ -175,16 +183,17 @@ class QueryBuilder
      * The argument count decides the form: with two arguments the second one is always the value
      * (so 'IS' for Iceland or 'LIKE' as a value is fine), with three it is the operator.
      *
-     * @param string|array<string, mixed> $column Column name or array of conditions
+     * @param string|array<string, mixed> $column Column name or array of column => value conditions
      * @param mixed $operatorOrValue Operator or value (if 2 args)
      * @param mixed $value Value (if 3 args)
      *
-     * @throws QueryException When the value is null (use whereNull()/whereNotNull()) or the operator is not allowed
+     * @throws QueryException When the value is null (use whereNull()/whereNotNull()), the operator is not allowed or the array form has a numeric key
      */
     public function where(string|array $column, mixed $operatorOrValue = null, mixed $value = null): self
     {
         // Array syntax: where(['active' => 1, 'role' => 'admin'])
         if (is_array($column)) {
+            $this->guardAgainstNumericKeys($column);
             foreach ($column as $col => $val) {
                 if ($val === null) {
                     throw new QueryException(
@@ -338,7 +347,7 @@ class QueryBuilder
      * @param string $column Column name
      * @param array<array-key, mixed> $values [min, max] values (a RawExpression bound is inlined)
      *
-     * @throws QueryException When $values doesn't have exactly 2 elements
+     * @throws QueryException When $values doesn't have exactly 2 elements or one of them is null
      */
     public function whereBetween(string $column, array $values): self
     {
@@ -348,6 +357,7 @@ class QueryBuilder
                 debugMessage: 'whereBetween requires exactly 2 values'
             );
         }
+        $this->guardAgainstNullBound('whereBetween', $column, $values);
 
         $this->wheres[] = [
             'type' => 'between',
@@ -365,7 +375,7 @@ class QueryBuilder
      * @param string $column Column name
      * @param array<array-key, mixed> $values [min, max] values to exclude (a RawExpression bound is inlined)
      *
-     * @throws QueryException When $values doesn't have exactly 2 elements
+     * @throws QueryException When $values doesn't have exactly 2 elements or one of them is null
      */
     public function whereNotBetween(string $column, array $values): self
     {
@@ -375,6 +385,7 @@ class QueryBuilder
                 debugMessage: 'whereNotBetween requires exactly 2 values'
             );
         }
+        $this->guardAgainstNullBound('whereNotBetween', $column, $values);
 
         $this->wheres[] = [
             'type' => 'between',
@@ -420,6 +431,10 @@ class QueryBuilder
 
     /**
      * Add a WHERE LIKE condition.
+     *
+     * Rendered as `LIKE ? ESCAPE ?` with the backslash bound as escape character on every dialect,
+     * so a pattern part run through Database::escapeLike() is literal whatever the engine's default
+     * or SQL mode. The same holds for where() and having() with the LIKE / NOT LIKE operator.
      *
      * @param string $column Column name
      * @param string $pattern LIKE pattern (use % for wildcards)
@@ -555,10 +570,19 @@ class QueryBuilder
     /**
      * Set the LIMIT clause.
      *
-     * @param int $limit Maximum number of rows
+     * @param int $limit Maximum number of rows (0 or more)
+     *
+     * @throws QueryException When $limit is negative (SQLite would read it as "no limit", the others reject it)
      */
     public function limit(int $limit): self
     {
+        if ($limit < 0) {
+            throw new QueryException(
+                message: 'Query failed',
+                debugMessage: sprintf('limit() needs 0 or more, got %d', $limit)
+            );
+        }
+
         $this->limit = $limit;
         return $this;
     }
@@ -566,10 +590,19 @@ class QueryBuilder
     /**
      * Set the OFFSET clause.
      *
-     * @param int $offset Number of rows to skip
+     * @param int $offset Number of rows to skip (0 or more)
+     *
+     * @throws QueryException When $offset is negative (SQLite would read it as 0, the others reject it)
      */
     public function offset(int $offset): self
     {
+        if ($offset < 0) {
+            throw new QueryException(
+                message: 'Query failed',
+                debugMessage: sprintf('offset() needs 0 or more, got %d', $offset)
+            );
+        }
+
         $this->offset = $offset;
         return $this;
     }
@@ -581,12 +614,18 @@ class QueryBuilder
     /**
      * Add a GROUP BY clause.
      *
-     * @param string|array<int, string> $columns Column(s) to group by
+     * A string is split at commas into column names; an expression (`DATE(created_at)`,
+     * `LOWER(name)`) goes in as Database::raw(), alone or inside the array, and is rendered as
+     * given. SECURITY: never build a raw expression from user input.
+     *
+     * @param string|RawExpression|array<int, string|RawExpression> $columns Column(s) or expression(s) to group by
      */
-    public function groupBy(string|array $columns): self
+    public function groupBy(string|RawExpression|array $columns): self
     {
         if (is_string($columns)) {
             $columns = array_map('trim', explode(',', $columns));
+        } elseif ($columns instanceof RawExpression) {
+            $columns = [$columns];
         }
 
         $this->groupBy = array_merge($this->groupBy, $columns);
@@ -601,13 +640,29 @@ class QueryBuilder
      *
      * @param string|RawExpression $column Column or aggregate function (use Database::raw() for aggregates)
      * @param string $operator Comparison operator
-     * @param mixed $value Value to compare
+     * @param mixed $value Value to compare (null only with IS / IS NOT, the null-safe comparison)
+     *
+     * @throws QueryException When the operator is not allowed or the value is null with an operator other than IS / IS NOT
      */
     public function having(string|RawExpression $column, string $operator, mixed $value): self
     {
+        $operator = $this->validateOperator($operator);
+
+        // "= NULL", "> NULL", "LIKE NULL" are never true: the condition would silently drop every group
+        if ($value === null && $operator !== 'IS' && $operator !== 'IS NOT') {
+            throw new QueryException(
+                message: 'Query failed',
+                debugMessage: sprintf(
+                    'Cannot use a null value in having() (operator "%s", column "%s"). Use the operator IS or IS NOT instead.',
+                    $operator,
+                    (string) $column
+                )
+            );
+        }
+
         $this->having[] = [
             'column' => $column,
-            'operator' => $this->validateOperator($operator),
+            'operator' => $operator,
             'value' => $value,
         ];
 
@@ -751,7 +806,12 @@ class QueryBuilder
             $name = $this->aliasKey($entry);
             if ($name === null) {
                 $dot = strrpos($entry, '.');
-                $name = strtolower($dot === false ? $entry : substr($entry, $dot + 1));
+                $name = $dot === false ? $entry : substr($entry, $dot + 1);
+                // A quoted column name is case-sensitive on PostgreSQL and in ANSI SQL ("Name" and
+                // "name" are two columns); MySQL and SQLite compare column names without case.
+                if ($this->dialect === self::DIALECT_MYSQL || $this->dialect === self::DIALECT_SQLITE) {
+                    $name = strtolower($name);
+                }
             }
             if (isset($names[$name])) {
                 return sprintf('"%s" appears twice as an output name', $name);
@@ -903,18 +963,11 @@ class QueryBuilder
             [$sql, $params] = $query->toSql();
         }
 
-        $stmt = $this->db->query($sql, $params);
-        /** @var array<string, mixed>|false $result */
-        $result = $stmt->fetch(PDO::FETCH_ASSOC);
+        // By position, not by the name "aggregate": PDO::ATTR_CASE may rename the result's keys.
+        // An aggregate always returns one row; false (no row) cannot be a value here.
+        $value = $this->db->query($sql, $params)->fetchColumn();
 
-        // @codeCoverageIgnoreStart
-        // Defensive: fetch() never returns false for aggregates (they always return one row)
-        if ($result === false) {
-            return null;
-        }
-        // @codeCoverageIgnoreEnd
-
-        return $result['aggregate'] ?? null;
+        return $value === false ? null : $value;
     }
 
     // =========================================================================
@@ -1100,8 +1153,8 @@ class QueryBuilder
     /**
      * Build the SELECT statement and collect params in correct SQL order.
      *
-     * Parameters are collected in SQL clause order:
-     * WHERE params first, then HAVING params.
+     * Parameters are collected in SQL clause order: the escape character of a LIKE in a join
+     * condition, then the WHERE params, then the HAVING params.
      *
      * @return array{0: string, 1: array<int, mixed>}
      */
@@ -1144,6 +1197,11 @@ class QueryBuilder
                 $this->quoteIdentifier($join['table']),
                 $this->comparison($this->quoteIdentifier($join['first']), $join['operator'], $this->quoteIdentifier($join['second']))
             );
+            // A pattern taken from a column: the same bound escape character as in where() and having()
+            if ($join['operator'] === 'LIKE' || $join['operator'] === 'NOT LIKE') {
+                $sql .= ' ESCAPE ?';
+                $params[] = self::LIKE_ESCAPE;
+            }
         }
 
         // WHERE - params collected in SQL order
@@ -1155,7 +1213,11 @@ class QueryBuilder
 
         // GROUP BY
         if (!empty($this->groupBy)) {
-            $quotedGroupBy = array_map([$this, 'quoteIdentifier'], $this->groupBy);
+            // RawExpression bypasses quoting (grouping by an expression)
+            $quotedGroupBy = array_map(
+                fn (string|RawExpression $column): string => $column instanceof RawExpression ? (string) $column : $this->quoteIdentifier($column),
+                $this->groupBy
+            );
             $sql .= ' GROUP BY ' . implode(', ', $quotedGroupBy);
         }
 
@@ -1296,11 +1358,9 @@ class QueryBuilder
                         $params[] = $value;
                     }
                     $clause = $this->comparison($this->quoteIdentifier($column), $operator, $right, $value instanceof RawExpression);
-                    // MySQL uses \ as default LIKE escape character, no ESCAPE clause needed.
-                    // PostgreSQL and SQLite need an explicit ESCAPE clause - for raw patterns too, so the
-                    // pattern semantics do not depend on how the value was given.
-                    if (($operator === 'LIKE' || $operator === 'NOT LIKE') && $this->dialect !== self::DIALECT_MYSQL) {
-                        $clause .= " ESCAPE '\\'";
+                    if ($operator === 'LIKE' || $operator === 'NOT LIKE') {
+                        $clause .= ' ESCAPE ?';
+                        $params[] = self::LIKE_ESCAPE;
                     }
                     $clauses[] = $clause;
                     break;
@@ -1376,11 +1436,16 @@ class QueryBuilder
                 ? (string) $h['column']
                 : $this->quoteIdentifier($h['column']);
             if ($h['value'] instanceof RawExpression) {
-                $clauses[] = $this->comparison($column, $h['operator'], (string) $h['value'], true);
-                continue;
+                $clause = $this->comparison($column, $h['operator'], (string) $h['value'], true);
+            } else {
+                $clause = $this->comparison($column, $h['operator'], '?');
+                $params[] = $h['value'];
             }
-            $clauses[] = $this->comparison($column, $h['operator'], '?');
-            $params[] = $h['value'];
+            if ($h['operator'] === 'LIKE' || $h['operator'] === 'NOT LIKE') {
+                $clause .= ' ESCAPE ?';
+                $params[] = self::LIKE_ESCAPE;
+            }
+            $clauses[] = $clause;
         }
 
         return [implode(' AND ', $clauses), $params];
@@ -1412,6 +1477,53 @@ class QueryBuilder
         }
 
         return $this->quoteChar . str_replace($this->quoteChar, $escape, $identifier) . $this->quoteChar;
+    }
+
+    /**
+     * Guard against integer keys in where(['column' => $value]): a list (['active', 1]), or a
+     * numeric column name, whose key PHP turns into an integer whatever the declared type says.
+     *
+     * @param array<array-key, mixed> $conditions
+     *
+     * @throws QueryException When a key is an integer
+     */
+    private function guardAgainstNumericKeys(array $conditions): void
+    {
+        foreach (array_keys($conditions) as $key) {
+            if (is_int($key)) {
+                throw new QueryException(
+                    message: 'Query failed',
+                    debugMessage: sprintf(
+                        'where() with an array needs column names as keys, got the numeric key %d. Use where(\'column\', $value) instead.',
+                        $key
+                    )
+                );
+            }
+        }
+    }
+
+    /**
+     * Guard against a null bound in whereBetween()/whereNotBetween(): BETWEEN with NULL is never
+     * true, so the condition would silently match no row (and NOT BETWEEN none either).
+     *
+     * @param array<array-key, mixed> $values
+     *
+     * @throws QueryException When a bound is null
+     */
+    private function guardAgainstNullBound(string $method, string $column, array $values): void
+    {
+        foreach ($values as $value) {
+            if ($value === null) {
+                throw new QueryException(
+                    message: 'Query failed',
+                    debugMessage: sprintf(
+                        'Cannot use a null bound in %s() for column "%s". Use where() with a comparison operator for an open range.',
+                        $method,
+                        $column
+                    )
+                );
+            }
+        }
     }
 
     /**

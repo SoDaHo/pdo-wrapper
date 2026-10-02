@@ -219,6 +219,28 @@ class PostgresQueryBuilderTest extends TestCase
         $this->assertSame(1, $this->db->table('qb_test')->select(['name', Database::raw('COUNT(*) AS n')])->groupBy('name')->having(Database::raw('COUNT(*)'), '>', 1)->count());
     }
 
+    /**
+     * A quoted column name is case-sensitive on PostgreSQL: "Label" and "label" are two columns
+     * and two output names, so distinct()->count() over both is no conflict (it is on MySQL and
+     * SQLite, which compare column names without case). A bare alias is folded to lower case.
+     */
+    public function testDistinctCountTreatsColumnNamesCaseSensitively(): void
+    {
+        $this->db->execute('CREATE TEMPORARY TABLE qb_case (id SERIAL PRIMARY KEY, "Label" TEXT, label TEXT)');
+        $this->db->insert('qb_case', ['Label' => 'A', 'label' => 'a']);
+        $this->db->insert('qb_case', ['Label' => 'A', 'label' => 'a']);
+        $this->db->insert('qb_case', ['Label' => 'A', 'label' => 'b']);
+
+        $this->assertSame(2, $this->db->table('qb_case')->select(['Label', 'label'])->distinct()->count());
+
+        try {
+            $this->db->table('qb_case')->select(['label', 'Label as LABEL'])->distinct()->count();
+            $this->fail('Expected QueryException: the bare alias LABEL is folded to "label"');
+        } catch (QueryException $e) {
+            $this->assertStringContainsString('"label" appears twice', $e->getDebugMessage() ?? '');
+        }
+    }
+
     public function testExistsWithOffsetAndLocksExecutes(): void
     {
         $this->db->beginTransaction();

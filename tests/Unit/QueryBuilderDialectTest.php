@@ -53,9 +53,9 @@ class QueryBuilderDialectTest extends TestCase
         };
 
         [$sql] = $backtick->table('users')->whereLike('name', 'a%')->sharedLock()->toSql();
-        $this->assertSame('SELECT * FROM `users` WHERE `name` LIKE ? LOCK IN SHARE MODE', $sql);
+        $this->assertSame('SELECT * FROM `users` WHERE `name` LIKE ? ESCAPE ? LOCK IN SHARE MODE', $sql);
         [$sql] = $ansi->table('users')->whereLike('name', 'a%')->sharedLock()->toSql();
-        $this->assertSame('SELECT * FROM "users" WHERE "name" LIKE ? ESCAPE \'\\\' FOR SHARE', $sql);
+        $this->assertSame('SELECT * FROM "users" WHERE "name" LIKE ? ESCAPE ? FOR SHARE', $sql);
     }
 
     /**
