@@ -81,13 +81,17 @@ class QueryBuilder
      * @param string|null $dialect One of the DIALECT_* constants; null derives it from the quote character (` = MySQL, otherwise ANSI).
      *                             Drivers pass their dialect from table(); pass DIALECT_SQLITE yourself for a SQLite builder (backtick, too)
      *
-     * @throws \InvalidArgumentException When the dialect is unknown
+     * @throws QueryException When the dialect is unknown
      */
     public function __construct(DatabaseInterface $db, string $table, string $quoteChar = '"', ?string $dialect = null)
     {
         $dialect ??= $quoteChar === '`' ? self::DIALECT_MYSQL : self::DIALECT_ANSI;
         if (!in_array($dialect, [self::DIALECT_ANSI, self::DIALECT_MYSQL, self::DIALECT_PGSQL, self::DIALECT_SQLITE], true)) {
-            throw new \InvalidArgumentException(sprintf('Unknown SQL dialect "%s"', $dialect));
+            // The name that was passed stands in the debug message only, like every value
+            throw new QueryException(
+                message: 'Query failed',
+                debugMessage: sprintf('Unknown SQL dialect "%s": use one of the QueryBuilder::DIALECT_* constants', $dialect)
+            );
         }
 
         $this->db = $db;

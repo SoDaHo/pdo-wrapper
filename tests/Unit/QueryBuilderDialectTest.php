@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Sodaho\PdoWrapper\Tests\Unit;
 
-use InvalidArgumentException;
 use PHPUnit\Framework\TestCase;
 use Sodaho\PdoWrapper\Database;
 use Sodaho\PdoWrapper\Driver\AbstractDriver;
@@ -511,7 +510,12 @@ class QueryBuilderDialectTest extends TestCase
         [$sql] = (new QueryBuilder(Database::sqlite(), 'users'))->sharedLock()->toSql();
         $this->assertSame('SELECT * FROM "users" FOR SHARE', $sql);
 
-        $this->expectException(InvalidArgumentException::class);
-        new QueryBuilder(Database::sqlite(), 'users', '"', 'oracle');
+        try {
+            new QueryBuilder(Database::sqlite(), 'users', '"', 'oracle');
+            $this->fail('Expected QueryException');
+        } catch (QueryException $e) {
+            $this->assertSame('Query failed', $e->getMessage(), 'no value in the message');
+            $this->assertSame('Unknown SQL dialect "oracle": use one of the QueryBuilder::DIALECT_* constants', $e->getDebugMessage());
+        }
     }
 }
