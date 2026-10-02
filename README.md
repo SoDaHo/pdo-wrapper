@@ -864,7 +864,7 @@ This library is designed for simple, common use cases. The following features ar
 
 - **NULL in where()** - `where('column', null)` throws an exception because `column = NULL` is always false in SQL. Use `whereNull()` or `whereNotNull()`, or the null-safe `where('column', 'IS', $value)` for a value that may be null. The `$where` arrays of the CRUD methods take no `null` either.
 
-- **Aliases** - `'column as alias'` renders the alias as written, unquoted: it must be a plain word (letters, digits, underscore), PostgreSQL folds it to lower case, and a reserved word fails. Quote it yourself in a `Database::raw()` entry if you need one.
+- **Aliases** - `'column as alias'` and `'table as alias'` quote the alias like every other name. The result key is the alias as written on every database, `orderBy()`, `groupBy()` and `'alias.column'` find it under that name (write it the same way each time: a quoted name is case-sensitive on PostgreSQL), and a reserved word is a valid alias. The alias must be a plain word (letters, digits, underscore). An alias inside a `Database::raw()` entry is sent as written: PostgreSQL folds a bare one to lower case.
 
 - **Builder clauses on `insert()`** - `table('t')->where(...)->insert($row)` inserts the row and ignores the clauses; use `insertWhen()` for a conditional insert (there, clauses throw).
 

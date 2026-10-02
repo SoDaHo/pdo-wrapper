@@ -9,6 +9,7 @@ Work on 2.0 (branch `2.x`). What breaks is collected under "Upgrading from 1.x" 
 
 ### Changed
 - PHP 8.5 or newer is required (1.x: PHP 8.2). The test suite fails on deprecations and notices.
+- The query builder quotes aliases: `'name as UserName'` renders `"name" as "UserName"` (backticks on MySQL/MariaDB and SQLite), for a column and for a table (`table('users as U')`, `join('posts as P', ...)`). The alias is then the same name wherever the builder refers to it - `orderBy('UserName')`, `groupBy('UserName')` and `'U.name'` are rendered quoted and did not find a bare alias with an upper-case letter on PostgreSQL -, and a reserved word is a valid alias (`'title as order'`). `distinct()->count()` on PostgreSQL treats two aliases that differ only in case as two names.
 - `Database::mysql()`, `postgres()`, `sqlite()` and `connect()` no longer read the environment: they use what they are given and nothing else. The config array of `mysql()`, `postgres()` and `connect()` is a required argument, and `sqlite()` takes a string (default `:memory:`) and no `null`. A required value that was not passed throws a `ConnectionException`, whatever the environment says.
 
 ### Upgrading from 1.x
@@ -27,6 +28,7 @@ Work on 2.0 (branch `2.x`). What breaks is collected under "Upgrading from 1.x" 
   | `Database::sqlite(null)` | `Database::sqlite()` (in memory) or `Database::fromEnv(['driver' => 'sqlite'])` |
 
   Also not filled in any more: a `password` or `port` that came from `DB_PASSWORD`/`DB_PORT` next to an otherwise complete config array - the connection is then tried without a password and on the driver's default port. And one difference to the old fallback: a key passed to `fromEnv()` wins over its variable also when it is `null` (in 1.x a `null` in the config fell back to the environment).
+- **Aliases on PostgreSQL:** a string alias with an upper-case letter keeps its case in the result. `select(['name as UserName'])` returned rows with the key `username` on 1.x (PostgreSQL folds a bare alias) and returns `UserName` on 2.0, as MySQL/MariaDB and SQLite always did. Read the new key, or write the alias in lower case (`'name as username'`) to keep the old one. Nothing changes on MySQL/MariaDB and SQLite, for lower-case aliases, or for an alias inside `Database::raw()`.
 - **MySQL driver options:** write `Pdo\Mysql::ATTR_MULTI_STATEMENTS` / `Pdo\Mysql::ATTR_FOUND_ROWS` in `options`; the `PDO::MYSQL_ATTR_*` constants are deprecated in PHP 8.5 (both names are the same number, so old code keeps working, with a deprecation notice from PHP).
 
 ## [1.6.0] - 2026-10-02
