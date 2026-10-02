@@ -129,6 +129,7 @@ abstract class AbstractDriver implements DatabaseInterface
      * @param array<int|string, mixed> $params Parameters to bind
      *
      * @throws QueryException On query failure (a UniqueViolationException for a duplicate key), on a parameter that cannot be bound, or when a 'query' hook threw a PDOException
+     * @throws Throwable What a 'query' or 'error' hook throws otherwise, and what an error handler throws that is not about a PDO failure: both pass unchanged
      *
      * @return PDOStatement Executed statement
      */

@@ -41,7 +41,7 @@
     "test:integration": "vendor/bin/phpunit --testsuite Integration",
     "test:feature": "vendor/bin/phpunit --testsuite Feature",
     "test:coverage": "vendor/bin/phpunit --coverage-html coverage",
-    "analyse": "vendor/bin/phpstan analyse",
+    "analyse": "vendor/bin/phpstan analyse --memory-limit=1G",
     "cs": "vendor/bin/php-cs-fixer fix --dry-run --diff",
     "cs:fix": "vendor/bin/php-cs-fixer fix",
     "ci": ["@cs", "@analyse", "@test:sqlite"]
