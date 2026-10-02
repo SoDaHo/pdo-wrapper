@@ -110,6 +110,10 @@ use Sodaho\PdoWrapper\Exception\DatabaseException;
  * would go on outside of the transaction that was asked for, or inside one somebody began
  * afterwards. An end behind this library's back (an implicit commit by a DDL statement on
  * MySQL/MariaDB, raw PDO) is told as 'lost' with that exception as error before it is thrown.
+ * After a statement of the listener that failed, the driver is asked before PDO's report is
+ * trusted (refreshTransactionState(), as before a ROLLBACK): on MySQL/MariaDB a DDL statement
+ * commits the transaction even when it fails. Gone: 'lost', as above - also when the listener
+ * let the failure escape. Not to be found out: the begin fails, a ROLLBACK cleans up, 'lost'.
  * The 'transaction.begin' listeners are called one by one by beginTransaction() itself, as the
  * 'transaction.commit' and 'transaction.end' listeners always were: an overriding trigger() does
  * not see these three events.
@@ -119,7 +123,12 @@ use Sodaho\PdoWrapper\Exception\DatabaseException;
  * a transaction PDO no longer reports, see below), and so does the raw rollback after a throwing
  * 'transaction.begin' listener (when that listener ended the transaction behind this library's
  * back before it threw, nothing is left to roll back and the end is told as 'lost', with the
- * exception the caller gets as error). beginTransaction(), commit() and rollback() are final in
+ * exception the caller gets as error). Every call into PDO may run foreign code - an error
+ * handler for a PDO warning (PDO::ERRMODE_WARNING). When such a handler ends the transaction
+ * through this library while a COMMIT, a ROLLBACK or the driver's question to the server is
+ * under way, that call tells the end, and the one it interrupted tells none: transaction() and
+ * updateMultiple() look again whether the transaction is still theirs, and a failed commit of
+ * theirs leaves with outcome 'lost' then. beginTransaction(), commit() and rollback() are final in
  * AbstractDriver: what is told here is decided in them. A custom driver extends them through
  * listeners and through the protected hooks (failureToRemember(), transactionEndedBy(),
  * transactionIsOver(), refreshTransactionState()), not by overriding them.

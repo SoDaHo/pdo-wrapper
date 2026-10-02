@@ -505,37 +505,7 @@ class SqliteTransactionEndScenariosTest extends AbstractTransactionEndScenarios
      */
     public function testRollbackAsksTheDriverAfterAFailedStatementBeforeItTrustsTheRollback(): void
     {
-        $db = new class ($this->pdo) extends SqliteDriver {
-            public int $asked = 0;
-
-            /** What asking finds: 'gone' hides the transaction, 'alive' leaves it, 'unknown' could not find out */
-            public string $answer = 'alive';
-
-            public function __construct(PDO $pdo)
-            {
-                $this->pdo = $pdo;
-            }
-
-            protected function failureToRemember(?PDOException $remembered, PDOException $failure): PDOException
-            {
-                return $failure;
-            }
-
-            protected function transactionIsOver(PDOException $failure): bool
-            {
-                return str_contains($failure->getMessage(), 'fatal_table');
-            }
-
-            protected function refreshTransactionState(): bool
-            {
-                $this->asked++;
-                if ($this->answer === 'gone' && $this->pdo instanceof ScenarioPdo) {
-                    $this->pdo->hideTransaction = true;
-                }
-
-                return $this->answer !== 'unknown';
-            }
-        };
+        $db = new AskingSqliteDriver($this->pdo);
         $fail = $this->failingQuery($db);
         $ends = new Recorder(static fn (array $data): array => [$data['outcome'], $data['error']]);
         $db->on('transaction.end', $ends);
@@ -924,6 +894,149 @@ class SqliteTransactionEndScenariosTest extends AbstractTransactionEndScenarios
     /**
      * @return \Closure(string): void Runs a query on a table that does not exist and swallows the failure
      */
+    /**
+     * A statement that fails inside a 'transaction.begin' listener may have ended the transaction
+     * that was just begun without PDO knowing (MySQL/MariaDB: a failing DDL statement commits).
+     * The driver is asked before PDO's report is trusted - after each listener, and before the
+     * cleanup after a listener that threw. Gone: the begin fails and the end is 'lost'. Not to
+     * be found out: the begin fails as well (the caller must not go on in what may be
+     * autocommit), a ROLLBACK cleans up and the end is 'lost'. Still there: nothing changes.
+     */
+    public function testAFailedStatementInABeginListenerMakesTheDriverAsk(): void
+    {
+        $db = new AskingSqliteDriver($this->pdo);
+        $fail = $this->failingQuery($db);
+        $ends = new Recorder(static fn (array $data): array => [$data['outcome'], $data['error']]);
+        $db->on('transaction.end', $ends);
+        $listener = new class () {
+            /** The table of the statement that fails in the listener; '' for none */
+            public string $table = '';
+
+            public bool $swallow = true;
+
+            /** After the swallowed failure the listener ends the transaction on raw PDO */
+            public bool $endRaw = false;
+        };
+        $pdo = $this->pdo;
+        $db->on('transaction.begin', static function () use ($db, $pdo, $fail, $listener): void {
+            if ($listener->table === '') {
+                return;
+            }
+            if ($listener->swallow) {
+                $fail($listener->table);
+                if ($listener->endRaw) {
+                    $pdo->rollBack();
+                }
+
+                return;
+            }
+            $db->query('SELECT * FROM ' . $listener->table);
+        });
+
+        // no statement failed: nothing is asked
+        $db->beginTransaction();
+        $this->assertSame(0, $db->asked);
+        $db->rollback();
+        $ends->clear();
+
+        // swallowed, and the transaction is still there: asked once, the transaction is the caller's
+        $listener->table = 'harmless_table';
+        $db->beginTransaction();
+        $this->assertSame(1, $db->asked);
+        $this->assertTrue($this->pdo->reallyInTransaction());
+        $db->rollback();
+        $this->assertSame(2, $db->asked, 'the rollback asks about the same failure once more');
+        $this->assertSame([[DatabaseInterface::TRANSACTION_ROLLED_BACK, null]], $ends->all());
+        $ends->clear();
+
+        // a failure that settles the matter by itself is not asked about
+        $listener->table = 'fatal_table';
+        $db->beginTransaction();
+        $this->assertSame(2, $db->asked);
+        $db->rollback();
+        $this->assertSame(2, $db->asked);
+        $ends->clear();
+
+        // swallowed, and the transaction is gone: the begin fails, the end is 'lost'
+        $listener->table = 'harmless_table';
+        $db->answer = 'gone';
+        $sent = $this->pdo->rollBackCalls;
+        try {
+            $db->beginTransaction();
+            $this->fail('Expected TransactionException');
+        } catch (TransactionException $e) {
+            $this->assertStringStartsWith('A transaction.begin listener ended the transaction that was just begun outside this driver', $e->getDebugMessage() ?? '');
+            $this->assertSame([[DatabaseInterface::TRANSACTION_LOST, $e]], $ends->all());
+        }
+        $this->assertSame($sent, $this->pdo->rollBackCalls, 'nothing was sent for it');
+        $ends->clear();
+        $this->pdo->hideTransaction = false;
+        $this->pdo->rollBack();
+
+        // PDO reports no transaction anyway (ended on raw PDO after the failed statement): nothing to ask
+        $asked = $db->asked;
+        $listener->endRaw = true;
+        try {
+            $db->beginTransaction();
+            $this->fail('Expected TransactionException');
+        } catch (TransactionException $e) {
+            $this->assertSame($asked, $db->asked, 'not asked');
+            $this->assertSame([[DatabaseInterface::TRANSACTION_LOST, $e]], $ends->all());
+        }
+        $listener->endRaw = false;
+        $ends->clear();
+
+        // thrown, and the transaction is gone: the listener's exception, the end is 'lost' with it
+        $listener->swallow = false;
+        try {
+            $db->beginTransaction();
+            $this->fail('Expected QueryException');
+        } catch (QueryException $e) {
+            $this->assertSame([[DatabaseInterface::TRANSACTION_LOST, $e]], $ends->all());
+        }
+        $this->assertTrue($this->pdo->reallyInTransaction(), 'nothing was sent for it');
+        $ends->clear();
+        $this->pdo->hideTransaction = false;
+        $this->pdo->rollBack();
+
+        // thrown, and the driver could not find out: the ROLLBACK is sent to clean up, the end is 'lost'
+        $db->answer = 'unknown';
+        $sent = $this->pdo->rollBackCalls;
+        try {
+            $db->beginTransaction();
+            $this->fail('Expected QueryException');
+        } catch (QueryException $e) {
+            $this->assertSame([[DatabaseInterface::TRANSACTION_LOST, $e]], $ends->all());
+        }
+        $this->assertSame($sent + 1, $this->pdo->rollBackCalls);
+        $this->assertFalse($this->pdo->reallyInTransaction());
+        $ends->clear();
+
+        // swallowed, and the driver could not find out: the begin fails, cleaned up, 'lost'
+        $listener->swallow = true;
+        $sent = $this->pdo->rollBackCalls;
+        try {
+            $db->beginTransaction();
+            $this->fail('Expected TransactionException');
+        } catch (TransactionException $e) {
+            $this->assertSame('Failed to begin transaction', $e->getMessage());
+            $this->assertStringContainsString('could not be asked whether the transaction that was just begun still exists', $e->getDebugMessage() ?? '');
+            $this->assertInstanceOf(PDOException::class, $e->getPrevious());
+            $this->assertNull($e->sqlState, 'the failure of the listener\'s statement, not of the BEGIN');
+            $this->assertSame([[DatabaseInterface::TRANSACTION_LOST, $e]], $ends->all());
+        }
+        $this->assertSame($sent + 1, $this->pdo->rollBackCalls);
+        $this->assertFalse($this->pdo->reallyInTransaction());
+
+        // nothing of it stays behind: the next transaction is an ordinary one
+        $listener->table = '';
+        $ends->clear();
+        $asked = $db->asked;
+        $db->transaction(static fn (DatabaseInterface $db) => $db->insert(self::TABLE, ['id' => 1, 'name' => 'a']));
+        $this->assertSame($asked, $db->asked);
+        $this->assertSame([[DatabaseInterface::TRANSACTION_COMMITTED, null]], $ends->all());
+    }
+
     private function failingQuery(SqliteDriver $db): \Closure
     {
         return static function (string $table) use ($db): void {

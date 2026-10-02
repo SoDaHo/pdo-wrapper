@@ -280,6 +280,7 @@ class PostgresDriver extends AbstractDriver
             return null;
         }
 
+        // (int) cuts nothing here: a sequence is a BIGINT at most, its value fits an integer of PHP
         return ($id !== '' && $id !== '0') ? (int) $id : 0;
     }
 
@@ -301,7 +302,10 @@ class PostgresDriver extends AbstractDriver
         if ($failed) {
             $info = $this->pdo->errorInfo();
             $reason = is_string($info[2] ?? null) ? $info[2] : 'unknown error';
-            throw new PDOException(sprintf('%s failed: %s', $sql, $reason));
+            $failure = new PDOException(sprintf('%s failed: %s', $sql, $reason));
+            $failure->errorInfo = $info; // as a thrown PDOException carries it: SQLSTATE and driver code
+
+            throw $failure;
         }
     }
 

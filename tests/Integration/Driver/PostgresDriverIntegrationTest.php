@@ -196,6 +196,14 @@ class PostgresDriverIntegrationTest extends TestCase
             {
                 return str_starts_with($statement, 'SAVEPOINT') ? false : parent::exec($statement);
             }
+
+            /**
+             * @return array<int, mixed>
+             */
+            public function errorInfo(): array
+            {
+                return ['25P02', 7, 'ERROR:  current transaction is aborted'];
+            }
         };
         $driver = new class ($pdo) extends PostgresDriver {
             public function __construct(PDO $pdo)
@@ -215,7 +223,8 @@ class PostgresDriverIntegrationTest extends TestCase
             $this->fail('Expected QueryException was not thrown');
         } catch (QueryException $e) {
             $this->assertSame('Insert failed', $e->getMessage());
-            $this->assertStringContainsString('Savepoint around the insert ID probe failed: SAVEPOINT pdo_wrapper_insert_id failed: ', $e->getDebugMessage() ?? '');
+            $this->assertStringContainsString('Savepoint around the insert ID probe failed: SAVEPOINT pdo_wrapper_insert_id failed: ERROR:  current transaction is aborted', $e->getDebugMessage() ?? '');
+            $this->assertSame(['25P02', 7], [$e->sqlState, $e->driverCode], 'what PDO recorded for the failure it reported by returning false');
         } finally {
             $driver->rollback();
         }

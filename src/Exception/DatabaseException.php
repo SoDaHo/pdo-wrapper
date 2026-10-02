@@ -20,8 +20,11 @@ class DatabaseException extends Exception
 {
     /**
      * The SQLSTATE of the database failure behind this exception - '42S02', '23505', 'HY000' -
-     * or null when no database failure stands behind it (a refused argument, a listener's own
-     * exception). Five characters, as the database sent them: compare as a string.
+     * or null when no database failure stands behind it (a refused argument) and when the
+     * exception reports what a listener threw: the codes say how the operation itself failed, and
+     * there the database did what it was asked - a listener's deadlock must not look like a reason
+     * to run a committed transaction again (its codes are in getPrevious()). Five characters, as
+     * the database sent them: compare as a string.
      */
     public readonly ?string $sqlState;
 
@@ -35,15 +38,17 @@ class DatabaseException extends Exception
 
     /**
      * @param Throwable|null $previous The cause. A PDOException's errorInfo, or the codes of a DatabaseException, become $sqlState and $driverCode
+     * @param bool $listenerFailure True when $previous is what a listener threw and not the failure of the operation this exception is about: $sqlState and $driverCode stay null
      */
     public function __construct(
         string $message = 'Database error',
         ?Throwable $previous = null,
-        protected ?string $debugMessage = null
+        protected ?string $debugMessage = null,
+        bool $listenerFailure = false
     ) {
         parent::__construct($message, 0, $previous);
 
-        [$this->sqlState, $this->driverCode] = self::codesBehind($previous);
+        [$this->sqlState, $this->driverCode] = $listenerFailure ? [null, null] : self::codesBehind($previous);
     }
 
     /**
@@ -74,6 +79,7 @@ class DatabaseException extends Exception
         $state = $previous->errorInfo[0] ?? null;
         $code = $previous->errorInfo[1] ?? null;
 
-        return [is_string($state) && $state !== '' ? $state : null, is_int($code) ? $code : null];
+        // '00000' is "no error": what PDO holds when it reported a failure it recorded nothing for
+        return [is_string($state) && $state !== '' && $state !== '00000' ? $state : null, is_int($code) ? $code : null];
     }
 }

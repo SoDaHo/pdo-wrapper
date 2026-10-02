@@ -12,6 +12,7 @@ use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Exception\TransactionException;
 use Sodaho\PdoWrapper\Exception\UniqueViolationException;
 use Sodaho\PdoWrapper\Tests\Support\Fetched;
+use Sodaho\PdoWrapper\Tests\Support\ReadsPdoErrorInfo;
 
 /**
  * Abstract base class for workflow tests.
@@ -19,6 +20,8 @@ use Sodaho\PdoWrapper\Tests\Support\Fetched;
  */
 abstract class AbstractWorkflowTest extends TestCase
 {
+    use ReadsPdoErrorInfo;
+
     protected DatabaseInterface $db;
 
     abstract protected function createDatabase(): DatabaseInterface;
@@ -332,8 +335,8 @@ abstract class AbstractWorkflowTest extends TestCase
             $this->assertSame([null, null, 0], [$e->sqlState, $e->driverCode, $e->getCode()]);
         }
 
-        // the codes travel with the exception that wraps the failure: here the one a rollback
-        // listener threw, which arrives as TransactionException
+        // not so where the exception reports what a listener threw: the rollback went through, and
+        // the listener's codes are in getPrevious()
         $thrown = null;
         $this->db->on('transaction.rollback', function () use (&$thrown): void {
             try {
@@ -349,8 +352,72 @@ abstract class AbstractWorkflowTest extends TestCase
             $this->fail('Expected TransactionException');
         } catch (TransactionException $e) {
             $this->assertSame($thrown, $e->getPrevious());
-            $this->assertSame($expected['unknownTable'], [$e->sqlState, $e->driverCode]);
-            $this->assertSame(0, $e->getCode());
+            $this->assertSame([null, null, 0], [$e->sqlState, $e->driverCode, $e->getCode()]);
+            $this->assertSame($expected['unknownTable'], [$this->errorInfoBehind($e, 0), $this->errorInfoBehind($e, 1)]);
+        }
+    }
+
+    /**
+     * An exception that reports a listener's failure carries no SQLSTATE and no driver code,
+     * whatever the listener ran into: the statement ran, the transaction was committed or rolled
+     * back, the BEGIN went through. A retry that looks at $sqlState must not take a listener's
+     * deadlock for the failure of the operation.
+     */
+    public function testAnExceptionAboutAListenersFailureCarriesNoCodes(): void
+    {
+        $deadlock = new \PDOException('SQLSTATE[40001]: Serialization failure: 1213 Deadlock found');
+        $deadlock->errorInfo = ['40001', 1213, 'Deadlock found'];
+        $listener = static function () use ($deadlock): void {
+            throw $deadlock;
+        };
+        $caught = [];
+
+        $db = $this->createDatabase();
+        $db->on('query', $listener);
+        try {
+            $db->query('SELECT 1');
+            $this->fail('Expected QueryException');
+        } catch (QueryException $e) {
+            $this->assertSame('Query hook failed', $e->getMessage());
+            $caught['query'] = $e;
+        }
+
+        $db = $this->createDatabase();
+        $db->on('transaction.begin', $listener);
+        try {
+            $db->beginTransaction();
+            $this->fail('Expected TransactionException');
+        } catch (TransactionException $e) {
+            $this->assertSame('Failed to begin transaction', $e->getMessage());
+            $caught['transaction.begin'] = $e;
+        }
+
+        $db = $this->createDatabase();
+        $db->on('transaction.commit', $listener);
+        try {
+            $db->transaction(static fn (): null => null);
+            $this->fail('Expected CommitHookException');
+        } catch (CommitHookException $e) {
+            $caught['transaction.commit'] = $e;
+        }
+
+        $db = $this->createDatabase();
+        $db->on('transaction.end', static function () use ($deadlock): void {
+            throw new QueryException(message: 'Query failed', previous: $deadlock); // as a failed statement of the listener arrives
+        });
+        $db->beginTransaction();
+        try {
+            $db->rollback();
+            $this->fail('Expected TransactionException');
+        } catch (TransactionException $e) {
+            $this->assertSame('Transaction rolled back, but a transaction.end listener failed', $e->getMessage());
+            $this->assertSame('40001', $e->getPrevious() instanceof QueryException ? $e->getPrevious()->sqlState : null, 'the listener\'s codes are one step away');
+            $caught['transaction.end'] = $e;
+        }
+
+        $this->assertSame(['query', 'transaction.begin', 'transaction.commit', 'transaction.end'], array_keys($caught));
+        foreach ($caught as $event => $e) {
+            $this->assertSame([null, null], [$e->sqlState, $e->driverCode], $event);
         }
     }
 

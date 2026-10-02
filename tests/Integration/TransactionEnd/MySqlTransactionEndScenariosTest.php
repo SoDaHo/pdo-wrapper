@@ -129,6 +129,144 @@ class MySqlTransactionEndScenariosTest extends AbstractTransactionEndScenarios
     }
 
     /**
+     * A DDL statement that fails inside a 'transaction.begin' listener has committed the
+     * transaction all the same, and PDO does not know. When its exception leaves the listener,
+     * the server is asked before the cleanup: nothing is left to roll back, what the listener
+     * wrote is committed, and the end is told as 'lost' - not passed over in silence.
+     */
+    public function testAFailingDdlStatementInABeginListenerThatThrowsIsToldAsLost(): void
+    {
+        $db = $this->db;
+        $this->db->on('transaction.begin', static function () use ($db): void {
+            $db->insert(self::TABLE, ['id' => 1, 'name' => 'written by the listener']);
+            $db->execute('CREATE TABLE ' . self::TABLE . ' (id INT PRIMARY KEY)'); // exists: fails, and commits
+        });
+        $this->events = [];
+        $this->ends = [];
+
+        try {
+            $this->db->transaction(static fn (DatabaseInterface $db) => $db->insert(self::TABLE, ['id' => 2, 'name' => 'by the callback']));
+            $this->fail('Expected QueryException');
+        } catch (QueryException $e) {
+            $this->assertSame([['outcome' => DatabaseInterface::TRANSACTION_LOST, 'error' => $e]], $this->ends);
+        }
+
+        $this->assertSame(['end'], $this->events, 'no rollback listener: nothing was rolled back');
+        $this->assertVisible([1], 'the listener\'s row is committed, the callback did not run');
+    }
+
+    /**
+     * The same listener, but it swallows the failure: the transaction is gone, so the begin fails
+     * - the callback must not run in autocommit - and the end is told as 'lost'.
+     */
+    public function testAFailingDdlStatementSwallowedInABeginListenerMakesTheBeginFailAsLost(): void
+    {
+        $db = $this->db;
+        $this->db->on('transaction.begin', static function () use ($db): void {
+            $db->insert(self::TABLE, ['id' => 1, 'name' => 'written by the listener']);
+            try {
+                $db->execute('CREATE TABLE ' . self::TABLE . ' (id INT PRIMARY KEY)'); // exists: fails, and commits
+            } catch (QueryException) {
+                // swallowed
+            }
+        });
+        $this->events = [];
+        $this->ends = [];
+
+        try {
+            $this->db->transaction(static fn (DatabaseInterface $db) => $db->insert(self::TABLE, ['id' => 2, 'name' => 'in autocommit']));
+            $this->fail('Expected TransactionException');
+        } catch (TransactionException $e) {
+            $this->assertNotInstanceOf(CommitFailedException::class, $e);
+            $this->assertStringStartsWith('A transaction.begin listener ended the transaction that was just begun outside this driver', $e->getDebugMessage() ?? '');
+            $this->assertSame([['outcome' => DatabaseInterface::TRANSACTION_LOST, 'error' => $e]], $this->ends);
+        }
+
+        $this->assertVisible([1], 'the listener\'s row is committed, the callback did not run');
+    }
+
+    /**
+     * A statement that fails in a begin listener and costs only itself: the server is asked, the
+     * transaction is still there, and it goes on as the caller's.
+     */
+    public function testAFailedStatementSwallowedInABeginListenerLeavesTheTransactionAlone(): void
+    {
+        $db = $this->db;
+        $this->db->on('transaction.begin', static function () use ($db): void {
+            try {
+                $db->query('SELECT * FROM end_scenarios_missing');
+            } catch (QueryException) {
+                // swallowed
+            }
+        });
+        $this->events = [];
+        $this->ends = [];
+
+        $this->db->transaction(static fn (DatabaseInterface $db) => $db->insert(self::TABLE, ['id' => 1, 'name' => 'a']));
+
+        $this->assertSame([['outcome' => DatabaseInterface::TRANSACTION_COMMITTED, 'error' => null]], $this->ends);
+        $this->assertVisible([1]);
+    }
+
+    /**
+     * The question to the server is a call into PDO, and with it into whatever error handler is
+     * installed. One that rolls back through the driver while rollback() asks has ended the
+     * transaction and told its end: the rollback() that asked finds another state than it left
+     * and tells nothing more.
+     */
+    public function testAnErrorHandlerThatRollsBackWhileRollbackAsksLeavesOneEnd(): void
+    {
+        $this->db->beginTransaction();
+        $this->db->insert(self::TABLE, ['id' => 1, 'name' => 'a']);
+        try {
+            $this->db->query('SELECT * FROM end_scenarios_missing');
+            $this->fail('Expected QueryException');
+        } catch (QueryException) {
+            // remembered: the next rollback asks the server
+        }
+        $db = $this->db;
+        $this->pdo->duringExec = static function () use ($db): void {
+            $db->rollback();
+            throw new \RuntimeException('thrown by an error handler');
+        };
+        $this->events = [];
+        $this->ends = [];
+
+        $this->db->rollback();
+
+        $this->assertSame([['outcome' => DatabaseInterface::TRANSACTION_ROLLED_BACK, 'error' => null]], $this->ends, 'told once, by the rollback that ended it');
+        $this->assertVisible([]);
+    }
+
+    /**
+     * The same while the cleanup after a throwing begin listener asks: the handler's rollback
+     * ended the transaction that was just begun, nothing is left to undo or to tell.
+     */
+    public function testAnErrorHandlerThatRollsBackWhileTheBeginCleanupAsksLeavesOneEnd(): void
+    {
+        $db = $this->db;
+        $pdo = $this->pdo;
+        $this->db->on('transaction.begin', static function () use ($db, $pdo): void {
+            $pdo->duringExec = static function () use ($db): void {
+                $db->rollback();
+                throw new \RuntimeException('thrown by an error handler');
+            };
+            $db->query('SELECT * FROM end_scenarios_missing'); // fails, and leaves the listener
+        });
+        $this->events = [];
+        $this->ends = [];
+
+        try {
+            $this->db->beginTransaction();
+            $this->fail('Expected QueryException');
+        } catch (QueryException) {
+            $this->assertSame([['outcome' => DatabaseInterface::TRANSACTION_ROLLED_BACK, 'error' => null]], $this->ends, 'told once, by the rollback that ended it');
+        }
+
+        $this->assertVisible([]);
+    }
+
+    /**
      * A DDL statement commits the open transaction even when it fails itself, and the server's
      * error does not tell the client: PDO keeps reporting the transaction. The rollback that
      * follows asks the server first. The end is told as 'lost', not as 'rolled_back': the rows

@@ -1017,6 +1017,98 @@ class TransactionTest extends TestCase
     }
 
     /**
+     * In a non-exception error mode PDO reports a failure by returning false and keeps what the
+     * database said in errorInfo(): the exception carries SQLSTATE and driver code all the same,
+     * as it would for a thrown PDOException.
+     */
+    public function testAFailureReportedByReturningFalseCarriesTheCodes(): void
+    {
+        $pdo = new class ('sqlite::memory:') extends PDO {
+            /** Which call fails: 'begin', 'commit', 'rollback', 'insert id', or '' for none */
+            public string $fail = '';
+
+            public function beginTransaction(): bool
+            {
+                return $this->fail === 'begin' ? false : parent::beginTransaction();
+            }
+
+            public function commit(): bool
+            {
+                return $this->fail === 'commit' ? false : parent::commit();
+            }
+
+            public function rollBack(): bool
+            {
+                return $this->fail === 'rollback' ? false : parent::rollBack();
+            }
+
+            public function lastInsertId(?string $name = null): string|false
+            {
+                return $this->fail === 'insert id' ? false : parent::lastInsertId($name);
+            }
+
+            /**
+             * @return array<int, mixed>
+             */
+            public function errorInfo(): array
+            {
+                return $this->fail === '' ? parent::errorInfo() : ['HY000', 5, 'database is locked'];
+            }
+        };
+        $db = new class ($pdo) extends SqliteDriver {
+            public function __construct(PDO $pdo)
+            {
+                $this->pdo = $pdo;
+            }
+        };
+        $db->execute('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)');
+        $failures = [];
+
+        $pdo->fail = 'begin';
+        try {
+            $db->beginTransaction();
+            $this->fail('Expected TransactionException');
+        } catch (TransactionException $e) {
+            $failures['begin'] = $e;
+        }
+
+        $pdo->fail = '';
+        $db->beginTransaction();
+        $pdo->fail = 'commit';
+        try {
+            $db->commit();
+            $this->fail('Expected CommitFailedException');
+        } catch (CommitFailedException $e) {
+            $failures['commit'] = $e;
+        }
+
+        $pdo->fail = 'rollback';
+        try {
+            $db->rollback();
+            $this->fail('Expected TransactionException');
+        } catch (TransactionException $e) {
+            $failures['rollback'] = $e;
+        }
+        $pdo->fail = '';
+        $db->rollback();
+
+        $pdo->fail = 'insert id';
+        try {
+            $db->insert('users', ['name' => 'Max']);
+            $this->fail('Expected QueryException');
+        } catch (QueryException $e) {
+            $this->assertSame('Insert failed', $e->getMessage());
+            $failures['insert id'] = $e;
+        }
+
+        $this->assertSame(['begin', 'commit', 'rollback', 'insert id'], array_keys($failures));
+        foreach ($failures as $what => $e) {
+            $this->assertSame(['HY000', 5], [$e->sqlState, $e->driverCode], $what);
+            $this->assertInstanceOf(PDOException::class, $e->getPrevious(), $what);
+        }
+    }
+
+    /**
      * The 'transaction.begin' listeners are called by beginTransaction() itself, with a payload
      * a listener may take by reference - as trigger() hands it over for the other events.
      */

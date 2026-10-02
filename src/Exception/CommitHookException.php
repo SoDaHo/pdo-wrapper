@@ -48,7 +48,8 @@ class CommitHookException extends DatabaseException
                 count($failures),
                 $first::class,
                 $first->getMessage()
-            )
+            ),
+            listenerFailure: true // committed: the database did what it was asked
         );
     }
 }

@@ -1030,7 +1030,7 @@ class QueryBuilder
      *
      * @param array<string, mixed> $data Column => value pairs
      *
-     * @throws QueryException On failure
+     * @throws QueryException On failure, and after the row is inserted when the ID the database reports is no integer of PHP (see DatabaseInterface::insert())
      *
      * @return int Last insert ID, 0 when the database generated none
      */

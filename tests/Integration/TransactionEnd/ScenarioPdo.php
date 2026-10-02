@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Sodaho\PdoWrapper\Tests\Integration\TransactionEnd;
 
+use Closure;
 use PDO;
 use PDOException;
 use Throwable;
@@ -16,6 +17,17 @@ use Throwable;
  */
 final class ScenarioPdo extends PDO
 {
+    /**
+     * Run once in the middle of the next commit(), rollBack() or exec(), before anything is sent:
+     * what an error handler for a PDO warning does while the call is under way - foreign code that
+     * may use the driver.
+     */
+    public ?Closure $duringCommit = null;
+
+    public ?Closure $duringRollBack = null;
+
+    public ?Closure $duringExec = null;
+
     public bool $failRollBackAlways = false;
 
     /** How often rollBack() was called, failed or not */
@@ -44,6 +56,7 @@ final class ScenarioPdo extends PDO
 
     public function exec(string $statement): int|false
     {
+        $this->interrupt($this->duringExec);
         if ($this->failExec) {
             throw new PDOException('exec failed (scenario)');
         }
@@ -58,6 +71,7 @@ final class ScenarioPdo extends PDO
     public function rollBack(): bool
     {
         $this->rollBackCalls++;
+        $this->interrupt($this->duringRollBack);
         if ($this->failRollBackAlways) {
             throw new PDOException('rollback failed (scenario)');
         }
@@ -67,6 +81,7 @@ final class ScenarioPdo extends PDO
 
     public function commit(): bool
     {
+        $this->interrupt($this->duringCommit);
         if ($this->throwFromCommit !== null) {
             $thrown = $this->throwFromCommit;
             $this->throwFromCommit = null;
@@ -95,6 +110,20 @@ final class ScenarioPdo extends PDO
         }
 
         return $this->hideTransaction ? false : parent::inTransaction();
+    }
+
+    /**
+     * Runs the closure once: it is taken away first, so that what it calls does not run it again.
+     *
+     * @param-out null $during
+     */
+    private function interrupt(?Closure &$during): void
+    {
+        $run = $during;
+        $during = null;
+        if ($run !== null) {
+            $run();
+        }
     }
 
     /** After a failed commit with $vanishOnFailedCommit: the state is readable again and reports no transaction. */

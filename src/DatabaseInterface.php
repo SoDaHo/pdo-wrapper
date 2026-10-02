@@ -223,8 +223,8 @@ interface DatabaseInterface
      * Events: 'query', 'error', 'transaction.begin', 'transaction.commit', 'transaction.rollback',
      * 'transaction.end' (array{outcome: 'committed'|'rolled_back'|'lost', error: ?Throwable},
      * once per transaction this library ends, after the commit or rollback listeners; see Traits\HasHooks).
-     * Any other name is accepted; nothing in this library fires it. The 'query' and 'error' payloads carry the SQL and
-     * the parameters as passed, secrets included: redact before logging.
+     * Any other name is refused (see @throws): a listener for it would never run. The 'query' and 'error' payloads
+     * carry the SQL and the parameters as passed, secrets included: redact before logging.
      *
      * A throwing hook stops the remaining hooks of its event (for 'transaction.begin' a rollback
      * of the new transaction is attempted first, best effort), except for 'transaction.commit' and
