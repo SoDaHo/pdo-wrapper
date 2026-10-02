@@ -113,7 +113,10 @@ use Sodaho\PdoWrapper\Exception\DatabaseException;
  * After a statement of the listener that failed, the driver is asked before PDO's report is
  * trusted (refreshTransactionState(), as before a ROLLBACK): on MySQL/MariaDB a DDL statement
  * commits the transaction even when it fails. Gone: 'lost', as above - also when the listener
- * let the failure escape. Not to be found out: the begin fails, a ROLLBACK cleans up, 'lost'.
+ * let the failure escape. Not to be found out: the begin fails, a ROLLBACK cleans up, 'lost'
+ * (when that ROLLBACK fails too, the transaction may still be open: its later rollback() tells
+ * no second end). A failure that ended the transaction for certain (transactionIsOver(): a
+ * deadlock) fails the begin as well, also when the listener swallowed it: undone, no event.
  * The 'transaction.begin' listeners are called one by one by beginTransaction() itself, as the
  * 'transaction.commit' and 'transaction.end' listeners always were: an overriding trigger() does
  * not see these three events.
@@ -128,7 +131,9 @@ use Sodaho\PdoWrapper\Exception\DatabaseException;
  * through this library while a COMMIT, a ROLLBACK or the driver's question to the server is
  * under way, that call tells the end, and the one it interrupted tells none: transaction() and
  * updateMultiple() look again whether the transaction is still theirs, and a failed commit of
- * theirs leaves with outcome 'lost' then. beginTransaction(), commit() and rollback() are final in
+ * theirs leaves with outcome 'lost' then. What such a handler begins and ends itself stays its
+ * own: the failed commit() of a transaction it began is not taken for the one transaction() ran.
+ * beginTransaction(), commit() and rollback() are final in
  * AbstractDriver: what is told here is decided in them. A custom driver extends them through
  * listeners and through the protected hooks (failureToRemember(), transactionEndedBy(),
  * transactionIsOver(), refreshTransactionState()), not by overriding them.

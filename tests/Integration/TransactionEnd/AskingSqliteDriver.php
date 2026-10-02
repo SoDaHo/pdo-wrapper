@@ -20,6 +20,9 @@ final class AskingSqliteDriver extends SqliteDriver
     /** What asking finds: 'gone' hides the transaction, 'alive' leaves it, 'unknown' could not find out */
     public string $answer = 'alive';
 
+    /** @var list<string> Answers for the next questions, one each, before $answer applies again */
+    public array $answers = [];
+
     public function __construct(PDO $pdo)
     {
         $this->pdo = $pdo;
@@ -38,10 +41,11 @@ final class AskingSqliteDriver extends SqliteDriver
     protected function refreshTransactionState(): bool
     {
         $this->asked++;
-        if ($this->answer === 'gone' && $this->pdo instanceof ScenarioPdo) {
+        $answer = array_shift($this->answers) ?? $this->answer;
+        if ($answer === 'gone' && $this->pdo instanceof ScenarioPdo) {
             $this->pdo->hideTransaction = true;
         }
 
-        return $this->answer !== 'unknown';
+        return $answer !== 'unknown';
     }
 }

@@ -2266,6 +2266,131 @@ abstract class AbstractTransactionEndScenarios extends TestCase
     }
 
     /**
+     * The same for a transaction begun on raw PDO whose commit() goes through the driver: the
+     * handler's rollback has told the end, and that the transaction is gone afterwards is no
+     * second one. A commit() the caller issued itself keeps no outcome.
+     */
+    public function testAFailedCommitOfARawBegunTransactionAnErrorHandlerRolledBackTellsOneEnd(): void
+    {
+        $this->pdo->beginTransaction();
+        $this->db->insert(self::TABLE, ['id' => 1, 'name' => 'a']);
+        $db = $this->db;
+        $this->pdo->duringCommit = static function () use ($db): void {
+            $db->rollback();
+        };
+        $this->pdo->failCommit = true;
+
+        try {
+            $this->db->commit();
+            $this->fail('Expected CommitFailedException');
+        } catch (CommitFailedException $e) {
+            $this->assertNull($e->outcome);
+        }
+
+        $this->assertSame([['outcome' => self::ROLLED_BACK, 'error' => null]], $this->ends, 'told once, by the rollback that ended it');
+        $this->assertVisible([]);
+    }
+
+    /**
+     * A handler that ends the transaction and begins another, and the COMMIT then fails as PDO's
+     * own failure: that failure is the one of the commit transaction() ran, for the transaction it
+     * began - 'lost', nothing was told with it -, and the handler's transaction is left open.
+     */
+    public function testAFailedCommitAfterAnErrorHandlerBeganAnotherTransactionIsLost(): void
+    {
+        $db = $this->db;
+        $this->pdo->duringCommit = static function () use ($db): void {
+            $db->rollback();
+            $db->beginTransaction();
+        };
+        $this->pdo->failCommit = true;
+
+        try {
+            $this->db->transaction(static fn (DatabaseInterface $db) => $db->insert(self::TABLE, ['id' => 1, 'name' => 'a']));
+            $this->fail('Expected CommitFailedException');
+        } catch (CommitFailedException $e) {
+            $this->assertSame(self::LOST, $e->outcome);
+        }
+
+        $this->assertSame([['outcome' => self::ROLLED_BACK, 'error' => null]], $this->ends, 'the end of the transaction that was rolled back, and no other');
+        $this->assertTrue($this->pdo->reallyInTransaction(), 'the handler\'s transaction is still open');
+        $this->db->rollback();
+        $this->assertVisible([]);
+    }
+
+    /**
+     * A handler that ends the transaction, begins another and commits that one itself - and lets
+     * the failure of its commit escape: what leaves transaction() is the failed commit of the
+     * handler's transaction, not of the one transaction() began. It is not written to, and the
+     * handler's transaction is left open.
+     */
+    public function testTheFailedCommitOfATransactionAnErrorHandlerBeganIsNotSettled(): void
+    {
+        $db = $this->db;
+        $pdo = $this->pdo;
+        $this->pdo->duringCommit = static function () use ($db, $pdo): void {
+            $db->rollback();
+            $db->beginTransaction();
+            $pdo->failCommit = true;
+            $db->commit();
+        };
+
+        try {
+            $this->db->transaction(static fn (DatabaseInterface $db) => $db->insert(self::TABLE, ['id' => 1, 'name' => 'a']));
+            $this->fail('Expected the CommitFailedException of the handler');
+        } catch (CommitFailedException $e) {
+            $this->assertNull($e->outcome, 'a commit() the handler issued itself: its transaction is its own to end');
+        }
+
+        $this->assertSame([['outcome' => self::ROLLED_BACK, 'error' => null]], $this->ends, 'the end of the transaction that was rolled back, and no other');
+        $this->assertTrue($this->pdo->reallyInTransaction(), 'the handler\'s transaction is still open');
+        $this->db->rollback();
+        $this->assertVisible([]);
+    }
+
+    /**
+     * A handler that runs a whole transaction of its own in the middle of the ROLLBACK after a
+     * failed commit - and that commit fails as well: each failed commit keeps its own outcome.
+     * The outer one was ended by the handler's rollback, not with its failure: 'lost'.
+     */
+    public function testAFailedCommitKeepsItsOutcomeWhenAnErrorHandlerRunsATransactionOfItsOwn(): void
+    {
+        $db = $this->db;
+        $pdo = $this->pdo;
+        $seen = new class () {
+            public ?CommitFailedException $inner = null;
+        };
+        $this->pdo->duringRollBack = static function () use ($db, $pdo, $seen): void {
+            $db->rollback();
+            $pdo->failCommit = true;
+            try {
+                $db->transaction(static fn (): null => null);
+            } catch (CommitFailedException $e) {
+                $seen->inner = $e;
+            }
+            throw new RuntimeException('thrown by an error handler');
+        };
+        $this->pdo->failCommit = true;
+
+        try {
+            $this->db->transaction(static fn (DatabaseInterface $db) => $db->insert(self::TABLE, ['id' => 1, 'name' => 'a']));
+            $this->fail('Expected CommitFailedException');
+        } catch (CommitFailedException $e) {
+            $this->assertNotSame($seen->inner, $e);
+            $this->assertSame(self::LOST, $e->outcome, 'never without an outcome');
+        }
+
+        $this->assertNotNull($seen->inner);
+        $this->assertSame(self::ROLLED_BACK, $seen->inner->outcome);
+        $this->assertSame(
+            [['outcome' => self::ROLLED_BACK, 'error' => null], ['outcome' => self::ROLLED_BACK, 'error' => $seen->inner]],
+            $this->ends,
+            'the outer transaction by the handler\'s rollback, the handler\'s own with its failed commit'
+        );
+        $this->assertVisible([]);
+    }
+
+    /**
      * An error handler that rolls back in the middle of the automatic ROLLBACK and throws: the
      * rollback() of transaction() fails, but the transaction is not "lost" - the handler's call
      * ended it and told its end.

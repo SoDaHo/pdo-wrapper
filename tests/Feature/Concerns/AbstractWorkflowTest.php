@@ -358,10 +358,11 @@ abstract class AbstractWorkflowTest extends TestCase
     }
 
     /**
-     * An exception that reports a listener's failure carries no SQLSTATE and no driver code,
-     * whatever the listener ran into: the statement ran, the transaction was committed or rolled
-     * back, the BEGIN went through. A retry that looks at $sqlState must not take a listener's
-     * deadlock for the failure of the operation.
+     * An exception the library puts around what a listener threw after the operation went through
+     * carries no SQLSTATE and no driver code: the statement ran, the transaction was committed or
+     * rolled back. A retry that looks at $sqlState must not take a listener's deadlock for the
+     * failure of the operation. A failing begin listener makes the begin itself fail: nothing went
+     * through, and its codes are handed on like any cause's.
      */
     public function testAnExceptionAboutAListenersFailureCarriesNoCodes(): void
     {
@@ -417,7 +418,7 @@ abstract class AbstractWorkflowTest extends TestCase
 
         $this->assertSame(['query', 'transaction.begin', 'transaction.commit', 'transaction.end'], array_keys($caught));
         foreach ($caught as $event => $e) {
-            $this->assertSame([null, null], [$e->sqlState, $e->driverCode], $event);
+            $this->assertSame($event === 'transaction.begin' ? ['40001', 1213] : [null, null], [$e->sqlState, $e->driverCode], $event);
         }
     }
 

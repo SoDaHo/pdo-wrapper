@@ -30,6 +30,9 @@ final class ScenarioPdo extends PDO
 
     public bool $failRollBackAlways = false;
 
+    /** The failure as a non-exception error mode reports it: rollBack() returns false, as long as this is set */
+    public bool $rollBackReturnsFalse = false;
+
     /** How often rollBack() was called, failed or not */
     public int $rollBackCalls = 0;
 
@@ -74,6 +77,9 @@ final class ScenarioPdo extends PDO
         $this->interrupt($this->duringRollBack);
         if ($this->failRollBackAlways) {
             throw new PDOException('rollback failed (scenario)');
+        }
+        if ($this->rollBackReturnsFalse) {
+            return false;
         }
 
         return parent::rollBack();

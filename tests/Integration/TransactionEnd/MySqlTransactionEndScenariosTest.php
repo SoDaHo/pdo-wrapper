@@ -179,6 +179,8 @@ class MySqlTransactionEndScenariosTest extends AbstractTransactionEndScenarios
         } catch (TransactionException $e) {
             $this->assertNotInstanceOf(CommitFailedException::class, $e);
             $this->assertStringStartsWith('A transaction.begin listener ended the transaction that was just begun outside this driver', $e->getDebugMessage() ?? '');
+            $this->assertSame(1050, $this->errorInfoBehind($e, 1), 'the cause is the failed statement: table already exists');
+            $this->assertNull($e->sqlState, 'what is committed is not certain: no codes to act on');
             $this->assertSame([['outcome' => DatabaseInterface::TRANSACTION_LOST, 'error' => $e]], $this->ends);
         }
 
@@ -235,6 +237,39 @@ class MySqlTransactionEndScenariosTest extends AbstractTransactionEndScenarios
         $this->db->rollback();
 
         $this->assertSame([['outcome' => DatabaseInterface::TRANSACTION_ROLLED_BACK, 'error' => null]], $this->ends, 'told once, by the rollback that ended it');
+        $this->assertVisible([]);
+    }
+
+    /**
+     * A handler that only runs a statement of its own through the driver while rollback() asks -
+     * one that logs, and whose statement fails - has ended nothing: the rollback goes on, although
+     * the failure the driver remembers is another one now.
+     */
+    public function testAnErrorHandlerThatFailsAStatementWhileRollbackAsksDoesNotStopTheRollback(): void
+    {
+        $this->db->beginTransaction();
+        $this->db->insert(self::TABLE, ['id' => 1, 'name' => 'a']);
+        try {
+            $this->db->query('SELECT * FROM end_scenarios_missing');
+            $this->fail('Expected QueryException');
+        } catch (QueryException) {
+            // remembered: the next rollback asks the server
+        }
+        $db = $this->db;
+        $this->pdo->duringExec = static function () use ($db): void {
+            try {
+                $db->query('SELECT * FROM end_scenarios_missing_too');
+            } catch (QueryException) {
+                // the handler's own failure: remembered instead of the first one
+            }
+        };
+        $this->events = [];
+        $this->ends = [];
+
+        $this->db->rollback();
+
+        $this->assertSame(['rollback', 'end'], $this->events);
+        $this->assertSame([['outcome' => DatabaseInterface::TRANSACTION_ROLLED_BACK, 'error' => null]], $this->ends);
         $this->assertVisible([]);
     }
 

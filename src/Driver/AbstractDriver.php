@@ -50,6 +50,13 @@ abstract class AbstractDriver implements DatabaseInterface
     private bool $lostReported = false;
 
     /**
+     * Counts the 'transaction.end' events told. A call that has been inside PDO - and with it,
+     * possibly, inside foreign code that used this driver (an error handler for a PDO warning) -
+     * compares it to see that the transaction it was about has been ended meanwhile.
+     */
+    private int $endsTold = 0;
+
+    /**
      * Set by queryThen(): the step for exactly that statement - its SQL, at the hook depth
      * queryThen() was called at - run once it was executed, before its 'query' hook.
      *
@@ -63,15 +70,15 @@ abstract class AbstractDriver implements DatabaseInterface
     /** The statement failure inside the open transaction that may have ended it on the server (see failureToRemember()); commit() asks before it commits */
     private ?PDOException $suspectFailure = null;
 
-    /** The failed or refused commit with which commit() has already told a vanished transaction's end as 'lost': commitOwnTransaction() has nothing left to end then */
-    private ?CommitFailedException $failedCommitThatToldTheEnd = null;
-
     /**
-     * The failure the latest commit() of this class has thrown. commitOwnTransaction() tells its
-     * own failed commit by it - not by the class: a driver hook or an error handler may throw a
-     * CommitFailedException that belongs to another transaction.
+     * The failure the latest commit() has thrown, and the number of the transaction that commit()
+     * was for. commitOwnTransaction() tells its own failed commit by both - not by the class: a
+     * driver hook or an error handler may throw a CommitFailedException that belongs to another
+     * transaction, also one of a commit() it issued itself for a transaction it began.
+     *
+     * @var array{CommitFailedException, int}|null
      */
-    private ?CommitFailedException $thrownByCommit = null;
+    private ?array $thrownByCommit = null;
 
     /**
      * While commitOwnTransaction() ends the transaction whose commit just failed: that failure.
@@ -740,11 +747,12 @@ abstract class AbstractDriver implements DatabaseInterface
                 $this->failIfNoLongerOpen($number);
             }
         } catch (PDOException $e) {
+            // The begin failed, and with it the listener's codes are the caller's: nothing went
+            // through that a retry would run twice
             $failure = new TransactionException(
                 message: 'Failed to begin transaction',
                 previous: $e,
-                debugMessage: $e->getMessage(),
-                listenerFailure: true
+                debugMessage: $e->getMessage()
             );
             $this->rollbackJustBegunQuietly($number, $failure);
 
@@ -783,19 +791,36 @@ abstract class AbstractDriver implements DatabaseInterface
             // listener that threw by itself after it ended the transaction (rollbackJustBegunQuietly())
             throw new TransactionException(
                 message: 'Failed to begin transaction',
-                debugMessage: 'A transaction.begin listener ended the transaction that was just begun outside this driver: PDO reports no transaction any more (an implicit commit by a DDL statement, or raw PDO). What the listener wrote before may be committed.'
+                previous: $this->suspectFailure, // the listener's failed statement, when that is how it ended
+                debugMessage: 'A transaction.begin listener ended the transaction that was just begun outside this driver: PDO reports no transaction any more (an implicit commit by a DDL statement, or raw PDO). What the listener wrote before may be committed.',
+                listenerFailure: true
+            );
+        }
+
+        if ($this->suspectFailure !== null && $this->transactionIsOver($this->suspectFailure)) {
+            // The server has thrown the transaction away (a deadlock), whatever PDO reports: the
+            // caller would begin its work in a dead transaction. Undone by the catch in
+            // beginTransaction(), like every begin that fails; nothing of it is committed, and the
+            // failure's codes are the caller's.
+            throw new TransactionException(
+                message: 'Failed to begin transaction',
+                previous: $this->suspectFailure,
+                debugMessage: 'A statement of a transaction.begin listener failed in a way that ended the transaction that was just begun on the server (the previous exception). Nothing done in it is committed.'
             );
         }
 
         if (!$known) {
-            // Fail-closed: the caller must not go on in what may be autocommit. The catch in
-            // beginTransaction() cleans up and tells the end as 'lost'.
-            throw new TransactionException(
+            // Fail-closed: the caller must not go on in what may be autocommit. Cleaned up and told
+            // right here, on this answer: asked again, the driver might say something else.
+            $failure = new TransactionException(
                 message: 'Failed to begin transaction',
                 previous: $this->suspectFailure,
                 debugMessage: 'A statement failed inside a transaction.begin listener (the previous exception), and the server could not be asked whether the transaction that was just begun still exists.',
                 listenerFailure: true
             );
+            $this->cleanUpUnconfirmed($failure);
+
+            throw $failure;
         }
     }
 
@@ -838,30 +863,44 @@ abstract class AbstractDriver implements DatabaseInterface
 
             return;
         }
-        $this->rollbackRawQuietly();
         if (!$known) {
-            // Sent to clean up whatever was there. Whether the transaction still existed is not
-            // known, so nothing is confirmed: what the listener wrote may be committed.
-            $this->endLostTransaction($cause, mayStillBeOpen: false);
+            $this->cleanUpUnconfirmed($cause);
+
+            return;
         }
+        $this->rollbackRawQuietly();
     }
 
     /**
-     * Roll back on raw PDO if a transaction is open, without 'transaction.rollback' or 'transaction.end'
-     * hooks and ignoring failures: the exception that caused this is more important for debugging.
+     * The driver could not find out whether the transaction that was just begun still exists: a
+     * ROLLBACK is sent to clean up whatever is there, and the end is told as 'lost' - nothing is
+     * confirmed, what the listener wrote may be committed. When that ROLLBACK fails as well, the
+     * transaction may still be open: its later rollback() tells no second end.
      */
-    private function rollbackRawQuietly(): void
+    private function cleanUpUnconfirmed(Throwable $cause): void
+    {
+        $gone = $this->rollbackRawQuietly();
+        $this->endLostTransaction($cause, mayStillBeOpen: !$gone);
+    }
+
+    /**
+     * Roll back on raw PDO, without 'transaction.rollback' or 'transaction.end' hooks and ignoring
+     * failures: the exception that caused this is more important for debugging. Called while PDO
+     * does not say that no transaction is open.
+     *
+     * @return bool Whether the ROLLBACK went through
+     */
+    private function rollbackRawQuietly(): bool
     {
         // Ended here, without an event: a later cleanup must not report it as lost
         $this->transactionBegun = false;
         $this->suspectFailure = null;
 
         try {
-            if ($this->pdo->inTransaction()) {
-                $this->pdo->rollBack();
-            }
+            return $this->pdo->rollBack();
         } catch (Throwable) {
             // Rollback failed, but the original exception is more important for debugging
+            return false;
         }
     }
 
@@ -896,9 +935,10 @@ abstract class AbstractDriver implements DatabaseInterface
      */
     final public function commit(): void
     {
-        $this->failedCommitThatToldTheEnd = null;
         $this->thrownByCommit = null;
         $this->deadTransactionPending(); // forgets the failure of a transaction begun on raw PDO that PDO no longer reports
+        $told = $this->endsTold;
+        $number = $this->transactionsBegun; // read now: foreign code inside the PDO calls below may begin another
 
         if ($this->suspectFailure !== null) {
             $reason = $this->transactionEndedBy($this->suspectFailure);
@@ -909,20 +949,20 @@ abstract class AbstractDriver implements DatabaseInterface
                     previous: $this->suspectFailure,
                     debugMessage: $reason
                 );
-                $this->endFailedCommitIfGone($refusal, wasOpen: false);
-                $this->thrownByCommit = $refusal; // after the listeners, like the mark above
+                $this->endFailedCommitIfGone($refusal, wasOpen: false, told: $told);
+                $this->thrownByCommit = [$refusal, $number]; // after the listeners: a commit() of theirs resets it
 
                 throw $refusal;
             }
             $this->suspectFailure = null;
         }
 
-        // Was a transaction begun on raw PDO open when the COMMIT was sent? An unreadable state is no
-        // "yes". Not one begun through this driver: that one owes its end by its own mark - and no
-        // longer, once something ended it through this driver while the COMMIT was under way (an
-        // error handler that rolled back).
+        // For a transaction begun on raw PDO: was one open when the COMMIT was sent whose end is still
+        // owed - not one whose 'lost' has been told while it may still be open: a successful commit tells
+        // none then either. Read now, not after the failure: foreign code inside the COMMIT may change
+        // the mark. An unreadable state is no "yes".
         try {
-            $wasOpen = !$this->transactionBegun && $this->pdo->inTransaction();
+            $wasOpen = !$this->lostReported && $this->pdo->inTransaction();
         } catch (Throwable) {
             $wasOpen = false;
         }
@@ -935,8 +975,8 @@ abstract class AbstractDriver implements DatabaseInterface
                 previous: $e,
                 debugMessage: $e->getMessage()
             );
-            $this->endFailedCommitIfGone($failure, $wasOpen);
-            $this->thrownByCommit = $failure;
+            $this->endFailedCommitIfGone($failure, $wasOpen, $told);
+            $this->thrownByCommit = [$failure, $number];
 
             throw $failure;
         }
@@ -948,8 +988,8 @@ abstract class AbstractDriver implements DatabaseInterface
                 previous: $this->silentFailure('PDO::commit() returned false', $this->pdo->errorInfo()),
                 debugMessage: 'PDO::commit() returned false'
             );
-            $this->endFailedCommitIfGone($failure, $wasOpen);
-            $this->thrownByCommit = $failure;
+            $this->endFailedCommitIfGone($failure, $wasOpen, $told);
+            $this->thrownByCommit = [$failure, $number];
 
             throw $failure;
         }
@@ -977,18 +1017,23 @@ abstract class AbstractDriver implements DatabaseInterface
      * and its end would never be told. It ends here as 'lost', with the failure as error;
      * transaction() then finds nothing left to end.
      */
-    private function endFailedCommitIfGone(CommitFailedException $failure, bool $wasOpen): void
+    private function endFailedCommitIfGone(CommitFailedException $failure, bool $wasOpen, int $told): void
     {
+        if ($this->endsTold !== $told) {
+            // An end was told while the COMMIT, or the driver's question before it, was under way:
+            // foreign code (an error handler) ended the transaction through this driver. That the
+            // transaction is gone is that call's doing, and it has told the end.
+            return;
+        }
+
         // An end is owed for a transaction begun through this driver, and for one begun on raw PDO that
-        // was open when the COMMIT was sent (its successful commit would have told an end too) - not while
-        // a 'lost' told for a transaction that may still be open is pending: a successful commit tells none then either
-        $owed = $this->transactionBegun || ($wasOpen && !$this->lostReported);
+        // was open when the COMMIT was sent (its successful commit would have told an end too)
+        $owed = $this->transactionBegun || $wasOpen;
 
         // An unreadable state is not "gone": it may still be open, the caller's rollback decides
         if ($owed && $this->reportsNoTransaction()) {
             $failure->settle(self::TRANSACTION_LOST); // what the end listeners are told below
             $this->endLostTransaction($failure, mayStillBeOpen: false);
-            $this->failedCommitThatToldTheEnd = $failure; // after the listeners: a commit() of theirs resets it
         }
     }
 
@@ -1001,6 +1046,7 @@ abstract class AbstractDriver implements DatabaseInterface
      */
     private function dispatchTransactionEnd(string $outcome, ?Throwable $error): array
     {
+        $this->endsTold++;
         $failures = [];
 
         foreach ($this->hooks['transaction.end'] ?? [] as $listener) {
@@ -1260,11 +1306,12 @@ abstract class AbstractDriver implements DatabaseInterface
         $unconfirmed = null;
         if ($this->suspectFailure !== null && $this->reportsATransactionThatOwesItsEnd() && !$this->transactionIsOver($this->suspectFailure)) {
             $failure = $this->suspectFailure;
+            $told = $this->endsTold;
             $known = $this->refreshTransactionState();
-            if ($this->suspectFailure !== $failure) {
+            if ($this->endsTold !== $told) {
                 // The question is a call into PDO, and with it into foreign code (an error handler).
-                // The remembered failure is gone: the transaction was ended through this driver
-                // meanwhile, and that call has told the end. Nothing is left for this one.
+                // An end was told meanwhile: the transaction was ended through this driver, and
+                // nothing is left for this call. A statement that failed in there changes nothing.
                 return;
             }
             if ($this->reportsNoTransaction()) {
@@ -1530,36 +1577,39 @@ abstract class AbstractDriver implements DatabaseInterface
             // Committed: nothing to roll back. commit() already rolled back (best effort) what a listener left open.
             throw $e;
         } catch (Throwable $e) {
-            if ($e === $this->failedCommitThatToldTheEnd) {
-                // Failed or refused, and the transaction was gone: its end is told. A transaction PDO
-                // reports now is one an end listener began, and that one is not this method's to end.
-                $this->failedCommitThatToldTheEnd = null;
-                throw $e;
-            }
             // The commit itself failed; some drivers (e.g. SQLite) keep the transaction open. While
             // the transaction still owes its end, rollbackQuietly() tells one - and whoever tells it
-            // takes the failed commit and writes the outcome into it.
-            $this->settlingCommit = $this->thrownByThisCommit($e);
+            // takes the failed commit and writes the outcome into it. When the failed or refused
+            // commit found the transaction gone, it has told the end itself (endFailedCommitIfGone()):
+            // nothing is left to end, and a transaction PDO reports now is one an end listener began.
+            $failed = $this->thrownByThisCommit($e, $own);
+            $this->settlingCommit = $failed;
             $this->rollbackQuietly($own, $e);
-            if ($this->settlingCommit !== null) {
-                // Nobody took it: the transaction was ended through this driver while the COMMIT was
-                // under way (an error handler that rolled back). No end was told with this failure,
-                // and nothing confirms what became of the commit.
-                $this->settlingCommit->settle(self::TRANSACTION_LOST);
-                $this->settlingCommit = null;
+            $this->settlingCommit = null; // whatever became of it: taken, or left by a rollback that had nothing to end
+            if ($failed !== null && $failed->outcome === null) {
+                // No end was told with it: the transaction was ended through this driver while the
+                // COMMIT or the ROLLBACK after it was under way (an error handler that rolled back,
+                // or ran a transaction of its own). Nothing confirms what became of the commit.
+                $failed->settle(self::TRANSACTION_LOST);
             }
             throw $e;
         }
     }
 
     /**
-     * $e as the failure commit() has just thrown, or null: nothing else that may arrive from a
-     * commit() call - what a driver hook or an error handler throws - is this transaction's failed
-     * commit.
+     * $e as the failure commit() has just thrown for the transaction $own, or null: nothing else
+     * that may arrive from a commit() call - what a driver hook or an error handler throws, the
+     * failed commit() of a transaction an error handler began meanwhile - is this transaction's
+     * failed commit.
      */
-    private function thrownByThisCommit(Throwable $e): ?CommitFailedException
+    private function thrownByThisCommit(Throwable $e, int $own): ?CommitFailedException
     {
-        return $this->thrownByCommit !== null && $e === $this->thrownByCommit ? $this->thrownByCommit : null;
+        if ($this->thrownByCommit === null) {
+            return null;
+        }
+        [$failure, $number] = $this->thrownByCommit;
+
+        return $e === $failure && $number === $own ? $failure : null;
     }
 
     /**
@@ -1649,18 +1699,25 @@ abstract class AbstractDriver implements DatabaseInterface
             $values
         );
 
-        // Read before the 'query' hook runs: a listener that inserts would replace the id
+        // Read before the 'query' hook runs: a listener that inserts would replace the id - and, when
+        // PDO could not report one, what it recorded for that failure
         $lastId = null;
-        $this->queryThen($sql, $params, function () use (&$lastId): void {
+        $idFailure = null;
+        $read = function () use (&$lastId, &$idFailure): void {
             $lastId = $this->lastInsertId();
-        });
-        // An overridden query() that bypasses this class's query() never ran the step
-        $lastId ??= $this->lastInsertId();
+            if ($lastId === false) {
+                $idFailure = $this->silentFailure('PDO::lastInsertId() returned false', $this->pdo->errorInfo());
+            }
+        };
+        $this->queryThen($sql, $params, $read);
+        if ($lastId === null) {
+            $read(); // an overridden query() that bypasses this class's query() never ran the step
+        }
 
         if ($lastId === false) {
             throw new QueryException(
                 message: 'Insert failed',
-                previous: $this->silentFailure('PDO::lastInsertId() returned false', $this->pdo->errorInfo()),
+                previous: $idFailure,
                 debugMessage: sprintf('Failed to retrieve last insert ID | SQL: %s | Params: %s', $sql, $this->encodeParams($params))
             );
         }

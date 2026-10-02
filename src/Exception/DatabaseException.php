@@ -20,11 +20,12 @@ class DatabaseException extends Exception
 {
     /**
      * The SQLSTATE of the database failure behind this exception - '42S02', '23505', 'HY000' -
-     * or null when no database failure stands behind it (a refused argument) and when the
-     * exception reports what a listener threw: the codes say how the operation itself failed, and
-     * there the database did what it was asked - a listener's deadlock must not look like a reason
-     * to run a committed transaction again (its codes are in getPrevious()). Five characters, as
-     * the database sent them: compare as a string.
+     * or null when no database failure stands behind it (a refused argument) and where this
+     * library puts the exception around what a listener threw after the operation went through
+     * ('Query hook failed', CommitHookException, a failing rollback or end listener): the codes say
+     * how the operation itself failed, and there the database did what it was asked - a listener's
+     * deadlock must not look like a reason to run a committed transaction again (its codes are in
+     * getPrevious()). Five characters, as the database sent them: compare as a string.
      */
     public readonly ?string $sqlState;
 

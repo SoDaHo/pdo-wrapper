@@ -1092,6 +1092,11 @@ class TransactionTest extends TestCase
         $pdo->fail = '';
         $db->rollback();
 
+        // what PDO recorded for the failed lastInsertId() is kept as it was at that moment: a 'query'
+        // listener runs afterwards, and its own PDO calls replace it
+        $db->on('query', static function () use ($pdo): void {
+            $pdo->fail = '';
+        });
         $pdo->fail = 'insert id';
         try {
             $db->insert('users', ['name' => 'Max']);

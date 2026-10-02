@@ -892,8 +892,41 @@ class SqliteTransactionEndScenariosTest extends AbstractTransactionEndScenarios
     }
 
     /**
-     * @return \Closure(string): void Runs a query on a table that does not exist and swallows the failure
+     * The same for an earlier failed commit of the very transaction transaction() began: the
+     * callback tried to commit, caught the failure, and that exception is thrown again inside the
+     * commit transaction() runs. It is still not the failure of that commit - commit() forgets
+     * what an earlier call threw - and keeps no outcome.
      */
+    public function testAnEarlierFailedCommitOfTheSameTransactionThrownInsideTheCommitIsNotSettled(): void
+    {
+        $pdo = $this->pdo;
+        $ends = new Recorder(static fn (array $data): array => [$data['outcome'], $data['error']]);
+        $this->db->on('transaction.end', $ends);
+        $seen = new class () {
+            public ?CommitFailedException $earlier = null;
+        };
+
+        try {
+            $this->db->transaction(static function (DatabaseInterface $db) use ($pdo, $seen): void {
+                $db->insert(self::TABLE, ['id' => 1, 'name' => 'a']);
+                $pdo->failCommit = true;
+                try {
+                    $db->commit();
+                } catch (CommitFailedException $e) {
+                    $seen->earlier = $e;
+                    $pdo->throwFromCommit = $e;
+                }
+            });
+            $this->fail('Expected the exception thrown inside the commit');
+        } catch (CommitFailedException $e) {
+            $this->assertSame($seen->earlier, $e);
+            $this->assertNull($e->outcome, 'a commit() the callback issued itself');
+        }
+
+        $this->assertSame([[DatabaseInterface::TRANSACTION_ROLLED_BACK, $seen->earlier]], $ends->all());
+        $this->assertFalse($this->pdo->reallyInTransaction());
+    }
+
     /**
      * A statement that fails inside a 'transaction.begin' listener may have ended the transaction
      * that was just begun without PDO knowing (MySQL/MariaDB: a failing DDL statement commits).
@@ -949,13 +982,22 @@ class SqliteTransactionEndScenariosTest extends AbstractTransactionEndScenarios
         $this->assertSame([[DatabaseInterface::TRANSACTION_ROLLED_BACK, null]], $ends->all());
         $ends->clear();
 
-        // a failure that settles the matter by itself is not asked about
+        // a failure that settles the matter by itself is not asked about: the transaction is over on
+        // the server, the begin fails and is undone - no end, as for every begin that fails
         $listener->table = 'fatal_table';
-        $db->beginTransaction();
+        $sent = $this->pdo->rollBackCalls;
+        try {
+            $db->beginTransaction();
+            $this->fail('Expected TransactionException');
+        } catch (TransactionException $e) {
+            $this->assertStringContainsString('ended the transaction that was just begun on the server', $e->getDebugMessage() ?? '');
+            $this->assertInstanceOf(PDOException::class, $e->getPrevious());
+            $this->assertSame('HY000', $e->sqlState, 'the begin failed: the codes of the cause are the caller\'s');
+        }
         $this->assertSame(2, $db->asked);
-        $db->rollback();
-        $this->assertSame(2, $db->asked);
-        $ends->clear();
+        $this->assertSame($sent + 1, $this->pdo->rollBackCalls);
+        $this->assertFalse($this->pdo->reallyInTransaction());
+        $this->assertSame([], $ends->all());
 
         // swallowed, and the transaction is gone: the begin fails, the end is 'lost'
         $listener->table = 'harmless_table';
@@ -1012,9 +1054,37 @@ class SqliteTransactionEndScenariosTest extends AbstractTransactionEndScenarios
         $this->assertFalse($this->pdo->reallyInTransaction());
         $ends->clear();
 
-        // swallowed, and the driver could not find out: the begin fails, cleaned up, 'lost'
+        // gone for certain after that ROLLBACK: no mark of a transaction that "may still be open" stays behind
+        $this->pdo->beginTransaction();
+        $db->commit();
+        $this->assertSame([[DatabaseInterface::TRANSACTION_COMMITTED, null]], $ends->all());
+        $ends->clear();
+
+        // ... and that ROLLBACK fails as well, by throwing or by returning false: the transaction may
+        // still be open, and its later rollback tells no second end
+        foreach (['failRollBackAlways', 'rollBackReturnsFalse'] as $how) {
+            $this->pdo->{$how} = true;
+            try {
+                $db->beginTransaction();
+                $this->fail('Expected QueryException: ' . $how);
+            } catch (QueryException $e) {
+                $this->assertSame([[DatabaseInterface::TRANSACTION_LOST, $e]], $ends->all(), $how);
+            }
+            $this->assertTrue($this->pdo->reallyInTransaction(), $how);
+            $this->pdo->{$how} = false;
+            $ends->clear();
+            $db->rollback();
+            $this->assertFalse($this->pdo->reallyInTransaction(), $how);
+            $this->assertSame([], $ends->all(), 'told already: ' . $how);
+        }
+
+        // swallowed, and the driver could not find out: the begin fails, cleaned up, 'lost' - on that
+        // one answer: asked again, the driver might say "still there", and no end would be told
         $listener->swallow = true;
         $sent = $this->pdo->rollBackCalls;
+        $asked = $db->asked;
+        $db->answer = 'alive';
+        $db->answers = ['unknown'];
         try {
             $db->beginTransaction();
             $this->fail('Expected TransactionException');
@@ -1022,21 +1092,25 @@ class SqliteTransactionEndScenariosTest extends AbstractTransactionEndScenarios
             $this->assertSame('Failed to begin transaction', $e->getMessage());
             $this->assertStringContainsString('could not be asked whether the transaction that was just begun still exists', $e->getDebugMessage() ?? '');
             $this->assertInstanceOf(PDOException::class, $e->getPrevious());
-            $this->assertNull($e->sqlState, 'the failure of the listener\'s statement, not of the BEGIN');
+            $this->assertNull($e->sqlState, 'nothing is certain about that transaction: no codes to act on');
             $this->assertSame([[DatabaseInterface::TRANSACTION_LOST, $e]], $ends->all());
         }
+        $this->assertSame($asked + 1, $db->asked, 'asked once');
         $this->assertSame($sent + 1, $this->pdo->rollBackCalls);
         $this->assertFalse($this->pdo->reallyInTransaction());
 
         // nothing of it stays behind: the next transaction is an ordinary one
         $listener->table = '';
         $ends->clear();
-        $asked = $db->asked;
+        $before = $db->asked;
         $db->transaction(static fn (DatabaseInterface $db) => $db->insert(self::TABLE, ['id' => 1, 'name' => 'a']));
-        $this->assertSame($asked, $db->asked);
+        $this->assertSame(0, $db->asked - $before, 'nothing to ask about');
         $this->assertSame([[DatabaseInterface::TRANSACTION_COMMITTED, null]], $ends->all());
     }
 
+    /**
+     * @return \Closure(string): void Runs a query on a table that does not exist and swallows the failure
+     */
     private function failingQuery(SqliteDriver $db): \Closure
     {
         return static function (string $table) use ($db): void {
