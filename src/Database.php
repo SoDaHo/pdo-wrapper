@@ -107,7 +107,8 @@ class Database
     /**
      * Create a connection from the environment: the one place in this library that reads it.
      *
-     * Variables, $_ENV first, then getenv(): DB_DRIVER (mysql, pgsql or sqlite), DB_HOST, DB_PORT,
+     * Variables, $_ENV first, then the process environment (getenv() with local_only, so not
+     * what a web server sends with the request): DB_DRIVER (mysql, pgsql or sqlite), DB_HOST, DB_PORT,
      * DB_DATABASE, DB_USERNAME, DB_PASSWORD, and for SQLite DB_SQLITE_PATH. A variable that is
      * set but empty counts as not set (`DB_HOST=` in a dotenv template): a required value is
      * then reported as missing, DB_PORT takes the driver's default. For SQLite DB_SQLITE_PATH
@@ -237,8 +238,10 @@ class Database
         if (isset($_ENV[$key])) {
             $value = is_scalar($_ENV[$key]) ? (string) $_ENV[$key] : '';
         } else {
-            // getenv() fallback for legacy compatibility
-            $value = getenv($key);
+            // The process environment only (local_only): without it getenv() asks the SAPI first, and
+            // under PHP-FPM that is the request - its FastCGI parameters, every request header among
+            // them as HTTP_*
+            $value = getenv($key, true);
             if ($value === false) {
                 return null;
             }
