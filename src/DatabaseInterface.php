@@ -238,8 +238,10 @@ interface DatabaseInterface
      * state cannot be read, or the session chained a new transaction to the COMMIT (then all of
      * them) are the remaining commit listeners skipped (listed as failures).
      *
-     * @param string $event Event name
+     * @param string $event Event name: 'query', 'error', 'transaction.begin', 'transaction.commit', 'transaction.rollback' or 'transaction.end' (a driver may know more)
      * @param callable $callback Callback receiving event data array
+     *
+     * @throws Exception\DatabaseException When the event is unknown: a listener for a misspelled name would never run
      */
     public function on(string $event, callable $callback): static;
 

@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Sodaho\PdoWrapper\Traits;
 
+use Sodaho\PdoWrapper\Exception\DatabaseException;
+
 /**
  * Provides event hook functionality for database operations.
  *
@@ -234,7 +236,8 @@ namespace Sodaho\PdoWrapper\Traits;
  * that inner commit, itself included: guard against the recursion.
  *
  * Events: 'query', 'error', 'transaction.begin', 'transaction.commit', 'transaction.rollback', 'transaction.end'.
- * on() accepts any name (a custom driver may trigger its own): a misspelled one never fires.
+ * on() throws for any other name: a misspelled one would never fire. A custom driver that
+ * triggers events of its own names them in knownEvents().
  */
 trait HasHooks
 {
@@ -244,14 +247,35 @@ trait HasHooks
     /**
      * Register a callback for an event.
      *
-     * @param string $event Event name
+     * @param string $event Event name, one of knownEvents()
      * @param callable $callback Callback receiving event data array
+     *
+     * @throws DatabaseException When the event is not one of knownEvents(): a listener for a name nothing triggers would never run
      */
     public function on(string $event, callable $callback): static
     {
+        $known = $this->knownEvents();
+        if (!in_array($event, $known, true)) {
+            throw new DatabaseException(
+                message: 'Unknown hook event',
+                debugMessage: sprintf('Unknown event "%s": a listener for it would never run. Known events: %s', $event, implode(', ', $known))
+            );
+        }
+
         $this->hooks[$event][] = $callback;
 
         return $this;
+    }
+
+    /**
+     * The events on() accepts: those this library triggers. A driver that triggers events of
+     * its own (trigger()) adds them: `return [...parent::knownEvents(), 'cache.hit'];`
+     *
+     * @return list<string>
+     */
+    protected function knownEvents(): array
+    {
+        return ['query', 'error', 'transaction.begin', 'transaction.commit', 'transaction.rollback', 'transaction.end'];
     }
 
     /**
