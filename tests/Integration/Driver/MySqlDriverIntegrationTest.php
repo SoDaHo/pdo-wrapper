@@ -11,6 +11,7 @@ use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\TestCase;
 use Sodaho\PdoWrapper\DatabaseInterface;
 use Sodaho\PdoWrapper\Driver\MySqlDriver;
+use Sodaho\PdoWrapper\Exception\CommitFailedException;
 use Sodaho\PdoWrapper\Exception\CommitHookException;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Exception\TransactionException;
@@ -371,6 +372,8 @@ class MySqlDriverIntegrationTest extends TestCase
         $this->assertSame($measured['swallowed'], $e->getPrevious());
         $this->assertStringContainsString('deadlock (error 1213', (string) $e->getDebugMessage());
         $this->assertSame([['outcome' => 'rolled_back', 'error' => $e]], $measured['ends']);
+        $this->assertInstanceOf(CommitFailedException::class, $e);
+        $this->assertSame('rolled_back', $e->outcome, 'refused before it was sent and the rollback is confirmed: nothing is committed');
         $this->assertSame(1, $listenerRuns);
         $this->assertFalse($measured['inTransactionAfterwards']);
         $this->assertSame('Max', $measured['user1Name'], 'the update before the deadlock is gone, and nobody was told it was committed');
@@ -467,6 +470,8 @@ class MySqlDriverIntegrationTest extends TestCase
         $this->assertSame('Failed to commit transaction', $e->getMessage());
         $this->assertStringContainsString('deadlock (error 1213', (string) $e->getDebugMessage());
         $this->assertSame([['outcome' => 'lost', 'error' => $e]], $measured['ends']);
+        $this->assertInstanceOf(CommitFailedException::class, $e);
+        $this->assertSame('lost', $e->outcome);
         $this->assertSame('Anna', $measured['user2Name'], 'nothing was written after the deadlock');
     }
 
@@ -616,6 +621,8 @@ class MySqlDriverIntegrationTest extends TestCase
         $this->assertSame(1213, $e->getPrevious()?->errorInfo[1] ?? null);
         $this->assertStringContainsString('deadlock (error 1213', (string) $e->getDebugMessage());
         $this->assertSame([['outcome' => 'rolled_back', 'error' => $e]], $measured['ends']);
+        $this->assertInstanceOf(CommitFailedException::class, $e);
+        $this->assertSame('rolled_back', $e->outcome);
         $this->assertSame(1, $listenerRuns);
         $this->assertSame('Max', $measured['user1Name']);
         $this->assertSame('Anna', $measured['user2Name'], 'nothing of the half transaction is committed');
@@ -638,6 +645,8 @@ class MySqlDriverIntegrationTest extends TestCase
         $this->assertSame(0, $listenerRuns);
         $this->assertSame(['lost', 'committed'], array_column($measured['ends'], 'outcome'), 'the refused one, then the next transaction');
         $this->assertSame($e, $measured['ends'][0]['error']);
+        $this->assertInstanceOf(CommitFailedException::class, $e);
+        $this->assertSame('lost', $e->outcome, 'on a direct commit() too, once the library has told the end');
     }
 
     /**
@@ -679,6 +688,8 @@ class MySqlDriverIntegrationTest extends TestCase
                 $this->assertSame('Failed to commit transaction', $e->getMessage());
                 $this->assertStringContainsString('the server could not be asked whether it still exists', (string) $e->getDebugMessage());
                 $this->assertSame([['outcome' => 'lost', 'error' => $e]], $ends);
+                $this->assertInstanceOf(CommitFailedException::class, $e);
+                $this->assertSame('lost', $e->outcome);
             }
         }
     }

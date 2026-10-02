@@ -36,7 +36,7 @@ class PostgresDriver extends AbstractDriver
      *
      * @throws ConnectionException When required config is missing or connection fails
      */
-    public function __construct(array $config)
+    public function __construct(#[\SensitiveParameter] array $config)
     {
         $host = $config['host'] ?? null;
         $database = $config['database'] ?? null;
@@ -133,6 +133,31 @@ class PostgresDriver extends AbstractDriver
 
         // An overridden query() that bypasses AbstractDriver::query() never ran the step
         return $id ?? $this->sequenceValue($this->sequenceName($table));
+    }
+
+    /**
+     * SQLSTATE 23505 (unique_violation): duplicate key for a unique constraint or the primary key.
+     */
+    protected function isUniqueViolation(PDOException $failure): bool
+    {
+        return ($failure->errorInfo[0] ?? null) === '23505';
+    }
+
+    /**
+     * `duplicate key value violates unique constraint "users_email_key"`, then a line break and the
+     * detail with the duplicate value: the name is what stands between the quotes of the first
+     * line. The server prints it as it is, a double quote inside the name included (measured on
+     * PostgreSQL 15), so everything up to the line's last quote is taken. Only the first line is
+     * read: the detail below it repeats the duplicate value, line breaks and all, and that value
+     * comes from outside.
+     */
+    protected function violatedConstraint(PDOException $failure): ?string
+    {
+        if (preg_match('/\A[^\n]* violates unique constraint "(.+)"$/m', self::driverMessage($failure), $match) !== 1) {
+            return null;
+        }
+
+        return $match[1];
     }
 
     /**

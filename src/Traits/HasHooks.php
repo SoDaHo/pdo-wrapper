@@ -77,17 +77,24 @@ namespace Sodaho\PdoWrapper\Traits;
  * - one a rollback or end listener leaves open is not checked and stays open.
  *
  * Not paired and other caveats: a failing explicit commit() or rollback() fires nothing (the
- * transaction is still the caller's to end; the one exception is the refused commit of a
- * transaction PDO no longer reports, see below), and so does the raw rollback after a throwing
+ * transaction is still the caller's to end; the one exception is the failed or refused commit of
+ * a transaction PDO no longer reports, see below), and so does the raw rollback after a throwing
  * 'transaction.begin' listener. In a custom driver, a commit()/rollback() override that does not
  * call the parent dispatches no 'transaction.end' for that call, and a beginTransaction() override
  * that does not call the parent leaves this library unaware of the transaction (no 'lost' for it).
+ * An override that ends or begins transactions of its own around the parent call is outside of
+ * what is told here. One that commits on raw PDO and begins again on raw PDO - a rollback()
+ * override before it calls the parent, or a commit() override after the parent failed, before
+ * it throws that failure on - gets the rollback of the second transaction told as the end of
+ * the one whose commit failed ('rolled_back', also in CommitFailedException::$outcome),
+ * although its data is committed. A commit() override that runs another commit() through this
+ * library before it throws the parent's failure on leaves that failure without an outcome.
  *
  * A transaction the server has ended although PDO still reports it: on PostgreSQL every statement
  * error aborts the transaction unless a savepoint catches it; on MySQL/MariaDB a deadlock rolls
  * it back (and a lock wait timeout under innodb_rollback_on_timeout). In both cases the server
  * would answer the COMMIT with success. After a statement failed inside the transaction, commit()
- * therefore refuses with a TransactionException ('Failed to commit transaction', previous: the
+ * therefore refuses with a CommitFailedException ('Failed to commit transaction', previous: the
  * statement failure that ended it) instead of sending the COMMIT: after a MySQL/MariaDB deadlock
  * always; otherwise after asking the server with one probe statement on raw PDO, sent only then
  * (PostgreSQL: is the transaction aborted; MySQL/MariaDB: does it still exist). What follows:
@@ -111,6 +118,24 @@ namespace Sodaho\PdoWrapper\Traits;
  * then, and the end is told as 'lost' with the deadlock as error instead of failing for want of
  * a transaction (end listener failures reach only the 'error' hook there). A lock wait timeout
  * does not end the transaction by default and holds nothing back.
+ * A commit that fails once it was sent (PDO::commit() throws or returns false) is a
+ * CommitFailedException as well, and follows the same two cases: while PDO still reports the
+ * transaction it fires nothing and the transaction is the caller's to roll back
+ * (transaction()/updateMultiple() do that); when PDO reports none any more - PostgreSQL after a
+ * COMMIT rejected by a deferred constraint, a commit after a raw COMMIT or a MySQL DDL statement -
+ * the failed commit itself tells the end as 'lost', at once, on a manual commit() too.
+ * CommitFailedException::$outcome is set in two places only. transaction()/updateMultiple() set
+ * it for the commit they run themselves: the outcome they tell with it as error, before the end
+ * listeners run - 'rolled_back' (the rollback is confirmed, nothing is committed) or 'lost' -
+ * and 'lost' where no end was told with it (the callback had ended the transaction itself, or
+ * a 'lost' was told before); never null. And commit() sets 'lost' when it tells the end itself,
+ * as just described. Every other commit() a caller issues - directly, inside a callback, inside
+ * a listener - keeps null, whoever ends the transaction afterwards: thrown out of a
+ * transaction() callback, such an exception is the error of that transaction's end like any
+ * other exception of the callback, and is not written to. A transaction begun on raw PDO whose
+ * commit through this library fails and takes it away is told as 'lost' as well (its successful
+ * commit would have told 'committed') - not while a 'lost' told for a transaction that may still
+ * be open is pending (see above: such a mark stays until this library ends or begins one).
  * A transaction this library began that PDO no longer reports when the next one is begun (ended by
  * an implicit commit, by the server, or on raw PDO) is told as 'lost' by that beginTransaction(),
  * before the new transaction's 'transaction.begin' - except after a deadlock, where
@@ -131,7 +156,8 @@ namespace Sodaho\PdoWrapper\Traits;
  * statement has opened the next transaction: that commit goes through.
  * With PDO::ERRMODE_WARNING and an error handler that throws, a failed statement still arrives as
  * QueryException (and is remembered), a failed lastInsertId() likewise; a failing BEGIN, COMMIT or
- * ROLLBACK arrives as the handler's exception.
+ * ROLLBACK arrives as the handler's exception (not as TransactionException or
+ * CommitFailedException, and without an outcome).
  *
  * A session that chains transactions (MySQL/MariaDB completion_type=CHAIN) is not supported and
  * is reported, because the caller would continue inside a transaction nobody commits. When PDO

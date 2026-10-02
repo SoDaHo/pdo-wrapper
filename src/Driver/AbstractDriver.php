@@ -10,10 +10,12 @@ use PDO;
 use PDOException;
 use PDOStatement;
 use Sodaho\PdoWrapper\DatabaseInterface;
+use Sodaho\PdoWrapper\Exception\CommitFailedException;
 use Sodaho\PdoWrapper\Exception\CommitHookException;
 use Sodaho\PdoWrapper\Exception\ConnectionException;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Exception\TransactionException;
+use Sodaho\PdoWrapper\Exception\UniqueViolationException;
 use Sodaho\PdoWrapper\Query\RawExpression;
 use Sodaho\PdoWrapper\Traits\HasHooks;
 use Stringable;
@@ -57,8 +59,27 @@ abstract class AbstractDriver implements DatabaseInterface
     /** The statement failure inside the open transaction that may have ended it on the server (see failureToRemember()); commit() asks before it commits */
     private ?PDOException $suspectFailure = null;
 
-    /** The refusal with which commit() has already told a vanished transaction's end as 'lost': commitOwnTransaction() has nothing left to end then */
-    private ?TransactionException $refusalThatToldTheEnd = null;
+    /** The failed or refused commit with which commit() has already told a vanished transaction's end as 'lost': commitOwnTransaction() has nothing left to end then */
+    private ?CommitFailedException $failedCommitThatToldTheEnd = null;
+
+    /**
+     * The failure the latest commit() of this class has thrown. commitOwnTransaction() tells its
+     * own failed commit by it - not by the class: an overriding commit(), a driver hook or an error
+     * handler may throw a CommitFailedException that belongs to another transaction.
+     */
+    private ?CommitFailedException $thrownByCommit = null;
+
+    /**
+     * While commitOwnTransaction() ends the transaction whose commit just failed: that failure.
+     * rollback() or endLostTransaction() takes it away before any listener runs, and writes the
+     * outcome it tells into it (rollback() tells none after a 'lost' reported earlier, and then
+     * writes none): written once. It is void as soon as a commit goes through commit() of this
+     * class - then the transaction it speaks of is committed after all (an overriding rollback()
+     * may do such a thing; one that commits on raw PDO and begins again on raw PDO is not seen).
+     * Set nowhere else, so an exception a callback or a listener throws is never written to,
+     * whatever it is.
+     */
+    private ?CommitFailedException $settlingCommit = null;
 
     /**
      * The configured port as a number, or a ConnectionException: the DSN is built with %d, which
@@ -107,7 +128,7 @@ abstract class AbstractDriver implements DatabaseInterface
      * @param string $sql SQL query with placeholders
      * @param array<int|string, mixed> $params Parameters to bind
      *
-     * @throws QueryException On query failure, on a parameter that cannot be bound, or when a 'query' hook threw a PDOException
+     * @throws QueryException On query failure (a UniqueViolationException for a duplicate key), on a parameter that cannot be bound, or when a 'query' hook threw a PDOException
      *
      * @return PDOStatement Executed statement
      */
@@ -226,12 +247,52 @@ abstract class AbstractDriver implements DatabaseInterface
             'code' => $e->getCode(),
         ]);
 
+        $debugMessage = sprintf('%s | SQL: %s | Params: %s', $e->getMessage(), $sql, $this->encodeParams($params));
+
+        if ($this->isUniqueViolation($e)) {
+            return new UniqueViolationException(
+                message: 'Query failed',
+                code: (int)$e->getCode(),
+                previous: $e,
+                debugMessage: $debugMessage,
+                constraint: $this->violatedConstraint($e)
+            );
+        }
+
         return new QueryException(
             message: 'Query failed',
             code: (int)$e->getCode(),
             previous: $e,
-            debugMessage: sprintf('%s | SQL: %s | Params: %s', $e->getMessage(), $sql, $this->encodeParams($params))
+            debugMessage: $debugMessage
         );
+    }
+
+    /**
+     * Whether the failure is a violated UNIQUE constraint or primary key (a duplicate row); the
+     * statement then fails with a UniqueViolationException. The drivers of this library know
+     * their database's code for it; the default knows none.
+     */
+    protected function isUniqueViolation(PDOException $failure): bool
+    {
+        return false;
+    }
+
+    /**
+     * The name of the key or constraint a unique violation names, or null (see UniqueViolationException).
+     */
+    protected function violatedConstraint(PDOException $failure): ?string
+    {
+        return null;
+    }
+
+    /**
+     * The driver's own message of a failure: errorInfo[2] where PDO filled it in, else the exception's message.
+     */
+    protected static function driverMessage(PDOException $failure): string
+    {
+        $message = $failure->errorInfo[2] ?? null;
+
+        return is_string($message) ? $message : $failure->getMessage();
     }
 
     /**
@@ -679,61 +740,84 @@ abstract class AbstractDriver implements DatabaseInterface
      * dispatched, then 'transaction.end' fires with outcome 'committed' (also after skipped listeners;
      * not when a 'lost' was already reported for this transaction); the end listeners' failures follow
      * the commit listeners' in the same exception, in that order. A failed commit fires no
-     * 'transaction.end': the transaction is still the caller's to end (one exception: a refused
-     * commit of a transaction PDO no longer reports, see below).
+     * 'transaction.end': the transaction is still the caller's to end (one exception: a failed or
+     * refused commit of a transaction PDO no longer reports, see below).
      *
      * Before COMMIT is sent, the driver is asked about the statement failure of the transaction
      * that may have ended it on the server (failureToRemember(), transactionEndedBy()): the commit
-     * is then refused, and stays refused for as long as the driver says so; a refused transaction
-     * that PDO no longer reports is told as 'lost' right there. After the COMMIT, a
+     * is then refused, and stays refused for as long as the driver says so. A transaction begun
+     * through this driver that PDO no longer reports after the failed or refused commit is told
+     * as 'lost' right there (endFailedCommitIfGone()): nothing could end it afterwards. So is one
+     * begun on raw PDO that was open when the COMMIT was sent and is gone after it failed. The
+     * CommitFailedException carries that outcome; otherwise its outcome is null - after a commit()
+     * the caller issued itself the transaction is the caller's to end, and nothing writes into
+     * the exception later (commitOwnTransaction() does, for the commit it runs). After the COMMIT, a
      * transaction PDO reports at once is a chained one (see chainedTransaction()): every commit
      * listener is skipped and it is the first failure of the CommitHookException.
      *
-     * @throws TransactionException When the commit itself failed (it may or may not have taken effect), or was refused because the server had already ended the transaction (nothing of that transaction is committed)
+     * @throws CommitFailedException When the commit itself failed (it may or may not have taken effect), or was refused because the server had already ended the transaction (nothing of that transaction is committed)
      * @throws CommitHookException When committed, but a transaction.commit or transaction.end listener failed, the connection state after a commit listener could not be verified, or the connection is in a new, chained transaction
      */
     public function commit(): void
     {
-        $this->refusalThatToldTheEnd = null;
+        $this->failedCommitThatToldTheEnd = null;
+        $this->thrownByCommit = null;
         $this->deadTransactionPending(); // forgets the failure of a transaction begun on raw PDO that PDO no longer reports
 
         if ($this->suspectFailure !== null) {
             $reason = $this->transactionEndedBy($this->suspectFailure);
             if ($reason !== null) {
                 // The failure is kept: a second commit() must be refused as well; rollback() and beginTransaction() clear it
-                $refusal = new TransactionException(
+                $refusal = new CommitFailedException(
                     message: 'Failed to commit transaction',
                     code: (int)$this->suspectFailure->getCode(),
                     previous: $this->suspectFailure,
                     debugMessage: $reason
                 );
-                $this->endRefusedTransactionIfGone($refusal);
+                $this->endFailedCommitIfGone($refusal, wasOpen: false);
+                $this->thrownByCommit = $refusal; // after the listeners, like the mark above
 
                 throw $refusal;
             }
             $this->suspectFailure = null;
         }
 
+        // For a transaction begun on raw PDO: was one open when the COMMIT was sent? An unreadable state is no "yes"
+        try {
+            $wasOpen = $this->pdo->inTransaction();
+        } catch (Throwable) {
+            $wasOpen = false;
+        }
+
         try {
             $committed = $this->pdo->commit();
         } catch (PDOException $e) {
-            throw new TransactionException(
+            $failure = new CommitFailedException(
                 message: 'Failed to commit transaction',
                 code: (int)$e->getCode(),
                 previous: $e,
                 debugMessage: $e->getMessage()
             );
+            $this->endFailedCommitIfGone($failure, $wasOpen);
+            $this->thrownByCommit = $failure;
+
+            throw $failure;
         }
 
         // Only reachable with a non-exception error mode (allowed via 'options').
         if ($committed === false) {
-            throw new TransactionException(
+            $failure = new CommitFailedException(
                 message: 'Failed to commit transaction',
                 debugMessage: 'PDO::commit() returned false'
             );
+            $this->endFailedCommitIfGone($failure, $wasOpen);
+            $this->thrownByCommit = $failure;
+
+            throw $failure;
         }
 
         // Committed from here on: a listener error must not look like a failed commit.
+        $this->settlingCommit = null; // void: an earlier failed commit of this transaction has been overtaken
         $this->transactionBegun = false;
         $endOwed = !$this->lostReported; // after a reported 'lost' this transaction's end has already been told
         $this->lostReported = false;
@@ -749,26 +833,25 @@ abstract class AbstractDriver implements DatabaseInterface
     }
 
     /**
-     * A refused commit leaves the transaction to the caller - unless nothing is left: when PDO
-     * reports no transaction any more (the server ended it and a later statement or the driver's
-     * question told PDO), no rollback() could end it, and its end would never be told. It ends
-     * here as 'lost', with the refusal as error; transaction() then finds nothing left to end.
+     * A failed or refused commit leaves the transaction to the caller - unless nothing is left:
+     * when PDO reports no transaction any more (the server ended it and a later statement or the
+     * driver's question told PDO; a COMMIT the server answered with a rollback, as PostgreSQL does
+     * for a deferred constraint; a COMMIT or DDL statement on raw PDO), no rollback() could end it,
+     * and its end would never be told. It ends here as 'lost', with the failure as error;
+     * transaction() then finds nothing left to end.
      */
-    private function endRefusedTransactionIfGone(TransactionException $refusal): void
+    private function endFailedCommitIfGone(CommitFailedException $failure, bool $wasOpen): void
     {
-        if (!$this->transactionBegun) {
-            return;
-        }
+        // An end is owed for a transaction begun through this driver, and for one begun on raw PDO that
+        // was open when the COMMIT was sent (its successful commit would have told an end too) - not while
+        // a 'lost' told for a transaction that may still be open is pending: a successful commit tells none then either
+        $owed = $this->transactionBegun || ($wasOpen && !$this->lostReported);
 
-        try {
-            $gone = !$this->pdo->inTransaction();
-        } catch (Throwable) {
-            $gone = false; // unreadable: it may still be open, the caller's rollback decides
-        }
-
-        if ($gone) {
-            $this->endLostTransaction($refusal, mayStillBeOpen: false);
-            $this->refusalThatToldTheEnd = $refusal; // after the listeners: a commit() of theirs resets it
+        // An unreadable state is not "gone": it may still be open, the caller's rollback decides
+        if ($owed && $this->reportsNoTransaction()) {
+            $failure->outcome = self::TRANSACTION_LOST; // what the end listeners are told below
+            $this->endLostTransaction($failure, mayStillBeOpen: false);
+            $this->failedCommitThatToldTheEnd = $failure; // after the listeners: a commit() of theirs resets it
         }
     }
 
@@ -1052,6 +1135,12 @@ abstract class AbstractDriver implements DatabaseInterface
         $endOwed = !$this->lostReported; // after a reported 'lost' this transaction's end has already been told
         $this->lostReported = false;
         $chained = $this->chainedTransaction('ROLLBACK'); // read before a listener can begin a transaction of its own
+        if ($this->settlingCommit !== null && $cause === $this->settlingCommit) {
+            if ($endOwed) {
+                $this->settlingCommit->outcome = self::TRANSACTION_ROLLED_BACK; // what the end listeners are told below
+            }
+            $this->settlingCommit = null; // written once: a listener that throws this exception again inside a transaction of its own cannot have it rewritten
+        }
         $pending = null;
         try {
             $this->trigger('transaction.rollback', []);
@@ -1132,7 +1221,7 @@ abstract class AbstractDriver implements DatabaseInterface
      * - the callback swallowed a statement error that ended the transaction on the server
      *   (PostgreSQL: any error no savepoint caught; MySQL/MariaDB: a deadlock, or a lock wait
      *   timeout under innodb_rollback_on_timeout): the commit is refused before it is sent and the
-     *   TransactionException is thrown, instead of a COMMIT the server answers with success. While
+     *   CommitFailedException is thrown, instead of a COMMIT the server answers with success. While
      *   PDO still reports the transaction the rollback follows and transaction.end reports
      *   'rolled_back'; on MySQL/MariaDB, once PDO knows that the transaction is gone - from a
      *   statement on raw PDO after a deadlock, or from the question to the server after another
@@ -1140,13 +1229,16 @@ abstract class AbstractDriver implements DatabaseInterface
      *   their own) - nothing is left to roll back and transaction.end reports 'lost'. Through
      *   this library nothing is sent between a deadlock and the rollback;
      * - the commit failed: a rollback is attempted when PDO still reports the transaction, the
-     *   TransactionException is re-thrown; transaction.end reports 'rolled_back' when that rollback
+     *   CommitFailedException is re-thrown; transaction.end reports 'rolled_back' when that rollback
      *   succeeded (nothing was committed) and 'lost' when it failed too (the commit may or may not
      *   have taken effect), with the commit's exception as error. When PDO reports no transaction
      *   after the failed commit, transaction.end reports 'lost' as well, fail-closed: that is what
      *   PostgreSQL leaves behind when COMMIT fails on a deferred constraint (the server rolled back),
      *   but also what a callback leaves behind that committed itself with a raw COMMIT or a MySQL DDL
-     *   statement (the data is committed, PDO::commit() then fails with "no active transaction");
+     *   statement (the data is committed, PDO::commit() then fails with "no active transaction").
+     *   In both commit cases the exception's $outcome is the outcome transaction.end reported, and
+     *   'lost' when nothing was left to end because the callback had ended the transaction itself
+     *   through this driver: only 'rolled_back' says that nothing is committed;
      * - a transaction.commit or transaction.end listener failed, or the connection state after a
      *   commit listener could not be verified or cleaned up: committed, the committed transaction is
      *   not rolled back, CommitHookException (getPrevious() is the first failure, which need not be
@@ -1157,7 +1249,8 @@ abstract class AbstractDriver implements DatabaseInterface
      *
      * @param Closure $callback Receives the driver instance
      *
-     * @throws TransactionException When the transaction could not be started (see beginTransaction()) or the commit failed
+     * @throws TransactionException When the transaction could not be started (see beginTransaction())
+     * @throws CommitFailedException When the commit failed or was refused; for the commit this method runs itself $outcome is 'rolled_back' or 'lost' (a failed commit() the callback called itself and let escape keeps what that commit gave it: null, or 'lost' if it told the end itself)
      * @throws CommitHookException When committed, but a transaction.commit or transaction.end listener failed or the connection state after a commit listener could not be verified
      * @throws Throwable Re-throws the callback, begin listener or commit exception after rollback
      *
@@ -1180,29 +1273,58 @@ abstract class AbstractDriver implements DatabaseInterface
     }
 
     /**
-     * Commit a transaction this driver began, rolling back only if the commit itself failed.
+     * Commit a transaction this driver began, rolling back only if the commit itself failed. That
+     * commit's CommitFailedException leaves with an outcome: the one the end listeners were told
+     * with it as error, or 'lost' when no end was told with it. This is the only place that lets
+     * rollback() and endLostTransaction() write an outcome: what a callback or a listener throws
+     * - a commit() of its own that failed, an exception of another connection or of an earlier
+     * transaction - is never written to.
      *
      * @throws CommitHookException When committed, but a transaction.commit or transaction.end listener failed or the connection state after a commit listener could not be verified
      * @throws Throwable Re-throws the commit exception after rollback
      */
     private function commitOwnTransaction(): void
     {
+        $this->thrownByCommit = null; // an overriding commit() may never get to the one of this class
+
         try {
             $this->commit();
         } catch (CommitHookException $e) {
             // Committed: nothing to roll back. commit() already rolled back (best effort) what a listener left open.
             throw $e;
         } catch (Throwable $e) {
-            if ($e === $this->refusalThatToldTheEnd) {
-                // Refused, and the transaction was gone: its end is told. A transaction PDO reports
-                // now is one an end listener began, and that one is not this method's to end.
-                $this->refusalThatToldTheEnd = null;
+            if ($e === $this->failedCommitThatToldTheEnd) {
+                // Failed or refused, and the transaction was gone: its end is told. A transaction PDO
+                // reports now is one an end listener began, and that one is not this method's to end.
+                $this->failedCommitThatToldTheEnd = null;
                 throw $e;
             }
             // The commit itself failed; some drivers (e.g. SQLite) keep the transaction open.
-            $this->rollbackQuietly($e);
+            $failedCommit = $this->thrownByThisCommit($e);
+            $this->settlingCommit = $failedCommit;
+            try {
+                $this->rollbackQuietly($e);
+            } finally {
+                $this->settlingCommit = null; // nothing was left to end: nobody took it
+            }
+            if ($failedCommit !== null) {
+                // No end was told with it - nothing was left to end because the callback had ended the
+                // transaction itself, or its end was told as 'lost' before the commit: no rollback of
+                // this commit's work is confirmed
+                $failedCommit->outcome ??= self::TRANSACTION_LOST;
+            }
             throw $e;
         }
+    }
+
+    /**
+     * $e as the failure the commit() of this class has just thrown, or null: nothing else that may
+     * arrive from a commit() call - what an overriding commit(), a driver hook or an error handler
+     * throws - is this transaction's failed commit.
+     */
+    private function thrownByThisCommit(Throwable $e): ?CommitFailedException
+    {
+        return $this->thrownByCommit !== null && $e === $this->thrownByCommit ? $this->thrownByCommit : null;
     }
 
     /**
@@ -1250,6 +1372,10 @@ abstract class AbstractDriver implements DatabaseInterface
         $this->lostReported = $mayStillBeOpen;
         if (!$mayStillBeOpen) {
             $this->suspectFailure = null; // gone with the transaction; one that may still be open keeps its commit refused
+        }
+        if ($this->settlingCommit !== null && $cause === $this->settlingCommit) {
+            $this->settlingCommit->outcome = self::TRANSACTION_LOST; // what the end listeners are told below
+            $this->settlingCommit = null; // written once, as in rollback()
         }
         $this->reportTransactionEndFailures(
             self::TRANSACTION_LOST,
@@ -1358,6 +1484,49 @@ abstract class AbstractDriver implements DatabaseInterface
         );
 
         return $this->execute($sql, [...$params, ...array_values($bindings)]);
+    }
+
+    /**
+     * Insert a row unless it collides with an existing one (see DatabaseInterface::insertIgnore()).
+     *
+     * MySQL/MariaDB get `ON DUPLICATE KEY UPDATE col = col` on the row's first column: a no-op
+     * whichever key collided, reported as 0 affected rows. Every other dialect gets
+     * `ON CONFLICT DO NOTHING`.
+     *
+     * @param string $table Table name (supports schema.table format)
+     * @param array<string, mixed> $data Column => value pairs of the row
+     *
+     * @throws QueryException When $data is empty or the query fails for another reason than a duplicate
+     *
+     * @return int Inserted rows: 1 or 0
+     */
+    public function insertIgnore(string $table, array $data): int
+    {
+        if (empty($data)) {
+            throw new QueryException(
+                message: 'Insert failed',
+                debugMessage: 'Cannot insert empty data'
+            );
+        }
+
+        [$columns, $values, $params] = $this->buildInsertParts($data);
+
+        if ($this->getDialect() === \Sodaho\PdoWrapper\Query\QueryBuilder::DIALECT_MYSQL) {
+            $first = $this->quoteIdentifier((string) array_key_first($data));
+            $onDuplicate = sprintf('ON DUPLICATE KEY UPDATE %s = %s', $first, $first);
+        } else {
+            $onDuplicate = 'ON CONFLICT DO NOTHING';
+        }
+
+        $sql = sprintf(
+            'INSERT INTO %s (%s) VALUES (%s) %s',
+            $this->quoteIdentifier($table),
+            $columns,
+            $values,
+            $onDuplicate
+        );
+
+        return $this->execute($sql, $params);
     }
 
     /**
@@ -1591,8 +1760,9 @@ abstract class AbstractDriver implements DatabaseInterface
     /**
      * Build the column list, the VALUES list and the params of an INSERT.
      *
-     * A RawExpression value is inlined into the VALUES list instead of being bound
-     * (SECURITY: never pass user input to Database::raw()).
+     * A RawExpression value is inlined into the VALUES list instead of being bound, its own
+     * bindings take its place among the params (SECURITY: never pass user input as the SQL of
+     * Database::raw()).
      *
      * @param array<string, mixed> $data Column => value pairs
      *
@@ -1606,21 +1776,17 @@ abstract class AbstractDriver implements DatabaseInterface
 
         foreach ($data as $column => $value) {
             $columns[] = $this->quoteIdentifier($column);
-            if ($value instanceof RawExpression) {
-                $values[] = (string) $value;
-                continue;
-            }
-            $values[] = '?';
-            $params[] = $value;
+            $values[] = self::valueSql($value, $params);
         }
 
         return [implode(', ', $columns), implode(', ', $values), $params];
     }
 
     /**
-     * Build the SET clause of an UPDATE and its params.
+     * Build the SET clause of an UPDATE and its params: the assignments in the order of $data.
      *
-     * A RawExpression value is inlined instead of being bound (SECURITY: never pass user input to Database::raw()).
+     * A RawExpression value is inlined instead of being bound, its own bindings take its place
+     * among the params (SECURITY: never pass user input as the SQL of Database::raw()).
      *
      * @param array<string, mixed> $data Column => value pairs
      *
@@ -1632,21 +1798,38 @@ abstract class AbstractDriver implements DatabaseInterface
         $params = [];
 
         foreach ($data as $column => $value) {
-            if ($value instanceof RawExpression) {
-                $clauses[] = $this->quoteIdentifier($column) . ' = ' . $value;
-                continue;
-            }
-            $clauses[] = $this->quoteIdentifier($column) . ' = ?';
-            $params[] = $value;
+            $clauses[] = $this->quoteIdentifier($column) . ' = ' . self::valueSql($value, $params);
         }
 
         return [implode(', ', $clauses), $params];
     }
 
     /**
+     * What stands for a value in the SQL, and its params: a placeholder and the value - or, for a
+     * RawExpression, its SQL and its own bindings, at this very position among the params.
+     *
+     * @param array<int, mixed> $params
+     */
+    private static function valueSql(mixed $value, array &$params): string
+    {
+        if (!$value instanceof RawExpression) {
+            $params[] = $value;
+
+            return '?';
+        }
+
+        foreach ($value->bindings as $binding) {
+            $params[] = $binding;
+        }
+
+        return (string) $value;
+    }
+
+    /**
      * Build WHERE clause from conditions array.
      *
-     * A RawExpression value is inlined instead of being bound (SECURITY: never pass user input to Database::raw()).
+     * A RawExpression value is inlined instead of being bound, its own bindings take its place
+     * among the params (SECURITY: never pass user input as the SQL of Database::raw()).
      *
      * @param array<string, mixed> $where Column => value pairs
      *
@@ -1667,12 +1850,7 @@ abstract class AbstractDriver implements DatabaseInterface
                     )
                 );
             }
-            if ($value instanceof RawExpression) {
-                $clauses[] = $this->quoteIdentifier($column) . ' = ' . $value;
-                continue;
-            }
-            $clauses[] = $this->quoteIdentifier($column) . ' = ?';
-            $params[] = $value;
+            $clauses[] = $this->quoteIdentifier($column) . ' = ' . self::valueSql($value, $params);
         }
 
         return [implode(' AND ', $clauses), $params];

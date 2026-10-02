@@ -6,8 +6,12 @@ namespace Sodaho\PdoWrapper\Tests\Unit;
 
 use PHPUnit\Framework\TestCase;
 use Sodaho\PdoWrapper\Database;
+use Sodaho\PdoWrapper\Driver\AbstractDriver;
+use Sodaho\PdoWrapper\Driver\MySqlDriver;
+use Sodaho\PdoWrapper\Driver\PostgresDriver;
 use Sodaho\PdoWrapper\Driver\SqliteDriver;
 use Sodaho\PdoWrapper\Exception\QueryException;
+use Sodaho\PdoWrapper\Exception\UniqueViolationException;
 
 /**
  * Edge case tests for bugs found by code review.
@@ -670,30 +674,45 @@ class EdgeCaseTest extends TestCase
         }
     }
 
-    public function testWhereIsNullThrowsExceptionSuggestsWhereNull(): void
+    /**
+     * IS / IS NOT are the null-safe comparison: a value that may be null is compared as it is.
+     */
+    public function testWhereIsAndIsNotTakeANullValue(): void
     {
         $db = Database::sqlite(':memory:');
+        $db->execute('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, deleted_at TEXT)');
+        $db->insert('users', ['name' => 'kept', 'deleted_at' => null]);
+        $db->insert('users', ['name' => 'gone', 'deleted_at' => '2026-01-01']);
 
-        try {
-            $db->table('users')->where('deleted_at', 'IS', null);
-            $this->fail('Expected QueryException was not thrown');
-        } catch (QueryException $e) {
-            $debug = $e->getDebugMessage() ?? '';
-            $this->assertStringContainsString('whereNull', $debug);
+        [$sql, $params] = $db->table('users')->where('deleted_at', 'IS', null)->toSql();
+        $this->assertSame('SELECT * FROM `users` WHERE `deleted_at` IS ?', $sql);
+        $this->assertSame([null], $params);
+
+        foreach ([[null, 'IS', 'kept'], [null, 'IS NOT', 'gone'], ['2026-01-01', 'is', 'gone'], ['2026-01-01', 'is not', 'kept']] as [$value, $operator, $expected]) {
+            $rows = $db->table('users')->where('deleted_at', $operator, $value)->get();
+            $this->assertSame([$expected], array_column($rows, 'name'), "{$operator} " . var_export($value, true));
         }
     }
 
-    public function testWhereIsNotNullThrowsExceptionSuggestsWhereNotNull(): void
+    public function testWhereInWithANullElementThrows(): void
     {
         $db = Database::sqlite(':memory:');
 
-        try {
-            $db->table('users')->where('deleted_at', 'IS NOT', null);
-            $this->fail('Expected QueryException was not thrown');
-        } catch (QueryException $e) {
-            $debug = $e->getDebugMessage() ?? '';
-            $this->assertStringContainsString('whereNotNull', $debug);
+        foreach (['whereIn', 'whereNotIn'] as $method) {
+            try {
+                $db->table('users')->{$method}('status', ['active', null]);
+                $this->fail("{$method}() with a null element must throw: NOT IN with NULL matches no row");
+            } catch (QueryException $e) {
+                $this->assertSame(
+                    sprintf('Cannot use a null element in %s() for column "status". Add whereNull() or whereNotNull() for it.', $method),
+                    $e->getDebugMessage()
+                );
+            }
         }
+
+        [$sql, $params] = $db->table('users')->whereIn('status', ['active', Database::raw('NULL')])->toSql();
+        $this->assertSame('SELECT * FROM `users` WHERE `status` IN (?, NULL)', $sql, 'a raw element is the caller\'s own SQL');
+        $this->assertSame(['active'], $params);
     }
 
     public function testWhereWithNonNullValuesStillWorks(): void
@@ -1174,6 +1193,192 @@ class EdgeCaseTest extends TestCase
             $this->assertSame('no errorInfo on this one', $e->getPrevious()?->getMessage());
         }
         $this->assertSame(['no errorInfo on this one'], $errors);
+    }
+
+    // =========================================================================
+    // UNIQUE VIOLATIONS, AS THE DRIVERS REPORT THEM (replayed: no server needed)
+    // =========================================================================
+
+    /**
+     * Each driver with a connection whose prepare() fails the way the given server would.
+     *
+     * @param class-string<SqliteDriver|MySqlDriver|PostgresDriver> $driverClass
+     * @param array{string, int, string}|null $errorInfo
+     * @param string $serverVersion What the connection reports as PDO::ATTR_SERVER_VERSION
+     */
+    private function failWith(string $driverClass, string $message, ?array $errorInfo, string $serverVersion = '8.0.46'): QueryException
+    {
+        $pdo = new class ('sqlite::memory:') extends \PDO {
+            public ?\PDOException $failure = null;
+
+            public string $serverVersion = '';
+
+            public function prepare(string $query, array $options = []): \PDOStatement|false
+            {
+                throw $this->failure ?? new \PDOException('unset');
+            }
+
+            public function getAttribute(int $attribute): mixed
+            {
+                if ($attribute === \PDO::ATTR_SERVER_VERSION && $this->serverVersion === 'unreadable') {
+                    throw new \PDOException('server version unreadable');
+                }
+                if ($attribute === \PDO::ATTR_SERVER_VERSION && $this->serverVersion === 'not a string') {
+                    return null;
+                }
+
+                return $attribute === \PDO::ATTR_SERVER_VERSION ? $this->serverVersion : parent::getAttribute($attribute);
+            }
+        };
+        $pdo->failure = new \PDOException($message);
+        $pdo->failure->errorInfo = $errorInfo;
+        $pdo->serverVersion = $serverVersion;
+        $driver = match ($driverClass) {
+            SqliteDriver::class => new class ($pdo) extends SqliteDriver {
+                public function __construct(\PDO $pdo)
+                {
+                    $this->pdo = $pdo;
+                }
+            },
+            MySqlDriver::class => new class ($pdo) extends MySqlDriver {
+                public function __construct(\PDO $pdo)
+                {
+                    $this->pdo = $pdo;
+                }
+            },
+            PostgresDriver::class => new class ($pdo) extends PostgresDriver {
+                public function __construct(\PDO $pdo)
+                {
+                    $this->pdo = $pdo;
+                }
+            },
+        };
+
+        try {
+            $driver->query('INSERT INTO users (email) VALUES (?)', ['a@test.com']);
+        } catch (QueryException $e) {
+            return $e;
+        }
+        $this->fail('Expected QueryException');
+    }
+
+    public function testTheDriversReadTheViolatedKeyFromTheServersMessage(): void
+    {
+        $mysql = '8.0.46';
+        $mariadb = '11.4.12-MariaDB-ubu2404';
+        $cases = [
+            // MySQL since 8.0.19 puts the table in front: exactly one dot, the key is behind it
+            [MySqlDriver::class, ['23000', 1062, "Duplicate entry 'a@test.com' for key 'users.email'"], 'email', $mysql],
+            [MySqlDriver::class, ['23000', 1062, "Duplicate entry '7' for key 'users.PRIMARY'"], 'PRIMARY', $mysql],
+            [MySqlDriver::class, ['23000', 1062, "Duplicate entry 'a@test.com' for key 'users.email'"], 'email', '8.0.19'],
+            [MySqlDriver::class, ['23000', 1062, "Duplicate entry 'a@test.com' for key 'users.email'"], 'email', '8.4.3-log'],
+            // more than one dot there: the table (`a.b`) or the key (`my.key`) contains one - no name rather than a wrong one
+            [MySqlDriver::class, ['23000', 1062, "Duplicate entry 'a' for key 'a.b.email'"], null, $mysql],
+            [MySqlDriver::class, ['23000', 1062, "Duplicate entry 'n' for key 'probe_k.my.key'"], null, $mysql],
+            // the duplicate value comes from outside: only the end of the message counts
+            [MySqlDriver::class, ['23000', 1062, "Duplicate entry 'x' for key 'evil' for key 'users.email'"], 'email', $mysql],
+            // another message language (lc_messages): a duplicate, the name is not readable
+            [MySqlDriver::class, ['23000', 1062, "Doppelter Eintrag 'a@test.com' für Schlüssel 'email'"], null, $mysql],
+            // MySQL up to 8.0.18 prints the key alone, a dot in it belongs to the name (measured on 5.7.44 and 8.0.18)
+            [MySqlDriver::class, ['23000', 1062, "Duplicate entry 'a@test.com' for key 'email'"], 'email', '5.7.44'],
+            [MySqlDriver::class, ['23000', 1062, "Duplicate entry 'n' for key 'my.key'"], 'my.key', '5.7.44'],
+            [MySqlDriver::class, ['23000', 1062, "Duplicate entry 'n' for key 'my.key'"], 'my.key', '8.0.18'],
+            // so does MariaDB
+            [MySqlDriver::class, ['23000', 1062, "Duplicate entry 'a@test.com' for key 'email'"], 'email', $mariadb],
+            [MySqlDriver::class, ['23000', 1062, "Duplicate entry '7' for key 'PRIMARY'"], 'PRIMARY', $mariadb],
+            [MySqlDriver::class, ['23000', 1062, "Duplicate entry 'n' for key 'my.key'"], 'my.key', $mariadb],
+            [MySqlDriver::class, ['23000', 1062, "Duplicate entry 'n' for key 'my.key'"], 'my.key', '5.5.5-10.4.8-MariaDB'],
+            // the version cannot be read, or is no version number: a name without a dot is the key, one with a dot cannot be told
+            [MySqlDriver::class, ['23000', 1062, "Duplicate entry 'a@test.com' for key 'email'"], 'email', 'unreadable'],
+            [MySqlDriver::class, ['23000', 1062, "Duplicate entry 'a@test.com' for key 'users.email'"], null, 'unreadable'],
+            [MySqlDriver::class, ['23000', 1062, "Duplicate entry 'a@test.com' for key 'users.email'"], null, 'some proxy'],
+            [MySqlDriver::class, ['23000', 1062, "Duplicate entry 'a@test.com' for key 'users.email'"], null, 'not a string'],
+            [PostgresDriver::class, ['23505', 7, "ERROR:  duplicate key value violates unique constraint \"users_email_key\"\nDETAIL:  Key (email)=(a@test.com) already exists."], 'users_email_key', ''],
+            // the name is printed as it is, the detail line may contain quotes of its own
+            [PostgresDriver::class, ['23505', 7, "ERROR:  duplicate key value violates unique constraint \"we\"ird\"\nDETAIL:  Key (\"Name\")=(a \"b\") already exists."], 'we"ird', ''],
+            // the detail repeats the duplicate value, line breaks included: only the first line is read
+            [PostgresDriver::class, ['23505', 7, "ERROR:  duplicate key value violates unique constraint \"users_email_key\"\nDETAIL:  Key (email)=(x\n violates unique constraint \"admin_pkey\"\ny) already exists."], 'users_email_key', ''],
+            [PostgresDriver::class, ['23505', 7, "FEHLER:  doppelter Schlüsselwert verletzt Unique-Constraint »users_email_key«\nDETAIL:  Schlüssel »(email)=(x\n violates unique constraint \"admin_pkey\"\ny)« existiert bereits."], null, ''],
+            [PostgresDriver::class, ['23505', 7, "ERROR:  could not create unique index \"users_email_idx\"\nDETAIL:  Key (email)=(x\n violates unique constraint \"admin_pkey\"\ny) is duplicated."], null, ''],
+            [PostgresDriver::class, ['23505', 7, 'FEHLER:  doppelter Schlüsselwert verletzt Unique-Constraint »users_email_key«'], null, ''],
+            [SqliteDriver::class, ['23000', 19, 'UNIQUE constraint failed: users.email'], null, ''],
+        ];
+
+        foreach ($cases as [$driverClass, $errorInfo, $constraint, $serverVersion]) {
+            $e = $this->failWith($driverClass, 'SQLSTATE[' . $errorInfo[0] . ']: ' . $errorInfo[2], $errorInfo, $serverVersion);
+            $this->assertInstanceOf(UniqueViolationException::class, $e, $errorInfo[2]);
+            $this->assertSame($constraint, $e->constraint, $serverVersion . ' | ' . $errorInfo[2]);
+        }
+    }
+
+    /**
+     * The driver's own error code decides, not the wording: other constraint failures, and a
+     * PDOException without errorInfo (a PDO subclass, a proxy), are plain failed queries.
+     */
+    public function testAFailureWithoutTheDriversCodeForADuplicateIsNotAUniqueViolation(): void
+    {
+        $cases = [
+            [SqliteDriver::class, 'UNIQUE constraint failed: users.email', null],
+            [SqliteDriver::class, 'UNIQUE constraint failed: users.email', ['HY000', 1, 'UNIQUE constraint failed: users.email']],
+            [SqliteDriver::class, 'NOT NULL constraint failed: users.name', ['23000', 19, 'NOT NULL constraint failed: users.name']],
+            [MySqlDriver::class, "Duplicate entry 'a' for key 'email'", null],
+            [MySqlDriver::class, "Column 'name' cannot be null", ['23000', 1048, "Column 'name' cannot be null"]],
+            [PostgresDriver::class, 'duplicate key value violates unique constraint "users_email_key"', null],
+            [PostgresDriver::class, 'null value in column "name" violates not-null constraint', ['23502', 7, 'ERROR:  null value in column "name" violates not-null constraint']],
+        ];
+
+        foreach ($cases as [$driverClass, $message, $errorInfo]) {
+            $e = $this->failWith($driverClass, $message, $errorInfo);
+            $this->assertNotInstanceOf(UniqueViolationException::class, $e, $driverClass . ': ' . $message);
+            $this->assertSame('Query failed', $e->getMessage());
+        }
+    }
+
+    /**
+     * A custom driver knows no code for a duplicate until it says so: it overrides
+     * isUniqueViolation(), and violatedConstraint() if its database names the key.
+     */
+    public function testACustomDriverOptsInToUniqueViolations(): void
+    {
+        $pdo = new \PDO('sqlite::memory:', null, null, [\PDO::ATTR_ERRMODE => \PDO::ERRMODE_EXCEPTION]);
+        $pdo->exec('CREATE TABLE users (email TEXT UNIQUE)');
+        $plain = new class ($pdo) extends AbstractDriver {
+            public function __construct(\PDO $pdo)
+            {
+                $this->pdo = $pdo;
+            }
+        };
+        $optedIn = new class ($pdo) extends AbstractDriver {
+            public function __construct(\PDO $pdo)
+            {
+                $this->pdo = $pdo;
+            }
+
+            protected function isUniqueViolation(\PDOException $failure): bool
+            {
+                return str_starts_with(self::driverMessage($failure), 'UNIQUE constraint failed');
+            }
+
+            protected function violatedConstraint(\PDOException $failure): ?string
+            {
+                return 'named by the driver';
+            }
+        };
+        $plain->insert('users', ['email' => 'a@test.com']);
+
+        try {
+            $plain->insert('users', ['email' => 'a@test.com']);
+            $this->fail('Expected QueryException');
+        } catch (QueryException $e) {
+            $this->assertNotInstanceOf(UniqueViolationException::class, $e);
+        }
+
+        try {
+            $optedIn->insert('users', ['email' => 'a@test.com']);
+            $this->fail('Expected UniqueViolationException');
+        } catch (UniqueViolationException $e) {
+            $this->assertSame('named by the driver', $e->constraint);
+        }
     }
 
     // =========================================================================

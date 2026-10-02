@@ -102,9 +102,17 @@ interface DatabaseInterface
      * with outcome 'committed' (also after skipped commit listeners; not when a 'lost' was already
      * reported for this transaction); the end listeners' failures follow the commit listeners' in the
      * same exception, in that order. A failed commit fires no 'transaction.end' (one exception: a
-     * refused commit of a transaction PDO no longer reports, see below).
+     * failed or refused commit of a transaction PDO no longer reports, see below).
      *
-     * The commit is refused (TransactionException, no COMMIT sent) when a statement failed inside
+     * Every TransactionException the commit itself throws is an Exception\CommitFailedException;
+     * its $outcome is 'lost' when the commit told the end itself (PDO reported no transaction any
+     * more: nothing could end it afterwards), and null otherwise: after a commit() you call
+     * yourself the transaction is yours to end, and nothing writes into the exception later
+     * (transaction() and updateMultiple() do write the outcome into the failure of the commit
+     * they run, see transaction()). With PDO::ERRMODE_WARNING and an error handler that throws, a failing COMMIT
+     * leaves as the handler's exception instead (see Traits\HasHooks).
+     *
+     * The commit is refused (CommitFailedException, no COMMIT sent) when a statement failed inside
      * the transaction in a way that ended it on the server: any statement error on PostgreSQL that
      * no savepoint caught, a deadlock on MySQL/MariaDB (or, with autocommit on, a lock wait
      * timeout under innodb_rollback_on_timeout). The server would answer that COMMIT with success. While PDO
@@ -115,7 +123,7 @@ interface DatabaseInterface
      * right after the COMMIT (MySQL/MariaDB completion_type=CHAIN, not supported), the commit
      * listeners are skipped and a CommitHookException reports it. See Traits\HasHooks.
      *
-     * @throws Exception\TransactionException When the commit itself failed (it may or may not have taken effect), or was refused because the server had already ended the transaction (nothing of that transaction is committed; statements run on raw PDO after its end are)
+     * @throws Exception\CommitFailedException When the commit itself failed (it may or may not have taken effect), or was refused because the server had already ended the transaction (nothing of that transaction is committed; statements run on raw PDO after its end are). A TransactionException
      * @throws Exception\CommitHookException When committed, but a transaction.commit or transaction.end listener failed, the connection state after a commit listener could not be verified, or the connection is in a new, chained transaction
      */
     public function commit(): void;
@@ -158,7 +166,7 @@ interface DatabaseInterface
      * - the callback swallowed a statement error that ended the transaction on the server
      *   (PostgreSQL: any error no savepoint caught; MySQL/MariaDB: a deadlock, or a lock wait
      *   timeout under innodb_rollback_on_timeout): the commit is refused before it is sent and the
-     *   TransactionException is thrown, instead of a COMMIT the server answers with success. While
+     *   CommitFailedException is thrown, instead of a COMMIT the server answers with success. While
      *   PDO still reports the transaction the rollback follows and transaction.end reports
      *   'rolled_back'; on MySQL/MariaDB, once PDO knows that the transaction is gone - from a
      *   statement on raw PDO after a deadlock, or from the question to the server after another
@@ -166,13 +174,16 @@ interface DatabaseInterface
      *   their own) - nothing is left to roll back and transaction.end reports 'lost'. Through
      *   this library nothing is sent between a deadlock and the rollback;
      * - the commit failed: a rollback is attempted when PDO still reports the transaction, the
-     *   TransactionException is re-thrown; transaction.end reports 'rolled_back' when that rollback
+     *   CommitFailedException is re-thrown; transaction.end reports 'rolled_back' when that rollback
      *   succeeded (nothing was committed) and 'lost' when it failed too (the commit may or may not
      *   have taken effect), with the commit's exception as error. When PDO reports no transaction
      *   after the failed commit, transaction.end reports 'lost' as well, fail-closed: that is what
      *   PostgreSQL leaves behind when COMMIT fails on a deferred constraint (the server rolled back),
      *   but also what a callback leaves behind that committed itself with a raw COMMIT or a MySQL DDL
-     *   statement (the data is committed, PDO::commit() then fails with "no active transaction");
+     *   statement (the data is committed, PDO::commit() then fails with "no active transaction").
+     *   In both commit cases the exception's $outcome is the outcome transaction.end reported, and
+     *   'lost' when nothing was left to end because the callback had ended the transaction itself
+     *   through this library: only 'rolled_back' says that nothing is committed;
      * - a transaction.commit or transaction.end listener failed, or the connection state after a
      *   commit listener could not be verified or cleaned up: committed, the committed transaction is
      *   not rolled back, CommitHookException (getPrevious() is the first failure, which need not be
@@ -183,7 +194,8 @@ interface DatabaseInterface
      *
      * @param Closure $callback Receives the driver instance
      *
-     * @throws Exception\TransactionException When the transaction could not be started (see beginTransaction()) or the commit failed
+     * @throws Exception\TransactionException When the transaction could not be started (see beginTransaction())
+     * @throws Exception\CommitFailedException When the commit failed or was refused; for the commit this method runs itself $outcome is 'rolled_back' or 'lost' (a failed commit() the callback called itself and let escape keeps what that commit gave it: null, or 'lost' if it told the end itself). A TransactionException
      * @throws Exception\CommitHookException When committed, but a transaction.commit or transaction.end listener failed or the connection state after a commit listener could not be verified
      * @throws \Throwable Re-throws the callback, begin listener or commit exception after rollback
      *
@@ -226,12 +238,13 @@ interface DatabaseInterface
      *
      * A Query\RawExpression value (Database::raw(), now(), utcNow()) is inlined into the SQL
      * instead of being bound; the same applies to update() data and to WHERE condition values.
-     * SECURITY: never pass user input to Database::raw().
+     * The expression's own bindings (Database::raw('col + ?', [$n])) are bound exactly where it
+     * stands among the other values. SECURITY: never pass user input as the SQL of Database::raw().
      *
      * @param string $table Table name
      * @param array<string, mixed> $data Column => value pairs
      *
-     * @throws Exception\QueryException
+     * @throws Exception\QueryException On failure; an Exception\UniqueViolationException when the row collides with a unique key or the primary key
      *
      * @return int|string Last insert ID
      */
@@ -267,15 +280,48 @@ interface DatabaseInterface
     public function insertWhen(string $table, array $data, string $condition, array $bindings = []): int;
 
     /**
+     * Insert a row unless it collides with an existing one: on a duplicate of ANY unique key or
+     * of the primary key of the table the row is not inserted, and no exception is thrown. On
+     * PostgreSQL the same holds for a conflict with an exclusion constraint (the row collides with
+     * an existing one there too), and a DEFERRABLE unique constraint cannot be skipped: a
+     * duplicate on it throws (SQLSTATE 55000).
+     * PostgreSQL and SQLite: `INSERT ... ON CONFLICT DO NOTHING`. MySQL/MariaDB:
+     * `INSERT ... ON DUPLICATE KEY UPDATE <first column> = <first column>` (not INSERT IGNORE,
+     * which would also swallow other errors); that form locks the existing row until the
+     * transaction ends and runs the table's update triggers for it, DO NOTHING does neither. On a
+     * MySQL/MariaDB connection opened with the
+     * driver's ATTR_FOUND_ROWS option the method throws: the server reports 1 affected row for an
+     * existing row as well. Every other failure (NOT NULL, foreign key, unknown column) throws as
+     * in insert().
+     *
+     * Returns the inserted rows, 1 or 0, not an id: after a return of 0, lastInsertId() is
+     * meaningless, and on every database the skipped insert may still have used up an
+     * auto-increment or sequence value. A RawExpression in $data is inlined as in insert().
+     *
+     * @param string $table Table name
+     * @param array<string, mixed> $data Column => value pairs of the row
+     *
+     * @throws Exception\QueryException When $data is empty, the query fails for another reason than a duplicate, or the connection counts matched rows (MySQL/MariaDB ATTR_FOUND_ROWS)
+     *
+     * @return int Inserted rows: 1 or 0
+     */
+    public function insertIgnore(string $table, array $data): int;
+
+    /**
      * Update rows matching WHERE conditions.
+     *
+     * The assignments are written in the order of $data. MySQL/MariaDB evaluate them left to
+     * right (a later one sees the value an earlier one set), PostgreSQL and SQLite compute all of
+     * them from the row as it was. The conditions are equalities joined with AND; for NULL tests,
+     * comparisons, IN or LIKE use the query builder (table()).
      *
      * @param string $table Table name
      * @param array<string, mixed> $data Column => value pairs to update
-     * @param array<string, mixed> $where WHERE conditions (column => value)
+     * @param array<string, mixed> $where WHERE conditions (column => value, equality only, no null)
      *
-     * @throws Exception\QueryException When $where is empty (safety)
+     * @throws Exception\QueryException When $where is empty (safety), a condition value is null, or the query fails (an Exception\UniqueViolationException for a duplicate key)
      *
-     * @return int Number of affected rows
+     * @return int Number of affected rows as the database counts them: MySQL/MariaDB count the rows actually changed, PostgreSQL and SQLite the rows matched
      */
     public function update(string $table, array $data, array $where): int;
 

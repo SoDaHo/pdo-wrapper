@@ -19,6 +19,12 @@ final class ScenarioPdo extends PDO
 
     public bool $failCommit = false;
 
+    /** The failure as a non-exception error mode reports it: commit() returns false, once */
+    public bool $commitReturnsFalse = false;
+
+    /** After the failed commit the driver reports no transaction any more (as PostgreSQL does after a COMMIT it rejected) */
+    public bool $vanishOnFailedCommit = false;
+
     public bool $hideTransaction = false;
 
     public bool $stateUnreadable = false;
@@ -36,7 +42,14 @@ final class ScenarioPdo extends PDO
     {
         if ($this->failCommit) {
             $this->failCommit = false;
+            $this->vanish();
             throw new PDOException('commit failed (scenario)');
+        }
+        if ($this->commitReturnsFalse) {
+            $this->commitReturnsFalse = false;
+            $this->vanish();
+
+            return false;
         }
 
         return parent::commit();
@@ -49,6 +62,15 @@ final class ScenarioPdo extends PDO
         }
 
         return $this->hideTransaction ? false : parent::inTransaction();
+    }
+
+    /** After a failed commit with $vanishOnFailedCommit: the state is readable again and reports no transaction. */
+    private function vanish(): void
+    {
+        if ($this->vanishOnFailedCommit) {
+            $this->hideTransaction = true;
+            $this->stateUnreadable = false;
+        }
     }
 
     /** What PDO really knows, regardless of the scenario flags. */

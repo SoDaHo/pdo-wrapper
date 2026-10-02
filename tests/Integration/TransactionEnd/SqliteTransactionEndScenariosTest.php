@@ -8,6 +8,7 @@ use PDO;
 use PDOException;
 use Sodaho\PdoWrapper\DatabaseInterface;
 use Sodaho\PdoWrapper\Driver\SqliteDriver;
+use Sodaho\PdoWrapper\Exception\CommitFailedException;
 use Sodaho\PdoWrapper\Exception\CommitHookException;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Exception\TransactionException;
@@ -237,9 +238,10 @@ class SqliteTransactionEndScenariosTest extends AbstractTransactionEndScenarios
         $fail('fatal_table');
         try {
             $db->commit();
-            $this->fail('Expected TransactionException');
-        } catch (TransactionException) {
+            $this->fail('Expected CommitFailedException');
+        } catch (CommitFailedException $e) {
             $this->assertSame([], $ends);
+            $this->assertNull($e->outcome);
         }
         $db->rollback();
         $this->assertSame([['outcome' => DatabaseInterface::TRANSACTION_ROLLED_BACK, 'error' => null]], $ends);
@@ -252,8 +254,9 @@ class SqliteTransactionEndScenariosTest extends AbstractTransactionEndScenarios
         try {
             $db->commit();
             $this->fail('Expected TransactionException');
-        } catch (TransactionException $e) {
+        } catch (CommitFailedException $e) {
             $this->assertSame([['outcome' => DatabaseInterface::TRANSACTION_LOST, 'error' => $e]], $ends);
+            $this->assertSame(DatabaseInterface::TRANSACTION_LOST, $e->outcome);
         } finally {
             $this->pdo->hideTransaction = false;
         }
@@ -452,6 +455,109 @@ class SqliteTransactionEndScenariosTest extends AbstractTransactionEndScenarios
             $this->assertStringContainsString('fatal_table', (string) $e->getPrevious()?->getMessage(), 'the cause is still the failed statement');
         }
         $db->rollback();
+    }
+
+    /**
+     * A custom driver may override commit() and throw what it likes - here the exception of an
+     * earlier transaction, whose second commit attempt went through. transaction() rolls back,
+     * but that exception is not the failure of the commit it ran: it is not written to.
+     */
+    public function testAnOverridingCommitThatThrowsAnOlderFailedCommitDoesNotGetItSettled(): void
+    {
+        $db = new class ($this->pdo) extends SqliteDriver {
+            public ?\Throwable $throwFromCommit = null;
+
+            public function __construct(PDO $pdo)
+            {
+                $this->pdo = $pdo;
+            }
+
+            public function commit(): void
+            {
+                if ($this->throwFromCommit !== null) {
+                    $thrown = $this->throwFromCommit;
+                    $this->throwFromCommit = null;
+
+                    throw $thrown;
+                }
+                parent::commit();
+            }
+        };
+        $ends = [];
+        $db->on('transaction.end', static function (array $data) use (&$ends): void {
+            $ends[] = $data;
+        });
+
+        $db->beginTransaction();
+        $db->insert(self::TABLE, ['id' => 1, 'name' => 'a']);
+        $this->pdo->failCommit = true;
+        try {
+            $db->commit();
+            $this->fail('Expected CommitFailedException');
+        } catch (CommitFailedException $old) {
+            $this->assertNull($old->outcome);
+        }
+        $this->pdo->commit(); // the second attempt, on raw PDO, goes through: row 1 is committed
+
+        $ends = [];
+        $db->throwFromCommit = $old;
+        try {
+            $db->transaction(static fn (SqliteDriver $db) => $db->insert(self::TABLE, ['id' => 2, 'name' => 'b']));
+            $this->fail('Expected the exception of the overriding commit()');
+        } catch (CommitFailedException $e) {
+            $this->assertSame($old, $e);
+        }
+        $this->assertSame([DatabaseInterface::TRANSACTION_LOST, DatabaseInterface::TRANSACTION_ROLLED_BACK], array_column($ends, 'outcome'), 'the first transaction as ended behind the library, then this one');
+        $this->assertSame($old, $ends[1]['error']);
+        $this->assertNull($old->outcome, 'its own transaction was committed on the second attempt');
+        $this->assertSame([1], array_column($db->table(self::TABLE)->get(), 'id'));
+    }
+
+    /**
+     * A custom driver may override rollback() too - here it gets the failed commit through after
+     * all and moves on to another transaction before it calls the parent. What the parent rolls
+     * back then is not the transaction whose commit failed: no 'rolled_back' for that exception.
+     */
+    public function testAnOverridingRollbackThatCommitsAfterAllVoidsTheSettlement(): void
+    {
+        foreach (['commits through the library, begins on raw PDO', 'commits on raw PDO, begins through the library'] as $how) {
+            $db = new class ($this->pdo) extends SqliteDriver {
+                public ?string $retry = null;
+
+                public function __construct(PDO $pdo)
+                {
+                    $this->pdo = $pdo;
+                }
+
+                public function rollback(): void
+                {
+                    $retry = $this->retry;
+                    $this->retry = null;
+                    if ($retry === 'commits through the library, begins on raw PDO') {
+                        $this->commit();
+                        $this->pdo->beginTransaction();
+                    } elseif ($retry !== null) {
+                        $this->pdo->commit();
+                        $this->beginTransaction();
+                    }
+                    parent::rollback();
+                }
+            };
+            $db->execute('DELETE FROM ' . self::TABLE);
+            $db->retry = $how;
+
+            try {
+                $db->transaction(function (SqliteDriver $db): void {
+                    $db->insert(self::TABLE, ['id' => 1, 'name' => 'a']);
+                    $this->pdo->failCommit = true;
+                });
+                $this->fail('Expected CommitFailedException: ' . $how);
+            } catch (CommitFailedException $e) {
+                $this->assertSame(DatabaseInterface::TRANSACTION_LOST, $e->outcome, $how);
+            }
+            $this->assertFalse($this->pdo->reallyInTransaction(), $how);
+            $this->assertSame([1], array_column($db->table(self::TABLE)->get(), 'id'), 'the row is committed: ' . $how);
+        }
     }
 
     /**

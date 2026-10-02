@@ -10,6 +10,7 @@ use Sodaho\PdoWrapper\DatabaseInterface;
 use Sodaho\PdoWrapper\Exception\CommitHookException;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Exception\TransactionException;
+use Sodaho\PdoWrapper\Exception\UniqueViolationException;
 
 /**
  * Abstract base class for workflow tests.
@@ -36,6 +37,21 @@ abstract class AbstractWorkflowTest extends TestCase
      * Whether the transaction is still open after the database rejected a COMMIT.
      */
     abstract protected function failedCommitKeepsTransactionOpen(): bool;
+
+    /**
+     * What UniqueViolationException::$constraint names for a duplicate users.email and a duplicate
+     * users.id: the index name (MySQL/MariaDB), the constraint name (PostgreSQL), null (SQLite).
+     *
+     * @return array{email: string|null, primary: string|null}
+     */
+    abstract protected function uniqueConstraintNames(): array;
+
+    /**
+     * Whether a later assignment of an UPDATE sees the value an earlier one of the same statement
+     * set (MySQL/MariaDB: SET is evaluated left to right) or the row as it was (standard SQL:
+     * PostgreSQL, SQLite).
+     */
+    abstract protected function laterAssignmentsSeeEarlierOnes(): bool;
 
     protected function setUp(): void
     {
@@ -871,5 +887,161 @@ abstract class AbstractWorkflowTest extends TestCase
             ['1000 lines'],
             array_column($this->db->table('users')->select('users.name')->join('tags', 'users.name', 'NOT LIKE', 'tags.name')->get(), 'name')
         );
+    }
+
+    /**
+     * where() with IS / IS NOT compares null-safely on every database, also with a null value.
+     */
+    public function testWhereIsWithAValueThatMayBeNull(): void
+    {
+        $this->db->insert('users', ['email' => 'a@test.com', 'name' => 'Anna', 'role' => 'admin']);
+        $this->db->insert('users', ['email' => 'b@test.com', 'name' => 'Bert', 'role' => 'user']);
+        $this->db->update('users', ['role' => null], ['email' => 'b@test.com']);
+
+        $names = fn (string $operator, ?string $role): array => array_column(
+            $this->db->table('users')->where('role', $operator, $role)->orderBy('id')->get(),
+            'name'
+        );
+
+        $this->assertSame(['Bert'], $names('IS', null));
+        $this->assertSame(['Anna'], $names('IS NOT', null));
+        $this->assertSame(['Anna'], $names('IS', 'admin'));
+        $this->assertSame(['Bert'], $names('IS NOT', 'admin'), 'null-safe: the row without a role is "not admin"');
+        $this->assertSame(1, $this->db->table('users')->where('role', 'IS', null)->update(['role' => 'guest']));
+    }
+
+    /**
+     * A duplicate key fails with UniqueViolationException - a QueryException, so existing catch
+     * blocks keep working - and names the violated key where the database does. Other constraint
+     * failures stay plain QueryExceptions.
+     */
+    public function testADuplicateKeyIsAUniqueViolation(): void
+    {
+        $id = $this->db->insert('users', ['email' => 'taken@test.com', 'name' => 'First']);
+        $expected = $this->uniqueConstraintNames();
+
+        try {
+            $this->db->insert('users', ['email' => 'taken@test.com', 'name' => 'Second']);
+            $this->fail('Expected UniqueViolationException');
+        } catch (UniqueViolationException $e) {
+            $this->assertInstanceOf(QueryException::class, $e);
+            $this->assertSame('Query failed', $e->getMessage());
+            $this->assertSame($expected['email'], $e->constraint);
+            $this->assertStringContainsString('INSERT INTO', (string) $e->getDebugMessage());
+            $this->assertNotNull($e->getPrevious());
+        }
+
+        // the duplicate value comes from outside and may look like the end of the message
+        $tricky = "x' for key 'evil";
+        $this->db->insert('users', ['email' => $tricky, 'name' => 'Tricky']);
+        try {
+            $this->db->insert('users', ['email' => $tricky, 'name' => 'Tricky again']);
+            $this->fail('Expected UniqueViolationException');
+        } catch (UniqueViolationException $e) {
+            $this->assertSame($expected['email'], $e->constraint);
+        }
+
+        try {
+            $this->db->insert('users', ['id' => $id, 'email' => 'other@test.com', 'name' => 'Same id']);
+            $this->fail('Expected UniqueViolationException for the primary key');
+        } catch (UniqueViolationException $e) {
+            $this->assertSame($expected['primary'], $e->constraint);
+        }
+
+        try {
+            $this->db->table('users')->where('email', $tricky)->update(['email' => 'taken@test.com']);
+            $this->fail('Expected UniqueViolationException for an update');
+        } catch (UniqueViolationException $e) {
+            $this->assertSame($expected['email'], $e->constraint);
+        }
+
+        try {
+            $this->db->execute('INSERT INTO users (email, name) VALUES (?, NULL)', ['null-name@test.com']);
+            $this->fail('Expected QueryException: name is NOT NULL');
+        } catch (QueryException $e) {
+            $this->assertNotInstanceOf(UniqueViolationException::class, $e, 'a NOT NULL violation is not a duplicate');
+        }
+    }
+
+    /**
+     * Database::raw() with bindings as a value: bound where the expression stands. The SET list is
+     * written in the order of the array - which decides the result on MySQL/MariaDB, where a later
+     * assignment sees what an earlier one set.
+     */
+    public function testARawValueWithBindingsAndTheOrderOfTheSetList(): void
+    {
+        $this->db->execute('DROP TABLE IF EXISTS set_order');
+        $this->db->execute('CREATE TABLE set_order (id INT PRIMARY KEY, attempts INT NOT NULL, pause_s INT NOT NULL, note VARCHAR(20) NOT NULL)');
+        $seen = [];
+        $this->db->on('query', static function (array $data) use (&$seen): void {
+            $seen[] = $data['params'];
+        });
+
+        try {
+            $this->db->insert('set_order', ['id' => 1, 'attempts' => 1, 'pause_s' => 0, 'note' => 'new']);
+            $this->db->insert('set_order', ['id' => 2, 'attempts' => 1, 'pause_s' => 0, 'note' => 'new']);
+            $seen = [];
+
+            // attempts first: on MySQL/MariaDB the pause is computed from the raised counter
+            $affected = $this->db->table('set_order')->where('id', 1)->whereIn('note', ['new', 'old'])->update([
+                'attempts' => Database::raw('attempts + ?', [1]),
+                'note' => 'first',
+                'pause_s' => Database::raw('? * attempts', [10]),
+            ]);
+            $this->assertSame(1, $affected);
+            $this->assertSame([[1, 'first', 10, 1, 'new', 'old']], $seen, 'SET values in array order, raw bindings in place, then WHERE');
+            $row = $this->db->findOne('set_order', ['id' => 1]);
+            $this->assertSame(2, (int) ($row['attempts'] ?? 0));
+            $this->assertSame($this->laterAssignmentsSeeEarlierOnes() ? 20 : 10, (int) ($row['pause_s'] ?? 0));
+
+            // the other way round the pause is computed first, from the old counter, on every database
+            $this->db->update('set_order', [
+                'pause_s' => Database::raw('? * attempts', [10]),
+                'attempts' => Database::raw('attempts + ?', [1]),
+            ], ['id' => 2, 'note' => Database::raw('LOWER(?)', ['NEW'])]);
+            $row = $this->db->findOne('set_order', ['id' => 2]);
+            $this->assertSame(2, (int) ($row['attempts'] ?? 0));
+            $this->assertSame(10, (int) ($row['pause_s'] ?? 0));
+        } finally {
+            $this->db->execute('DROP TABLE IF EXISTS set_order');
+        }
+    }
+
+    /**
+     * insertIgnore(): 1 when the row went in, 0 when a unique key or the primary key collided -
+     * without an exception and without touching the existing row. Everything else still throws.
+     */
+    public function testInsertIgnoreSkipsADuplicateAndNothingElse(): void
+    {
+        $this->assertSame(1, $this->db->insertIgnore('users', ['email' => 'once@test.com', 'name' => 'First']));
+        $this->assertSame(0, $this->db->insertIgnore('users', ['email' => 'once@test.com', 'name' => 'Second']));
+        $this->assertSame(0, $this->db->table('users')->insertIgnore(['name' => 'Third', 'email' => 'once@test.com']), 'whichever column comes first');
+        $this->assertSame(1, $this->db->table('users')->insertIgnore(['email' => 'twice@test.com', 'name' => Database::raw("'raw name'")]));
+
+        $rows = $this->db->table('users')->orderBy('id')->get();
+        $this->assertSame(['First', 'raw name'], array_column($rows, 'name'), 'the existing row is untouched');
+
+        $id = $rows[0]['id'];
+        $this->assertSame(0, $this->db->insertIgnore('users', ['id' => $id, 'email' => 'third@test.com', 'name' => 'Same id']), 'the primary key counts too');
+
+        try {
+            $this->db->insertIgnore('posts', ['user_id' => 999999, 'title' => 'orphan']);
+            $this->fail('Expected QueryException: a foreign key violation is not a duplicate');
+        } catch (QueryException $e) {
+            $this->assertNotInstanceOf(UniqueViolationException::class, $e);
+        }
+        try {
+            $this->db->insertIgnore('users', []);
+            $this->fail('Expected QueryException for empty data');
+        } catch (QueryException $e) {
+            $this->assertSame('Cannot insert empty data', $e->getDebugMessage());
+        }
+        try {
+            $this->db->table('users')->where('id', 1)->insertIgnore(['email' => 'x@test.com', 'name' => 'x']);
+            $this->fail('Expected QueryException: builder clauses are not part of the statement');
+        } catch (QueryException $e) {
+            $this->assertStringContainsString('insertIgnore() inserts one row', (string) $e->getDebugMessage());
+        }
+        $this->assertSame(2, $this->db->table('users')->count());
     }
 }

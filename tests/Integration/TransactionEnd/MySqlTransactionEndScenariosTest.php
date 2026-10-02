@@ -8,6 +8,7 @@ use PDO;
 use PHPUnit\Framework\Attributes\Group;
 use Sodaho\PdoWrapper\DatabaseInterface;
 use Sodaho\PdoWrapper\Driver\MySqlDriver;
+use Sodaho\PdoWrapper\Exception\CommitFailedException;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Exception\TransactionException;
 
@@ -86,6 +87,8 @@ class MySqlTransactionEndScenariosTest extends AbstractTransactionEndScenarios
         } catch (TransactionException $e) {
             $this->assertSame('Failed to commit transaction', $e->getMessage());
             $this->assertSame([['outcome' => DatabaseInterface::TRANSACTION_LOST, 'error' => $e]], $this->ends, 'no rollback could be confirmed');
+            $this->assertInstanceOf(CommitFailedException::class, $e);
+            $this->assertSame(DatabaseInterface::TRANSACTION_LOST, $e->outcome);
         } finally {
             $this->db->execute('DROP TABLE IF EXISTS end_scenarios_ddl');
         }
@@ -113,9 +116,10 @@ class MySqlTransactionEndScenariosTest extends AbstractTransactionEndScenarios
                 $db->execute('CREATE TABLE end_scenarios_ddl (id INT PRIMARY KEY)'); // implicit COMMIT
                 $db->updateMultiple(self::TABLE, [['id' => 1, 'name' => 'in its own transaction']]);
             });
-            $this->fail('Expected TransactionException: the outer commit finds no transaction');
-        } catch (TransactionException $e) {
+            $this->fail('Expected CommitFailedException: the outer commit finds no transaction');
+        } catch (CommitFailedException $e) {
             $this->assertSame('Failed to commit transaction', $e->getMessage());
+            $this->assertSame(DatabaseInterface::TRANSACTION_LOST, $e->outcome, 'nothing was left to end: lost, and the rows are in fact committed');
         } finally {
             $this->db->execute('DROP TABLE IF EXISTS end_scenarios_ddl');
         }
@@ -158,6 +162,8 @@ class MySqlTransactionEndScenariosTest extends AbstractTransactionEndScenarios
             $this->assertStringContainsString('The server reports no transaction any more', (string) $e->getDebugMessage());
             $this->assertSame(1205, $e->getPrevious()?->errorInfo[1] ?? null);
             $this->assertSame([['outcome' => DatabaseInterface::TRANSACTION_LOST, 'error' => $e]], $this->ends);
+            $this->assertInstanceOf(CommitFailedException::class, $e);
+            $this->assertSame(DatabaseInterface::TRANSACTION_LOST, $e->outcome);
         }
 
         $this->assertSame(['end'], $this->events, 'no commit, no rollback listener');

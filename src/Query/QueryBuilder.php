@@ -114,6 +114,8 @@ class QueryBuilder
      * - select([Database::raw('COUNT(*)'), Database::raw('AVG(price)')])
      *
      * @param string|array<int, string|RawExpression> $columns Column(s) to select
+     *
+     * @throws QueryException When a raw expression carries bindings (only a value may)
      */
     public function select(string|array $columns = '*'): self
     {
@@ -122,6 +124,7 @@ class QueryBuilder
         } elseif (is_string($columns)) {
             $this->columns = array_map('trim', explode(',', $columns));
         } else {
+            $this->guardAgainstBoundRaw('select', $columns);
             $this->columns = $columns;
         }
 
@@ -179,6 +182,7 @@ class QueryBuilder
      * - where('age', '>', 18)    → age > 18
      * - where(['active' => 1])   → active = 1
      * - where('expires_at', '<', $db->now()) → expires_at < NOW()  (a RawExpression value is inlined, not bound)
+     * - where('nick', 'IS', $nick)  → null-safe equality, also when $nick is null (IS NOT likewise)
      *
      * The argument count decides the form: with two arguments the second one is always the value
      * (so 'IS' for Iceland or 'LIKE' as a value is fine), with three it is the operator.
@@ -187,7 +191,7 @@ class QueryBuilder
      * @param mixed $operatorOrValue Operator or value (if 2 args)
      * @param mixed $value Value (if 3 args)
      *
-     * @throws QueryException When the value is null (use whereNull()/whereNotNull()), the operator is not allowed or the array form has a numeric key
+     * @throws QueryException When the value is null with an operator other than IS / IS NOT (use whereNull()/whereNotNull()), the operator is not allowed or the array form has a numeric key
      */
     public function where(string|array $column, mixed $operatorOrValue = null, mixed $value = null): self
     {
@@ -222,12 +226,13 @@ class QueryBuilder
             $operator = $this->validateOperator((string) $operatorOrValue);
         }
 
-        // where('col', null) and where('col', '=', null): a NULL comparison never matches by accident
-        if ($value === null) {
+        // where('col', null) and where('col', '=', null): a NULL comparison never matches by accident.
+        // IS / IS NOT are the null-safe comparison: there a null value is what the caller means.
+        if ($value === null && $operator !== 'IS' && $operator !== 'IS NOT') {
             throw new QueryException(
                 message: 'Query failed',
                 debugMessage: sprintf(
-                    'Cannot use a null value in where() (operator "%s"). Use whereNull(\'%s\') or whereNotNull(\'%s\') instead.',
+                    'Cannot use a null value in where() (operator "%s"). Use whereNull(\'%s\') or whereNotNull(\'%s\'), or the operator IS / IS NOT for a value that may be null.',
                     $operator,
                     $column,
                     $column
@@ -293,7 +298,7 @@ class QueryBuilder
      * @param string $column Column name
      * @param array<array-key, mixed> $values Values to match (a RawExpression element is inlined)
      *
-     * @throws QueryException When $values is empty
+     * @throws QueryException When $values is empty or contains null
      */
     public function whereIn(string $column, array $values): self
     {
@@ -303,6 +308,7 @@ class QueryBuilder
                 debugMessage: 'whereIn requires a non-empty array'
             );
         }
+        $this->guardAgainstNullElement('whereIn', $column, $values);
 
         $this->wheres[] = [
             'type' => 'in',
@@ -320,7 +326,7 @@ class QueryBuilder
      * @param string $column Column name
      * @param array<array-key, mixed> $values Values to exclude (a RawExpression element is inlined)
      *
-     * @throws QueryException When $values is empty
+     * @throws QueryException When $values is empty or contains null
      */
     public function whereNotIn(string $column, array $values): self
     {
@@ -330,6 +336,7 @@ class QueryBuilder
                 debugMessage: 'whereNotIn requires a non-empty array'
             );
         }
+        $this->guardAgainstNullElement('whereNotIn', $column, $values);
 
         $this->wheres[] = [
             'type' => 'in',
@@ -619,6 +626,8 @@ class QueryBuilder
      * given. SECURITY: never build a raw expression from user input.
      *
      * @param string|RawExpression|array<int, string|RawExpression> $columns Column(s) or expression(s) to group by
+     *
+     * @throws QueryException When a raw expression carries bindings (only a value may)
      */
     public function groupBy(string|RawExpression|array $columns): self
     {
@@ -627,6 +636,7 @@ class QueryBuilder
         } elseif ($columns instanceof RawExpression) {
             $columns = [$columns];
         }
+        $this->guardAgainstBoundRaw('groupBy', $columns);
 
         $this->groupBy = array_merge($this->groupBy, $columns);
 
@@ -642,11 +652,12 @@ class QueryBuilder
      * @param string $operator Comparison operator
      * @param mixed $value Value to compare (null only with IS / IS NOT, the null-safe comparison)
      *
-     * @throws QueryException When the operator is not allowed or the value is null with an operator other than IS / IS NOT
+     * @throws QueryException When the operator is not allowed, the value is null with an operator other than IS / IS NOT, or a raw expression used as the column carries bindings (as the value it may)
      */
     public function having(string|RawExpression $column, string $operator, mixed $value): self
     {
         $operator = $this->validateOperator($operator);
+        $this->guardAgainstBoundRaw('having', [$column]);
 
         // "= NULL", "> NULL", "LIKE NULL" are never true: the condition would silently drop every group
         if ($value === null && $operator !== 'IS' && $operator !== 'IS NOT') {
@@ -1005,7 +1016,7 @@ class QueryBuilder
      */
     public function insertWhen(array $data, string $condition, array $bindings = []): int
     {
-        if ($this->wheres !== [] || $this->joins !== [] || $this->groupBy !== [] || $this->having !== [] || $this->orderBy !== [] || $this->limit !== null || $this->offset !== null || $this->distinct || $this->lock !== null) {
+        if ($this->hasClauses()) {
             throw new QueryException(
                 message: 'Insert failed',
                 debugMessage: 'insertWhen() takes its condition as an argument; where()/whereRaw(), joins, groupBy()/having(), orderBy(), limit()/offset(), distinct() and locks set on the builder are not part of the statement.'
@@ -1013,6 +1024,39 @@ class QueryBuilder
         }
 
         return $this->db->insertWhen($this->table, $data, $condition, $bindings);
+    }
+
+    /**
+     * Insert a row unless it collides with an existing one (see DatabaseInterface::insertIgnore()).
+     *
+     * A where*()/whereRaw(), join, groupBy()/having(), orderBy(), limit()/offset(), distinct() or
+     * row lock set on this builder is not part of the statement, so it throws instead of being
+     * ignored. A select() is ignored.
+     *
+     * @param array<string, mixed> $data Column => value pairs of the row
+     *
+     * @throws QueryException When builder clauses are set, $data is empty or the query fails for another reason than a duplicate
+     *
+     * @return int Inserted rows: 1 or 0
+     */
+    public function insertIgnore(array $data): int
+    {
+        if ($this->hasClauses()) {
+            throw new QueryException(
+                message: 'Insert failed',
+                debugMessage: 'insertIgnore() inserts one row; where()/whereRaw(), joins, groupBy()/having(), orderBy(), limit()/offset(), distinct() and locks set on the builder are not part of the statement.'
+            );
+        }
+
+        return $this->db->insertIgnore($this->table, $data);
+    }
+
+    /**
+     * Whether any clause other than select() is set on this builder.
+     */
+    private function hasClauses(): bool
+    {
+        return $this->wheres !== [] || $this->joins !== [] || $this->groupBy !== [] || $this->having !== [] || $this->orderBy !== [] || $this->limit !== null || $this->offset !== null || $this->distinct || $this->lock !== null;
     }
 
     /**
@@ -1059,14 +1103,9 @@ class QueryBuilder
         $setClauses = [];
         $params = [];
 
+        // The assignments in the order of $data; a raw value's own bindings stand where it stands
         foreach ($data as $column => $value) {
-            // A RawExpression value is inlined, never bound (SECURITY: never pass user input to Database::raw())
-            if ($value instanceof RawExpression) {
-                $setClauses[] = $this->quoteIdentifier($column) . ' = ' . $value;
-                continue;
-            }
-            $setClauses[] = $this->quoteIdentifier($column) . ' = ?';
-            $params[] = $value;
+            $setClauses[] = $this->quoteIdentifier($column) . ' = ' . $this->valueSql($value, $params);
         }
 
         $params = array_merge($params, $whereParams);
@@ -1350,13 +1389,7 @@ class QueryBuilder
                 case 'basic':
                     $operator = (string)($where['operator'] ?? '=');
                     $value = $where['value'] ?? null;
-                    // A RawExpression value is inlined, never bound (SECURITY: never pass user input to Database::raw())
-                    if ($value instanceof RawExpression) {
-                        $right = (string) $value;
-                    } else {
-                        $right = '?';
-                        $params[] = $value;
-                    }
+                    $right = $this->valueSql($value, $params);
                     $clause = $this->comparison($this->quoteIdentifier($column), $operator, $right, $value instanceof RawExpression);
                     if ($operator === 'LIKE' || $operator === 'NOT LIKE') {
                         $clause .= ' ESCAPE ?';
@@ -1381,12 +1414,7 @@ class QueryBuilder
                     $values = is_array($where['values'] ?? null) ? array_values($where['values']) : [];
                     $slots = [];
                     foreach ($values as $item) {
-                        if ($item instanceof RawExpression) {
-                            $slots[] = (string) $item;
-                            continue;
-                        }
-                        $slots[] = '?';
-                        $params[] = $item;
+                        $slots[] = $this->valueSql($item, $params);
                     }
                     $inOperator = ($where['not'] ?? false) ? 'NOT IN' : 'IN';
                     $clauses[] = $this->quoteIdentifier($column) . " {$inOperator} (" . implode(', ', $slots) . ')';
@@ -1399,12 +1427,7 @@ class QueryBuilder
                     $betweenValues = is_array($where['values'] ?? null) ? array_values($where['values']) : [null, null];
                     $bounds = [];
                     foreach ([$betweenValues[0] ?? null, $betweenValues[1] ?? null] as $bound) {
-                        if ($bound instanceof RawExpression) {
-                            $bounds[] = (string) $bound;
-                            continue;
-                        }
-                        $bounds[] = '?';
-                        $params[] = $bound;
+                        $bounds[] = $this->valueSql($bound, $params);
                     }
                     $clauses[] = $this->quoteIdentifier($column) . " {$betweenOperator} {$bounds[0]} AND {$bounds[1]}";
                     break;
@@ -1417,6 +1440,51 @@ class QueryBuilder
         }
 
         return [implode(' AND ', $clauses), $params];
+    }
+
+    /**
+     * What stands for a value in the SQL, and its params: a placeholder and the value - or, for a
+     * RawExpression, its SQL and its own bindings, at this very position among the params
+     * (SECURITY: never pass user input as the SQL of Database::raw()).
+     *
+     * @param array<int, mixed> $params
+     */
+    private function valueSql(mixed $value, array &$params): string
+    {
+        if (!$value instanceof RawExpression) {
+            $params[] = $value;
+
+            return '?';
+        }
+
+        foreach ($value->bindings as $binding) {
+            $params[] = $binding;
+        }
+
+        return (string) $value;
+    }
+
+    /**
+     * Guard against a raw expression with bindings where no value stands: its bindings would have
+     * to be placed in front of every other value of the statement, which this builder does not do.
+     *
+     * @param array<array-key, mixed> $entries
+     *
+     * @throws QueryException When an entry is a RawExpression with bindings
+     */
+    private function guardAgainstBoundRaw(string $method, array $entries): void
+    {
+        foreach ($entries as $entry) {
+            if ($entry instanceof RawExpression && $entry->bindings !== []) {
+                throw new QueryException(
+                    message: 'Query failed',
+                    debugMessage: sprintf(
+                        'A raw expression with bindings is only accepted as a value (insert()/update() data, where(), whereIn(), whereBetween(), the value of having()), not in %s(). Use whereRaw() for a condition, or query() for the whole statement.',
+                        $method === 'having' ? 'the column of having' : $method
+                    )
+                );
+            }
+        }
     }
 
     /**
@@ -1435,12 +1503,7 @@ class QueryBuilder
             $column = $h['column'] instanceof RawExpression
                 ? (string) $h['column']
                 : $this->quoteIdentifier($h['column']);
-            if ($h['value'] instanceof RawExpression) {
-                $clause = $this->comparison($column, $h['operator'], (string) $h['value'], true);
-            } else {
-                $clause = $this->comparison($column, $h['operator'], '?');
-                $params[] = $h['value'];
-            }
+            $clause = $this->comparison($column, $h['operator'], $this->valueSql($h['value'], $params), $h['value'] instanceof RawExpression);
             if ($h['operator'] === 'LIKE' || $h['operator'] === 'NOT LIKE') {
                 $clause .= ' ESCAPE ?';
                 $params[] = self::LIKE_ESCAPE;
@@ -1496,6 +1559,30 @@ class QueryBuilder
                     debugMessage: sprintf(
                         'where() with an array needs column names as keys, got the numeric key %d. Use where(\'column\', $value) instead.',
                         $key
+                    )
+                );
+            }
+        }
+    }
+
+    /**
+     * Guard against a null element in whereIn()/whereNotIn(): IN never matches NULL, and NOT IN
+     * with a NULL in the list matches no row at all.
+     *
+     * @param array<array-key, mixed> $values
+     *
+     * @throws QueryException When an element is null
+     */
+    private function guardAgainstNullElement(string $method, string $column, array $values): void
+    {
+        foreach ($values as $value) {
+            if ($value === null) {
+                throw new QueryException(
+                    message: 'Query failed',
+                    debugMessage: sprintf(
+                        'Cannot use a null element in %s() for column "%s". Add whereNull() or whereNotNull() for it.',
+                        $method,
+                        $column
                     )
                 );
             }

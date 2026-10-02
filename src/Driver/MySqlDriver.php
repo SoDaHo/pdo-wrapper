@@ -7,6 +7,7 @@ namespace Sodaho\PdoWrapper\Driver;
 use PDO;
 use PDOException;
 use Sodaho\PdoWrapper\Exception\ConnectionException;
+use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Query\QueryBuilder;
 use Sodaho\PdoWrapper\Query\RawExpression;
 use Throwable;
@@ -19,6 +20,9 @@ use Throwable;
  */
 class MySqlDriver extends AbstractDriver
 {
+    /** True when the connection was opened with the driver's ATTR_FOUND_ROWS option: the server then counts matched rows, not changed ones */
+    private bool $countsFoundRows = false;
+
     /**
      * Create a MySQL database connection.
      *
@@ -40,7 +44,7 @@ class MySqlDriver extends AbstractDriver
      *
      * @throws ConnectionException When required config is missing or connection fails
      */
-    public function __construct(array $config)
+    public function __construct(#[\SensitiveParameter] array $config)
     {
         $host = $config['host'] ?? null;
         $database = $config['database'] ?? null;
@@ -89,6 +93,11 @@ class MySqlDriver extends AbstractDriver
         }
 
         $options = array_replace($defaultOptions, $config['options'] ?? []);
+
+        // Remembered here: PDO does not let the option be read back from the connection
+        if (extension_loaded('pdo_mysql')) {
+            $this->countsFoundRows = (bool) ($options[constant(PHP_VERSION_ID >= 80400 ? 'Pdo\Mysql::ATTR_FOUND_ROWS' : 'PDO::MYSQL_ATTR_FOUND_ROWS')] ?? false);
+        }
 
         try {
             $this->pdo = new PDO($dsn, $username, $password, $options);
@@ -155,6 +164,99 @@ class MySqlDriver extends AbstractDriver
 
         return 'The transaction cannot be committed: a statement failed inside it (the previous exception) and the server could not be asked whether it still exists. '
             . 'Roll back, or discard the connection.';
+    }
+
+    /**
+     * Insert a row unless it collides with an existing one (see DatabaseInterface::insertIgnore()).
+     *
+     * `ON DUPLICATE KEY UPDATE col = col` reports 1 affected row for an inserted row and 0 for an
+     * existing one - unless the connection counts matched rows (the driver's ATTR_FOUND_ROWS
+     * option): then both report 1 (measured on MySQL 8.0, MariaDB 10.11 and 11.4), and the answer
+     * could not be told. The statement is not sent there.
+     *
+     * For an existing row the server runs the table's BEFORE INSERT, BEFORE UPDATE and AFTER
+     * UPDATE triggers, although nothing is updated. A BEFORE UPDATE trigger that changes the row
+     * does change it, and the server then reports 2 affected rows: still not an insert, so 0.
+     *
+     * @param array<string, mixed> $data Column => value pairs
+     *
+     * @throws QueryException When the connection was opened with ATTR_FOUND_ROWS, $data is empty or the query fails for another reason than a duplicate
+     */
+    public function insertIgnore(string $table, array $data): int
+    {
+        if ($this->countsFoundRows) {
+            throw new QueryException(
+                message: 'Insert failed',
+                debugMessage: 'insertIgnore() cannot tell an inserted row from an existing one on a connection opened with ATTR_FOUND_ROWS: the server reports 1 affected row for both. Use insert() and catch UniqueViolationException instead.'
+            );
+        }
+
+        // 1: inserted. 0: existed. 2: existed and an update trigger changed the row
+        return parent::insertIgnore($table, $data) === 1 ? 1 : 0;
+    }
+
+    /**
+     * Error 1062 (ER_DUP_ENTRY): duplicate entry for a unique key or the primary key.
+     */
+    protected function isUniqueViolation(PDOException $failure): bool
+    {
+        return ($failure->errorInfo[1] ?? null) === 1062;
+    }
+
+    /**
+     * "Duplicate entry '...' for key 'name'": only the name at the very end counts - the duplicate
+     * value before it comes from outside and may itself contain "for key". What stands there
+     * depends on the server (measured): MariaDB and MySQL up to 8.0.18 print the key alone
+     * (`email`), MySQL since 8.0.19 puts the table in front (`users.email`). A name without a dot
+     * is the key on every server. With a dot the server's version decides: where the key stands
+     * alone, the name is returned as printed; where the table is in front, exactly one dot
+     * separates the two and the part behind it is the key - more than one means the table or the
+     * key contains a dot itself, and the name cannot be told. Where the version cannot be read,
+     * a name with a dot cannot be told either. Null rather than a wrong name.
+     */
+    protected function violatedConstraint(PDOException $failure): ?string
+    {
+        if (preg_match("/ for key '([^']+)'$/", self::driverMessage($failure), $match) !== 1) {
+            return null;
+        }
+        $name = $match[1];
+        if (!str_contains($name, '.')) {
+            return $name;
+        }
+
+        return match ($this->printsTheTableBeforeTheKey()) {
+            false => $name,
+            true => substr_count($name, '.') === 1 ? substr($name, (int) strpos($name, '.') + 1) : null,
+            null => null,
+        };
+    }
+
+    /**
+     * Whether this server prints `table.key` in its duplicate entry message: MySQL since 8.0.19
+     * does, MariaDB and older MySQL versions do not. Read from the version string the client got
+     * in the handshake (nothing is sent); null when it cannot be read or is no version number.
+     * A proxy that reports another server's version, or a MySQL-compatible server whose version
+     * does not tell its message format, makes this answer wrong: every key then comes out as
+     * `table.key`, or a key name with a dot is cut.
+     */
+    private function printsTheTableBeforeTheKey(): ?bool
+    {
+        try {
+            $version = $this->pdo->getAttribute(PDO::ATTR_SERVER_VERSION);
+        } catch (Throwable) {
+            return null;
+        }
+        if (!is_string($version)) {
+            return null;
+        }
+        if (stripos($version, 'MariaDB') !== false) {
+            return false;
+        }
+        if (preg_match('/^\d+\.\d+\.\d+/', $version, $number) !== 1) {
+            return null;
+        }
+
+        return version_compare($number[0], '8.0.19', '>=');
     }
 
     private static function isDeadlock(PDOException $failure): bool

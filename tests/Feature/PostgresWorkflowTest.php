@@ -8,6 +8,7 @@ use PHPUnit\Framework\Attributes\Group;
 use Sodaho\PdoWrapper\Database;
 use Sodaho\PdoWrapper\DatabaseInterface;
 use Sodaho\PdoWrapper\Exception\QueryException;
+use Sodaho\PdoWrapper\Exception\UniqueViolationException;
 use Sodaho\PdoWrapper\Tests\Feature\Concerns\AbstractWorkflowTest;
 
 /**
@@ -86,6 +87,41 @@ class PostgresWorkflowTest extends AbstractWorkflowTest
             id INTEGER PRIMARY KEY,
             user_id INTEGER REFERENCES users(id) DEFERRABLE INITIALLY DEFERRED
         )';
+    }
+
+    protected function uniqueConstraintNames(): array
+    {
+        return ['email' => 'users_email_key', 'primary' => 'users_pkey'];
+    }
+
+    /**
+     * PostgreSQL prints the constraint name as it is, between double quotes, also when the name
+     * itself contains one: the whole name is read.
+     */
+    public function testAConstraintNameIsReadWholeEvenWithAQuoteInIt(): void
+    {
+        $this->db->execute('DROP TABLE IF EXISTS odd_names');
+        $this->db->execute('CREATE TABLE odd_names (a INT, b INT, CONSTRAINT "we""ird name" UNIQUE (a), CONSTRAINT "ends with """ UNIQUE (b))');
+
+        try {
+            foreach (['a' => 'we"ird name', 'b' => 'ends with "'] as $column => $name) {
+                $this->db->execute(sprintf('INSERT INTO odd_names (%s) VALUES (1)', $column));
+                try {
+                    $this->db->execute(sprintf('INSERT INTO odd_names (%s) VALUES (1)', $column));
+                    $this->fail('Expected UniqueViolationException');
+                } catch (UniqueViolationException $e) {
+                    $this->assertSame($name, $e->constraint);
+                }
+            }
+        } finally {
+            $this->db->execute('DROP TABLE IF EXISTS odd_names');
+        }
+    }
+
+    protected function laterAssignmentsSeeEarlierOnes(): bool
+    {
+        // Standard SQL: every assignment is computed from the row as it was.
+        return false;
     }
 
     protected function failedCommitKeepsTransactionOpen(): bool

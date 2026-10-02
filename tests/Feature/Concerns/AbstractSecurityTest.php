@@ -354,17 +354,15 @@ abstract class AbstractSecurityTest extends TestCase
     public function testSqlInjectionInColumnName(): void
     {
         $maliciousColumn = '"; DROP TABLE users; --';
+        $query = $this->db->table('users')->where($maliciousColumn, 'test');
+        $this->assertStringContainsString(' WHERE ' . $this->quoted($maliciousColumn) . ' = ?', $query->toSql()[0], 'one quoted identifier');
 
         try {
-            $this->db->table('users')
-                ->where($maliciousColumn, 'test')
-                ->get();
-
-            // SQLite may not throw for non-existent quoted column
-            // But injection should still be prevented
+            // SQLite does not throw: a quoted name that is no column is read as a string there
+            $this->assertSame([], $query->get());
         } catch (\Sodaho\PdoWrapper\Exception\QueryException $e) {
-            // MySQL/PostgreSQL throw "column not found" - this is GOOD security behavior
-            // The malicious string was safely quoted, not executed
+            // MySQL/PostgreSQL: no such column
+            $this->assertSame('Query failed', $e->getMessage());
         }
 
         // Critical: Table should still exist with all data
@@ -372,16 +370,28 @@ abstract class AbstractSecurityTest extends TestCase
         $this->assertCount(2, $users);
     }
 
+    /**
+     * The identifier as this database's driver has to write it: its quote character around it and
+     * doubled inside - the whole string is one name, whatever it contains.
+     */
+    private function quoted(string $identifier): string
+    {
+        $quote = str_contains($this->db->table('users')->toSql()[0], '`') ? '`' : '"';
+
+        return $quote . str_replace($quote, $quote . $quote, $identifier) . $quote;
+    }
+
     public function testSqlInjectionInTableName(): void
     {
         $maliciousTable = 'users"; DROP TABLE secrets; --';
 
+        $this->assertSame('SELECT * FROM ' . $this->quoted($maliciousTable), $this->db->table($maliciousTable)->toSql()[0], 'one quoted identifier');
+
         try {
-            $result = $this->db->table($maliciousTable)->get();
-            // Should fail (table doesn't exist with that weird name)
+            $this->db->table($maliciousTable)->get();
             $this->fail('Expected exception for non-existent table');
         } catch (\Sodaho\PdoWrapper\Exception\QueryException $e) {
-            // Expected - table doesn't exist
+            $this->assertSame('Query failed', $e->getMessage(), 'no table of that odd name');
         }
 
         // Secrets table should still exist
@@ -416,17 +426,15 @@ abstract class AbstractSecurityTest extends TestCase
     public function testSqlInjectionInOrderByColumn(): void
     {
         $maliciousColumn = 'name; DROP TABLE users; --';
+        $query = $this->db->table('users')->orderBy($maliciousColumn);
+        $this->assertStringContainsString(' ORDER BY ' . $this->quoted($maliciousColumn) . ' ASC', $query->toSql()[0], 'one quoted identifier');
 
         try {
-            $this->db->table('users')
-                ->orderBy($maliciousColumn)
-                ->get();
-
-            // SQLite may not throw for non-existent quoted column
-            // But injection should still be prevented
+            // SQLite does not throw: a quoted name that is no column is read as a string there
+            $this->assertCount(2, $query->get());
         } catch (\Sodaho\PdoWrapper\Exception\QueryException $e) {
-            // MySQL/PostgreSQL throw "column not found" - this is GOOD security behavior
-            // The malicious string was safely quoted, not executed
+            // MySQL/PostgreSQL: no such column
+            $this->assertSame('Query failed', $e->getMessage());
         }
 
         // Critical: Table should still exist with all data

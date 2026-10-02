@@ -11,6 +11,7 @@ use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\TestCase;
 use Sodaho\PdoWrapper\DatabaseInterface;
 use Sodaho\PdoWrapper\Driver\PostgresDriver;
+use Sodaho\PdoWrapper\Exception\CommitFailedException;
 use Sodaho\PdoWrapper\Exception\ConnectionException;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Exception\TransactionException;
@@ -319,6 +320,8 @@ class PostgresDriverIntegrationTest extends TestCase
                 $this->assertSame('Failed to commit transaction', $e->getMessage());
                 $this->assertSame($failure, $e->getPrevious());
                 $this->assertStringContainsString('The transaction is aborted', (string) $e->getDebugMessage());
+                $this->assertInstanceOf(CommitFailedException::class, $e);
+                $this->assertNull($e->outcome, 'a direct commit(): not ended by the library');
             }
             $this->assertTrue($this->driver->inTransaction(), 'still the caller\'s to end');
             $this->assertSame([], $ends, 'a refused commit tells no end');
@@ -935,6 +938,45 @@ class PostgresDriverIntegrationTest extends TestCase
     }
 
     /**
+     * The same on the manual path, for a transaction begun through the library and for one begun
+     * on raw PDO: the failed COMMIT takes the transaction with it, nothing could end it
+     * afterwards, so the failed commit itself tells 'lost' - at once.
+     */
+    public function testAManualCommitRejectedByADeferredConstraintTellsLostAtOnce(): void
+    {
+        $db = $this->driver;
+        $db->execute('DROP TABLE IF EXISTS end_child');
+        $db->execute('DROP TABLE IF EXISTS end_parent');
+        $db->execute('CREATE TABLE end_parent (id INT PRIMARY KEY)');
+        $db->execute('CREATE TABLE end_child (id SERIAL PRIMARY KEY, parent_id INT REFERENCES end_parent (id) DEFERRABLE INITIALLY DEFERRED)');
+        $ends = [];
+        $db->on('transaction.end', static function (array $data) use (&$ends): void {
+            $ends[] = $data;
+        });
+
+        try {
+            foreach (['library' => static fn () => $db->beginTransaction(), 'raw PDO' => static fn () => $db->getPdo()->beginTransaction()] as $begunOn => $begin) {
+                $ends = [];
+                $begin();
+                $db->insert('end_child', ['parent_id' => 999]); // checked at COMMIT
+                try {
+                    $db->commit();
+                    $this->fail('Expected CommitFailedException');
+                } catch (CommitFailedException $e) {
+                    $this->assertSame('23503', $e->getPrevious()?->getCode(), $begunOn);
+                    $this->assertFalse($db->inTransaction(), $begunOn);
+                    $this->assertSame([['outcome' => 'lost', 'error' => $e]], $ends, $begunOn);
+                    $this->assertSame('lost', $e->outcome, $begunOn);
+                }
+            }
+            $this->assertSame(0, $db->table('end_child')->count());
+        } finally {
+            $db->execute('DROP TABLE IF EXISTS end_child');
+            $db->execute('DROP TABLE IF EXISTS end_parent');
+        }
+    }
+
+    /**
      * A COMMIT rejected by a deferred constraint: PostgreSQL rolls the transaction back itself and
      * pdo_pgsql no longer reports it, so the library cannot send a rollback: no
      * 'transaction.rollback' listener runs and 'transaction.end' reports 'lost' with the commit's
@@ -960,8 +1002,9 @@ class PostgresDriverIntegrationTest extends TestCase
                 $db->insert('end_child', ['parent_id' => 999]); // checked at COMMIT
             });
             $this->fail('Expected the commit to fail');
-        } catch (QueryException|\Sodaho\PdoWrapper\Exception\TransactionException $e) {
+        } catch (CommitFailedException $e) {
             $this->assertSame('23503', $e->getPrevious()?->getCode(), 'foreign key violation at COMMIT');
+            $this->assertSame('lost', $e->outcome, 'fail-closed: PDO reports no transaction, no rollback of this library is confirmed');
         }
 
         $this->assertFalse($db->inTransaction(), 'pdo_pgsql no longer reports the transaction after the failed COMMIT');

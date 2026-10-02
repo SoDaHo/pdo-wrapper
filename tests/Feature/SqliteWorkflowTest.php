@@ -89,6 +89,17 @@ class SqliteWorkflowTest extends AbstractWorkflowTest
         )';
     }
 
+    protected function uniqueConstraintNames(): array
+    {
+        return ['email' => null, 'primary' => null];
+    }
+
+    protected function laterAssignmentsSeeEarlierOnes(): bool
+    {
+        // Standard SQL: every assignment is computed from the row as it was.
+        return false;
+    }
+
     protected function failedCommitKeepsTransactionOpen(): bool
     {
         // SQLite keeps the transaction open after a deferred foreign key fails at COMMIT.

@@ -15,6 +15,7 @@ use Sodaho\PdoWrapper\Database;
 use Sodaho\PdoWrapper\DatabaseInterface;
 use Sodaho\PdoWrapper\Driver\AbstractDriver;
 use Sodaho\PdoWrapper\Driver\SqliteDriver;
+use Sodaho\PdoWrapper\Exception\CommitFailedException;
 use Sodaho\PdoWrapper\Exception\CommitHookException;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Exception\TransactionException;
@@ -604,6 +605,8 @@ class TransactionTest extends TestCase
         } catch (TransactionException $e) {
             $this->assertSame('Failed to commit transaction', $e->getMessage());
             $this->assertInstanceOf(PDOException::class, $e->getPrevious());
+            $this->assertInstanceOf(CommitFailedException::class, $e);
+            $this->assertSame(DatabaseInterface::TRANSACTION_ROLLED_BACK, $e->outcome, 'nothing is committed');
         }
 
         // SQLite keeps the transaction open after a rejected COMMIT; the wrapper rolls it back.
@@ -629,6 +632,8 @@ class TransactionTest extends TestCase
             $this->fail('Expected TransactionException');
         } catch (TransactionException $e) {
             $this->assertSame('PDO::commit() returned false', $e->getDebugMessage());
+            $this->assertInstanceOf(CommitFailedException::class, $e);
+            $this->assertSame(DatabaseInterface::TRANSACTION_ROLLED_BACK, $e->outcome);
         }
 
         $this->assertSame(['rollback'], $events);

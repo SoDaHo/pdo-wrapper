@@ -13,7 +13,9 @@ use Sodaho\PdoWrapper\Query\RawExpression;
 /**
  * Factory class for creating database connections.
  *
- * Configuration priority: $config array > $_ENV > getenv()
+ * Configuration priority: $config array > $_ENV > getenv(). An environment variable that is set
+ * but empty counts as not set (a required value is then reported as missing); an empty
+ * DB_SQLITE_PATH throws.
  *
  * Usage:
  * - Database::connect(['driver' => 'mysql', 'host' => '...', ...]) or with DB_DRIVER set
@@ -33,7 +35,7 @@ class Database
      *
      * @throws Exception\ConnectionException When connection fails
      */
-    public static function mysql(array $config = []): MySqlDriver
+    public static function mysql(#[\SensitiveParameter] array $config = []): MySqlDriver
     {
         $envPort = trim((string) self::env('DB_PORT'));
 
@@ -60,7 +62,7 @@ class Database
      *
      * @throws Exception\ConnectionException When connection fails
      */
-    public static function postgres(array $config = []): PostgresDriver
+    public static function postgres(#[\SensitiveParameter] array $config = []): PostgresDriver
     {
         $envPort = trim((string) self::env('DB_PORT'));
 
@@ -80,15 +82,25 @@ class Database
      * Create a SQLite database connection.
      *
      * Falls back to DB_SQLITE_PATH environment variable if path is null.
-     * Defaults to ':memory:' if neither is set.
+     * Defaults to ':memory:' if neither is set. A DB_SQLITE_PATH that is set but empty (or not a
+     * scalar) is not "not set": the default would be a database that forgets everything, so it
+     * throws.
      *
      * @param string|null $path Path to SQLite file, ':memory:' for in-memory, or null for default
      *
-     * @throws Exception\ConnectionException When connection fails
+     * @throws Exception\ConnectionException When the path is an empty string, DB_SQLITE_PATH is set but empty or not a scalar, or the connection fails
      */
     public static function sqlite(?string $path = null): SqliteDriver
     {
-        $path ??= self::env('DB_SQLITE_PATH') ?? ':memory:';
+        if ($path === null) {
+            $path = self::env('DB_SQLITE_PATH', keepEmpty: true) ?? ':memory:';
+            if ($path === '') {
+                throw new ConnectionException(
+                    message: 'Database connection failed',
+                    debugMessage: 'DB_SQLITE_PATH is set but empty or not a scalar: unset it for the default in-memory database, or set it to ":memory:" or the path of a file'
+                );
+            }
+        }
 
         return new SqliteDriver($path);
     }
@@ -105,7 +117,7 @@ class Database
      *
      * @throws ConnectionException When no or an unknown driver is named, or the connection fails
      */
-    public static function connect(array $config = []): DatabaseInterface
+    public static function connect(#[\SensitiveParameter] array $config = []): DatabaseInterface
     {
         $driver = strtolower(trim($config['driver'] ?? self::env('DB_DRIVER') ?? ''));
 
@@ -129,20 +141,29 @@ class Database
      * that should be passed through without identifier quoting. As a value in
      * insert()/update()/where()/having() the expression is inlined instead of bound.
      *
-     * SECURITY WARNING: Never pass untrusted user input to this method.
+     * An expression used as a value may carry values of its own: ? placeholders in the SQL,
+     * their values in $bindings. They are bound exactly where the expression stands among the
+     * statement's other values (in an update: in the order of the SET list, before the WHERE
+     * values). select(), groupBy() and the column of having() refuse an expression with bindings.
+     *
+     * SECURITY WARNING: Never pass untrusted user input as $value.
      * This bypasses SQL injection protection for identifiers and, as a value,
-     * the parameter binding.
+     * the parameter binding. User input belongs in $bindings.
      *
      * @param string $value The raw SQL string
+     * @param array<array-key, mixed> $bindings Values for the ? placeholders in $value, in order
+     *
+     * @throws Exception\QueryException When a binding is itself a RawExpression
      *
      * @example
      * $db->table('users')->select([Database::raw('COUNT(*) as total')])->get();
      * $db->table('orders')->select([Database::raw('SUM(amount) as revenue')])->get();
      * $db->update('counters', ['hits' => Database::raw('hits + 1')], ['id' => $id]);
+     * $db->update('jobs', ['run_at' => Database::raw('run_at + ?', [$delay])], ['id' => $id]);
      */
-    public static function raw(string $value): RawExpression
+    public static function raw(string $value, array $bindings = []): RawExpression
     {
-        return new RawExpression($value);
+        return new RawExpression($value, $bindings);
     }
 
     /**
@@ -175,20 +196,29 @@ class Database
      * This ensures thread-safety when using $_ENV while maintaining
      * compatibility with legacy code that uses putenv/getenv.
      *
-     * @param string $key Environment variable name
+     * A variable that is set but empty counts as not set (`DB_HOST=` in a dotenv template): the
+     * connection then fails for a missing value instead of being opened with an empty one. A
+     * value in $_ENV that is no scalar (an array) is no usable value and counts as empty. The
+     * first channel that has a value for the key decides; null in $_ENV is no value, as before.
      *
-     * @return string|null Value or null if not set
+     * @param string $key Environment variable name
+     * @param bool $keepEmpty Return an empty or unusable value as '' instead of null, for a caller that tells that from "not set"
+     *
+     * @return string|null Value or null if not set (or empty, unless $keepEmpty)
      */
-    private static function env(string $key): ?string
+    private static function env(string $key, bool $keepEmpty = false): ?string
     {
         // $_ENV is thread-safe, preferred
         if (isset($_ENV[$key])) {
-            return (string)$_ENV[$key];
+            $value = is_scalar($_ENV[$key]) ? (string) $_ENV[$key] : '';
+        } else {
+            // getenv() fallback for legacy compatibility
+            $value = getenv($key);
+            if ($value === false) {
+                return null;
+            }
         }
 
-        // getenv() fallback for legacy compatibility
-        $value = getenv($key);
-
-        return $value !== false ? $value : null;
+        return $value === '' && !$keepEmpty ? null : $value;
     }
 }

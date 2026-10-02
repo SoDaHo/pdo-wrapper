@@ -24,10 +24,19 @@ class SqliteDriver extends AbstractDriver
      *
      * @param string $path Path to SQLite file or ':memory:' for in-memory database
      *
-     * @throws ConnectionException When the path contains a NUL byte or the connection fails
+     * @throws ConnectionException When the path is empty or contains a NUL byte, or the connection fails
      */
     public function __construct(string $path = ':memory:')
     {
+        // SQLite opens a private temporary database for an empty path and deletes it when the
+        // connection closes: a missing setting would look like a working database that forgets everything
+        if ($path === '') {
+            throw new ConnectionException(
+                message: 'Database connection failed',
+                debugMessage: 'SQLite path is empty: use ":memory:" for an in-memory database, or the path of a file'
+            );
+        }
+
         // The path ends at a NUL byte for SQLite: "data.db\0.txt" would open "data.db"
         if (str_contains($path, "\0")) {
             throw new ConnectionException(
@@ -60,6 +69,17 @@ class SqliteDriver extends AbstractDriver
     protected function getDialect(): string
     {
         return QueryBuilder::DIALECT_SQLITE;
+    }
+
+    /**
+     * SQLite reports every constraint failure with the same code (19, SQLSTATE 23000); the message
+     * tells them apart: "UNIQUE constraint failed: table.column" for unique keys and primary keys.
+     * It names columns, never the constraint: violatedConstraint() stays null.
+     */
+    protected function isUniqueViolation(PDOException $failure): bool
+    {
+        return ($failure->errorInfo[1] ?? null) === 19
+            && str_starts_with(self::driverMessage($failure), 'UNIQUE constraint failed:');
     }
 
     /**
