@@ -1032,9 +1032,9 @@ class QueryBuilder
      *
      * @throws QueryException On failure
      *
-     * @return int|string Last insert ID
+     * @return int Last insert ID, 0 when the database generated none
      */
-    public function insert(array $data): int|string
+    public function insert(array $data): int
     {
         return $this->db->insert($this->table, $data);
     }

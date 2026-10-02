@@ -992,8 +992,8 @@ class EdgeCaseTest extends TestCase
         };
         $driver->execute('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)');
 
-        $this->assertSame('1', $driver->insert('users', ['name' => 'A']));
-        $this->assertSame('2', $driver->insert('users', ['name' => 'B']));
+        $this->assertSame(1, $driver->insert('users', ['name' => 'A']));
+        $this->assertSame(2, $driver->insert('users', ['name' => 'B']));
         $this->assertSame(2, $driver->reads);
 
         // The step set for a bypassed insert does not run with a later statement
@@ -1038,7 +1038,7 @@ class EdgeCaseTest extends TestCase
             $driver->execute('INSERT INTO audit (note) VALUES (?)', ['filler']);
         }
 
-        $this->assertSame('1', $driver->insert('users', ['name' => 'A']));
+        $this->assertSame(1, $driver->insert('users', ['name' => 'A']));
         $this->assertSame(1, $driver->reads, 'read once, after the INSERT - not after the statement sent ahead');
 
         // A listener that inserts when the statement sent ahead is told, and again when the INSERT is
@@ -1051,7 +1051,7 @@ class EdgeCaseTest extends TestCase
                 $busy = false;
             }
         });
-        $this->assertSame('2', $driver->insert('users', ['name' => 'B']));
+        $this->assertSame(2, $driver->insert('users', ['name' => 'B']));
         // counted on raw PDO: a query through the driver would trigger the listener once more
         $this->assertSame(7, (int) $driver->getPdo()->query('SELECT COUNT(*) FROM audit')->fetchColumn());
     }
@@ -1073,7 +1073,7 @@ class EdgeCaseTest extends TestCase
             }
         });
 
-        $this->assertSame('1', $db->insert('notes', ['body' => 'same']));
+        $this->assertSame(1, $db->insert('notes', ['body' => 'same']));
         $this->assertSame(2, $db->table('notes')->count());
 
         // A driver that sends a statement ahead, and a listener that mirrors the insert when that one is told
@@ -1107,7 +1107,7 @@ class EdgeCaseTest extends TestCase
             }
         });
 
-        $this->assertSame('2', $driver->insert('notes', ['body' => 'outer']), 'the listener\'s row is 1, the outer row 2');
+        $this->assertSame(2, $driver->insert('notes', ['body' => 'outer']), 'the listener\'s row is 1, the outer row 2');
         $this->assertSame(1, $driver->reads, 'read once, after the outer INSERT: the listener\'s identical statement did not run the step');
     }
 

@@ -463,7 +463,7 @@ class QueryBuilderTest extends TestCase
             'age' => 40,
         ]);
 
-        $this->assertSame('4', $id);
+        $this->assertSame(4, $id);
     }
 
     public function testUpdateViaBuilder(): void

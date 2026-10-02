@@ -785,6 +785,18 @@ abstract class AbstractWorkflowTest extends TestCase
     }
 
     /**
+     * insert() returns the generated ID as an integer on every database, through the driver and
+     * through the query builder.
+     */
+    public function testInsertReturnsTheIdAsAnIntegerOnEveryDatabase(): void
+    {
+        $first = $this->db->insert('users', ['email' => 'id-1@example.com', 'name' => 'One']);
+        $second = $this->db->table('users')->insert(['email' => 'id-2@example.com', 'name' => 'Two']);
+
+        $this->assertSame([1, 2], [$first, $second]);
+    }
+
+    /**
      * sum() and avg() hand on what the database computed, in the type its driver delivers - not
      * a float that has lost what the database had exactly: a BIGINT sum above 2^53 on every
      * database, a DECIMAL sum where the database has decimals.

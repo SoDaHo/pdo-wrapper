@@ -260,11 +260,13 @@ interface DatabaseInterface
      * @param string $table Table name
      * @param array<string, mixed> $data Column => value pairs
      *
-     * @throws Exception\QueryException On failure; an Exception\UniqueViolationException when the row collides with a unique key or the primary key
+     * @throws Exception\QueryException On failure; an Exception\UniqueViolationException when the row collides with a unique key or the primary key,
+     *                                  a QueryException after the insert when the ID the database reports is no integer of PHP
      *
-     * @return int|string Last insert ID
+     * @return int Last insert ID, 0 when the database generated none (a table without
+     *             AUTO_INCREMENT, a PostgreSQL table without the {table}_id_seq sequence)
      */
-    public function insert(string $table, array $data): int|string;
+    public function insert(string $table, array $data): int;
 
     /**
      * Insert a row only when a condition holds, in one statement:

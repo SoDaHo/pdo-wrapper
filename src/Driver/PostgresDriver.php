@@ -104,9 +104,9 @@ class PostgresDriver extends AbstractDriver
      *
      * @throws QueryException When $data is empty, the query fails, or the savepoint around the ID probe fails
      *
-     * @return int|string Last insert ID, or 0 if table has no serial column
+     * @return int Last insert ID, or 0 if table has no serial column
      */
-    public function insert(string $table, array $data): int|string
+    public function insert(string $table, array $data): int
     {
         if (empty($data)) {
             throw new QueryException(

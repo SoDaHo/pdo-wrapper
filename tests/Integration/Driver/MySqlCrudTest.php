@@ -8,6 +8,7 @@ use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\TestCase;
 use Sodaho\PdoWrapper\Database;
 use Sodaho\PdoWrapper\Driver\MySqlDriver;
+use Sodaho\PdoWrapper\Exception\QueryException;
 
 #[Group('mysql')]
 class MySqlCrudTest extends TestCase
@@ -33,6 +34,63 @@ class MySqlCrudTest extends TestCase
         $this->db->execute('DROP TABLE IF EXISTS crud_test');
     }
 
+    /**
+     * A BIGINT UNSIGNED column counts on above PHP_INT_MAX, and the server reports that ID as it
+     * is: insert() throws instead of returning a cut number. The row is there.
+     */
+    public function testInsertThrowsForAnIdAbovePhpIntMax(): void
+    {
+        $this->db->execute('DROP TABLE IF EXISTS crud_big');
+        $this->db->execute('CREATE TABLE crud_big (id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, name VARCHAR(20))');
+
+        try {
+            $this->assertSame(PHP_INT_MAX, $this->db->insert('crud_big', ['id' => PHP_INT_MAX, 'name' => 'fits']));
+
+            try {
+                $this->db->insert('crud_big', ['name' => 'one more']);
+                $this->fail('Expected QueryException');
+            } catch (QueryException $e) {
+                $this->assertSame('Insert ID out of range', $e->getMessage());
+                $this->assertStringContainsString('The row was inserted', $e->getDebugMessage() ?? '');
+                $this->assertStringContainsString('"9223372036854775808"', $e->getDebugMessage() ?? '');
+                $this->assertNull($e->sqlState, 'no failure of the database');
+            }
+
+            $this->assertSame(2, $this->db->table('crud_big')->count(), 'the row is there');
+        } finally {
+            $this->db->execute('DROP TABLE IF EXISTS crud_big');
+        }
+    }
+
+    /**
+     * The server reports a negative ID written into an AUTO_INCREMENT column as an unsigned
+     * number (-5 as 2^64 - 5), which nobody can tell from an ID of that size: it throws as well.
+     */
+    public function testInsertThrowsForANegativeIdInAnAutoIncrementColumn(): void
+    {
+        try {
+            $this->db->insert('crud_test', ['id' => -5, 'name' => 'Minus']);
+            $this->fail('Expected QueryException');
+        } catch (QueryException $e) {
+            $this->assertSame('Insert ID out of range', $e->getMessage());
+            $this->assertStringContainsString('"18446744073709551611"', $e->getDebugMessage() ?? '');
+        }
+
+        $this->assertSame('Minus', $this->db->findOne('crud_test', ['id' => -5])['name'] ?? null, 'the row is there');
+    }
+
+    public function testInsertReturnsZeroForATableWithoutAutoIncrement(): void
+    {
+        $this->db->execute('DROP TABLE IF EXISTS crud_plain');
+        $this->db->execute('CREATE TABLE crud_plain (id INT PRIMARY KEY, name VARCHAR(20))');
+
+        try {
+            $this->assertSame(0, $this->db->insert('crud_plain', ['id' => 7, 'name' => 'Plain']));
+        } finally {
+            $this->db->execute('DROP TABLE IF EXISTS crud_plain');
+        }
+    }
+
     public function testInsertAndFindOne(): void
     {
         $id = $this->db->insert('crud_test', [
@@ -40,7 +98,7 @@ class MySqlCrudTest extends TestCase
             'email' => 'max@example.com',
         ]);
 
-        $this->assertSame('1', $id);
+        $this->assertSame(1, $id);
 
         $row = $this->db->findOne('crud_test', ['id' => 1]);
 

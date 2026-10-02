@@ -4,9 +4,11 @@ declare(strict_types=1);
 
 namespace Sodaho\PdoWrapper\Tests\Integration;
 
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Sodaho\PdoWrapper\Database;
 use Sodaho\PdoWrapper\DatabaseInterface;
+use Sodaho\PdoWrapper\Driver\SqliteDriver;
 use Sodaho\PdoWrapper\Exception\QueryException;
 
 class CrudTest extends TestCase
@@ -30,7 +32,7 @@ class CrudTest extends TestCase
             'email' => 'max@example.com',
         ]);
 
-        $this->assertSame('1', $id);
+        $this->assertSame(1, $id);
     }
 
     public function testInsertMultipleRows(): void
@@ -38,8 +40,86 @@ class CrudTest extends TestCase
         $id1 = $this->db->insert('users', ['name' => 'Max', 'email' => 'max@example.com']);
         $id2 = $this->db->insert('users', ['name' => 'Anna', 'email' => 'anna@example.com']);
 
-        $this->assertSame('1', $id1);
-        $this->assertSame('2', $id2);
+        $this->assertSame(1, $id1);
+        $this->assertSame(2, $id2);
+    }
+
+    /**
+     * The ID is an integer, whatever its size and sign: PDO's string is converted, not handed on.
+     */
+    public function testInsertReturnsTheIdAsAnInteger(): void
+    {
+        $this->assertSame(-5, $this->db->insert('users', ['id' => -5, 'name' => 'Minus']));
+        $this->assertSame(PHP_INT_MAX, $this->db->insert('users', ['id' => PHP_INT_MAX, 'name' => 'Last']));
+    }
+
+    /**
+     * What PDO reports when there is no ID: '0', or nothing at all.
+     */
+    public function testInsertReturnsZeroWhenTheDriverReportsNoId(): void
+    {
+        $driver = self::driverReporting('0');
+        $this->assertSame(0, $driver->insert('users', ['name' => 'A']));
+
+        $driver = self::driverReporting('');
+        $this->assertSame(0, $driver->insert('users', ['name' => 'A']));
+    }
+
+    /**
+     * An ID that is no integer of PHP throws instead of being cut ((int) would make PHP_INT_MAX
+     * of the first, 0 of the last). The row is inserted, and the exception says so where values
+     * may stand.
+     */
+    #[DataProvider('idsThatAreNoIntegerOfPhp')]
+    public function testInsertThrowsForAnIdThatIsNoIntegerOfPhp(string $reported): void
+    {
+        $driver = self::driverReporting($reported);
+
+        try {
+            $driver->insert('users', ['name' => 'A']);
+            $this->fail('Expected QueryException');
+        } catch (QueryException $e) {
+            $this->assertSame('Insert ID out of range', $e->getMessage());
+            $debug = $e->getDebugMessage() ?? '';
+            $this->assertStringContainsString('The row was inserted', $debug);
+            $this->assertStringContainsString('"' . $reported . '"', $debug);
+            $this->assertStringContainsString('SQL: INSERT INTO `users` (`name`) VALUES (?) | Params: ["A"]', $debug);
+        }
+
+        $this->assertSame(1, $driver->table('users')->count(), 'the row is there');
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function idsThatAreNoIntegerOfPhp(): array
+    {
+        return [
+            'one above PHP_INT_MAX' => ['9223372036854775808'],
+            'a negative ID as MySQL reports it' => ['18446744073709551611'],
+            'one below PHP_INT_MIN' => ['-9223372036854775809'],
+            'a fraction' => ['1.5'],
+            'no number' => ['abc'],
+        ];
+    }
+
+    /**
+     * A SQLite driver whose lastInsertId() reports what a test wants a database to have reported.
+     */
+    private static function driverReporting(string $id): SqliteDriver
+    {
+        $driver = new class (':memory:') extends SqliteDriver {
+            public string $reported = '';
+
+            public function lastInsertId(?string $name = null): string|false
+            {
+                return $this->reported;
+            }
+        };
+        $driver->reported = $id;
+        $driver->execute('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)');
+
+        return $driver;
     }
 
     public function testInsertEmptyDataThrowsException(): void

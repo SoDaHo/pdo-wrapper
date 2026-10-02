@@ -1588,11 +1588,12 @@ abstract class AbstractDriver implements DatabaseInterface
      * @param string $table Table name (supports schema.table format)
      * @param array<string, mixed> $data Column => value pairs
      *
-     * @throws QueryException When $data is empty or query fails
+     * @throws QueryException When $data is empty, the query fails, or the ID the database reports
+     *                        is no integer of PHP (the row is inserted then)
      *
-     * @return int|string Last insert ID
+     * @return int Last insert ID, 0 when the database generated none
      */
-    public function insert(string $table, array $data): int|string
+    public function insert(string $table, array $data): int
     {
         if (empty($data)) {
             throw new QueryException(
@@ -1624,8 +1625,27 @@ abstract class AbstractDriver implements DatabaseInterface
                 debugMessage: sprintf('Failed to retrieve last insert ID | SQL: %s | Params: %s', $sql, $this->encodeParams($params))
             );
         }
+        if ($lastId === '') {
+            return 0; // a PDO driver that has no ID to report
+        }
 
-        return $lastId;
+        // Not (int): the cast cuts what does not fit. MySQL/MariaDB report a BIGINT UNSIGNED ID above
+        // PHP_INT_MAX as it is, and a negative ID written into an AUTO_INCREMENT column as a number
+        // of that size.
+        $id = filter_var($lastId, FILTER_VALIDATE_INT);
+        if ($id === false) {
+            throw new QueryException(
+                message: 'Insert ID out of range',
+                debugMessage: sprintf(
+                    'The row was inserted, but the ID the database reports for it, "%s", is no integer of PHP | SQL: %s | Params: %s',
+                    $lastId,
+                    $sql,
+                    $this->encodeParams($params)
+                )
+            );
+        }
+
+        return $id;
     }
 
     /**
