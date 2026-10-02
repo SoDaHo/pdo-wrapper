@@ -4,11 +4,29 @@
 
 Work on 2.0 (branch `2.x`). What breaks is collected under "Upgrading from 1.x" as it is built.
 
+### Added
+- `Database::fromEnv(array $overrides = [])`: creates the connection from the environment and is the one place in the library that reads it - `DB_DRIVER`, `DB_HOST`, `DB_PORT`, `DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD` and, for SQLite, `DB_SQLITE_PATH`, from `$_ENV` first, then `getenv()`. A key in `$overrides` (the keys of `connect()`) counts instead of its variable, also with `null` or an empty value. The SQLite file never comes from `DB_DATABASE`.
+
 ### Changed
 - PHP 8.5 or newer is required (1.x: PHP 8.2). The test suite fails on deprecations and notices.
+- `Database::mysql()`, `postgres()`, `sqlite()` and `connect()` no longer read the environment: they use what they are given and nothing else. The config array of `mysql()`, `postgres()` and `connect()` is a required argument, and `sqlite()` takes a string (default `:memory:`) and no `null`. A required value that was not passed throws a `ConnectionException`, whatever the environment says.
 
 ### Upgrading from 1.x
 - **PHP version:** `"php": "^8.2"` (1.x) becomes PHP 8.5 or newer. Stay on `^1.6` until the application runs on PHP 8.5.
+- **Connections from the environment:** the factories no longer fill in `DB_*` values; `Database::fromEnv()` does. Most old calls fail loudly on 2.0 (an `ArgumentCountError` without the config array, a `TypeError` for `sqlite(null)`, a `ConnectionException` "Missing required config" for a value that used to come from the environment) - **except SQLite, which changes silently: `Database::sqlite()` and `Database::connect(['driver' => 'sqlite'])` used to open the file named in `DB_SQLITE_PATH` and now open an in-memory database, which works and forgets everything when the connection closes.** Search for both calls before upgrading.
+
+  | 1.x | 2.0 |
+  |---|---|
+  | `Database::connect()` | `Database::fromEnv()` |
+  | `Database::mysql()` | `Database::fromEnv(['driver' => 'mysql'])` |
+  | `Database::postgres()` | `Database::fromEnv(['driver' => 'pgsql'])` |
+  | `Database::mysql(['password' => $secret])` (the rest from `DB_*`) | `Database::fromEnv(['driver' => 'mysql', 'password' => $secret])` |
+  | `Database::connect(['driver' => 'mysql'])` (the rest from `DB_*`) | `Database::fromEnv(['driver' => 'mysql'])` |
+  | `Database::sqlite()` with `DB_SQLITE_PATH` set | `Database::fromEnv(['driver' => 'sqlite'])` |
+  | `Database::connect(['driver' => 'sqlite'])` with `DB_SQLITE_PATH` set | `Database::fromEnv(['driver' => 'sqlite'])` |
+  | `Database::sqlite(null)` | `Database::sqlite()` (in memory) or `Database::fromEnv(['driver' => 'sqlite'])` |
+
+  Also not filled in any more: a `password` or `port` that came from `DB_PASSWORD`/`DB_PORT` next to an otherwise complete config array - the connection is then tried without a password and on the driver's default port. And one difference to the old fallback: a key passed to `fromEnv()` wins over its variable also when it is `null` (in 1.x a `null` in the config fell back to the environment).
 - **MySQL driver options:** write `Pdo\Mysql::ATTR_MULTI_STATEMENTS` / `Pdo\Mysql::ATTR_FOUND_ROWS` in `options`; the `PDO::MYSQL_ATTR_*` constants are deprecated in PHP 8.5 (both names are the same number, so old code keeps working, with a deprecation notice from PHP).
 
 ## [1.6.0] - 2026-10-02

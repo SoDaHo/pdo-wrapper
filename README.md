@@ -70,13 +70,13 @@ $db = Database::postgres([
 ]);
 ```
 
-`options` replace the library's PDO defaults, the security-relevant ones included: exceptions as error mode, native prepared statements (`PDO::ATTR_EMULATE_PREPARES => false`) and, on MySQL/MariaDB, multi-statements switched off. No statement of the library needs multi-statements; switched on, a string that reaches raw PDO (`getPdo()->exec()`) or an emulated prepare could carry a second statement. `Pdo\Mysql::ATTR_MULTI_STATEMENTS => true` brings them back, for example for a migration that sends a whole file in one call. Set the connection charset with the `charset` key, never with `SET NAMES` at runtime: PDO's own escaping (emulated prepares, `PDO::quote()`) only knows the charset of the DSN. `port` must be a whole number between 1 and 65535, also when it comes from `DB_PORT` (an invalid value throws a `ConnectionException` instead of falling back to the default).
+`options` replace the library's PDO defaults, the security-relevant ones included: exceptions as error mode, native prepared statements (`PDO::ATTR_EMULATE_PREPARES => false`) and, on MySQL/MariaDB, multi-statements switched off. No statement of the library needs multi-statements; switched on, a string that reaches raw PDO (`getPdo()->exec()`) or an emulated prepare could carry a second statement. `Pdo\Mysql::ATTR_MULTI_STATEMENTS => true` brings them back, for example for a migration that sends a whole file in one call. Set the connection charset with the `charset` key, never with `SET NAMES` at runtime: PDO's own escaping (emulated prepares, `PDO::quote()`) only knows the charset of the DSN. `port` must be a whole number between 1 and 65535, also when `Database::fromEnv()` reads it from `DB_PORT` (an invalid value throws a `ConnectionException` instead of falling back to the default).
 
 ### SQLite
 
 ```php
 // In-memory database
-$db = Database::sqlite(':memory:');
+$db = Database::sqlite(); // the same as Database::sqlite(':memory:')
 
 // File-based database
 $db = Database::sqlite('/path/to/database.db');
@@ -97,32 +97,40 @@ UPDATE t SET n = CAST(n AS INTEGER) WHERE typeof(n) = 'text' AND CAST(CAST(n AS 
 
 ### One Config for Every Environment
 
-`Database::connect()` picks the driver from the config (`driver`) or from `DB_DRIVER`, and delegates to `mysql()`, `postgres()` or `sqlite()` with the same keys and environment fallbacks - MariaDB in production, SQLite in tests, one call:
+`Database::connect()` picks the driver from the config (`driver`) and delegates to `mysql()`, `postgres()` or `sqlite()` with the same keys - MariaDB in production, SQLite in tests, one call:
 
 ```php
 $db = Database::connect(['driver' => 'mysql', 'host' => 'localhost', 'database' => 'myapp', 'username' => 'root', 'password' => 'secret']);
 $db = Database::connect(['driver' => 'sqlite', 'path' => ':memory:']);
-$db = Database::connect(); // driver and connection values from the environment
 ```
 
-Accepted driver names: `mysql` (also `mariadb`), `pgsql` (also `postgres`, `postgresql`), `sqlite`. A missing or unknown driver throws a `ConnectionException`.
+Accepted driver names: `mysql` (also `mariadb`), `pgsql` (also `postgres`, `postgresql`), `sqlite`. A missing or unknown driver throws a `ConnectionException`. For SQLite the file is `path`, else `database`; without both the database is in memory.
+
+`mysql()`, `postgres()`, `sqlite()` and `connect()` use what they are given and nothing else. They never read the environment: a required value that was not passed throws a `ConnectionException`, whatever `DB_HOST` says.
 
 ### Environment Variables
 
-All drivers support configuration via environment variables:
+`Database::fromEnv()` is the one place in the library that reads the environment:
 
 ```php
-// MySQL/PostgreSQL read from:
-// DB_HOST, DB_DATABASE, DB_USERNAME, DB_PASSWORD, DB_PORT
-
-// SQLite reads from:
-// DB_SQLITE_PATH
-
-// Database::connect() reads the driver from:
-// DB_DRIVER (mysql, pgsql or sqlite)
+$db = Database::fromEnv();                                  // driver and connection values from the environment
+$db = Database::fromEnv(['password' => $secret]);           // the password from a secret store, the rest from the environment
+$db = Database::fromEnv(['driver' => 'mysql', 'charset' => 'utf8mb4']);
 ```
 
-**Priority:** `$config` array > `$_ENV` > `getenv()`. The library checks `$_ENV` first (thread-safe), then falls back to `getenv()` for legacy compatibility. A variable that is set but empty counts as not set (`DB_HOST=` in a dotenv template): a required value is then reported as missing instead of connecting with an empty one. An empty `DB_SQLITE_PATH` throws as well instead of falling back to the default `:memory:`, which would be a database that forgets everything. Use a library like [sodaho/env-loader](https://github.com/sodaho/env-loader) to load `.env` files.
+| Variable | Used by | |
+|---|---|---|
+| `DB_DRIVER` | every driver | `mysql`, `pgsql` or `sqlite` (the names `connect()` accepts) |
+| `DB_HOST`, `DB_DATABASE`, `DB_USERNAME` | MySQL/MariaDB, PostgreSQL | required |
+| `DB_PASSWORD` | MySQL/MariaDB, PostgreSQL | optional |
+| `DB_PORT` | MySQL/MariaDB, PostgreSQL | optional, the driver's default without it |
+| `DB_SQLITE_PATH` | SQLite | optional, an in-memory database without it |
+
+The list is complete: no other variable is read, and none of these anywhere else.
+
+**Priority:** `$overrides` > `$_ENV` > `getenv()`. A key that is passed counts instead of its variable, also with `null` or an empty value: `fromEnv(['password' => null])` connects without a password whatever `DB_PASSWORD` says. The keys are those of `connect()`; `charset` and `options` have no variable and can only be passed. `$_ENV` is checked first (thread-safe), then `getenv()`.
+
+A variable that is set but empty counts as not set (`DB_HOST=` in a dotenv template): a required value is then reported as missing instead of connecting with an empty one. An empty `DB_SQLITE_PATH` throws instead of falling back to `:memory:`, which would be a database that forgets everything. The SQLite file comes from `DB_SQLITE_PATH` or from a `path`/`database` that is passed, never from `DB_DATABASE`: that is the name of a server database. Use a library like [sodaho/env-loader](https://github.com/sodaho/env-loader) to load `.env` files.
 
 ## Raw Queries
 
