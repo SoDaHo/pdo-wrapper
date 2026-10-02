@@ -114,7 +114,8 @@ Work on 2.0 (branch `2.x`). What breaks is collected under "Upgrading from 1.x" 
   | 1.x | 2.0 |
   |---|---|
   | a test driver that overrides `commit()` to throw, to see what the application does with a failed commit | a PDO class whose `commit()` throws, named as `pdoClass`: `Database::mysql($config + ['pdoClass' => SwitchablePdo::class])` (README, "The PDO Class") - the library's own `commit()` then fails as it does for a real failure |
-  | an override that did something before or after the COMMIT or ROLLBACK | a listener: `transaction.begin`, `transaction.commit`, `transaction.rollback`, `transaction.end` |
+  | an override that did something after the BEGIN, COMMIT or ROLLBACK went through | a listener: `transaction.begin`, `transaction.commit`, `transaction.rollback`, `transaction.end` |
+  | an override that did something before the statement was sent | no listener runs there: do it where the method is called - before `beginTransaction()`, at the end of the callback of `transaction()`, before `commit()` or `rollback()` |
   | an override that told the driver the server had ended the transaction | `failureToRemember()` with `transactionEndedBy()`, `transactionIsOver()` or `refreshTransactionState()` |
 - **`$e->outcome = ...` on a `CommitFailedException`:** an `Error` (`Cannot modify private(set) property`). A test that needs such an exception with an outcome builds it and calls `$e->settle(DatabaseInterface::TRANSACTION_ROLLED_BACK)` once.
 - **Custom drivers that override `trigger()`:** `transaction.begin` no longer passes through it (`transaction.commit` and `transaction.end` never did). Register a listener with `on()` instead.
