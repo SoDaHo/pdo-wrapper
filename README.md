@@ -693,6 +693,9 @@ try {
     $db->query('INVALID SQL');
 } catch (QueryException $e) {
     // Query failed
+    $e->sqlState;     // '42000' - the SQLSTATE the database sent, a string; null when no database failure is behind it
+    $e->driverCode;   // 1064   - the driver's own number; null when there is none
+    $e->getCode();    // always 0
 }
 
 try {
@@ -722,6 +725,8 @@ try {
 ```
 
 `CommitHookException` means the data is committed; a hook failed, the connection state could not be verified or cleaned up after a hook, or the connection was in a new transaction right after the commit (MySQL/MariaDB `completion_type=CHAIN`: no commit hook ran). It extends `DatabaseException`, not `TransactionException`: a broad `catch (DatabaseException)` also sees committed data, so catch `CommitHookException` first where that matters.
+
+Every exception of the library carries what the database said in `$sqlState` and `$driverCode`, taken from PDO's `errorInfo`: the SQLSTATE as the five characters the database sent (`'42S02'`, `'23505'`, `'HY000'` - compare as a string) and the driver's own error number (MySQL/MariaDB: `1062`, `1146`, `1213`; SQLite: `19`, `1`; PostgreSQL has none, PDO reports `7` for everything - use `$sqlState` there). Both are `null` when no database failure stands behind the exception (a refused argument, a listener's own exception), and an exception that wraps another one of the library hands its codes on. `getCode()` is always `0`: PHP's exception code is an integer and cannot hold an SQLSTATE.
 
 `UniqueViolationException` tells "this row exists already" from every other failed statement without looking at driver error codes; it is recognized by the driver's own code for it (MySQL/MariaDB 1062, PostgreSQL SQLSTATE 23505, SQLite's `UNIQUE constraint failed`), on inserts and updates alike. `$constraint` is the name the database reports: the index name on MySQL/MariaDB (`PRIMARY` for the primary key; MySQL since 8.0.19 prints `table.key`, MariaDB and older MySQL versions `key`, all yield the key - where the table is in front, a table or key name that itself contains a dot makes the printed name ambiguous and yields `null` rather than a wrong name; the same goes for a name with a dot wherever the server's version cannot be read. The server is told by its version string: behind a proxy, or on a MySQL-compatible server, whose reported version does not match its message format, an older version in front of a newer MySQL yields `table.key` for every key, and a newer one in front of MariaDB or an older MySQL cuts a key name that contains a dot), the constraint name on PostgreSQL, and `null` on SQLite, which names columns only. It is read from the server's English error message: a server set to another message language yields `null`, so compare it as a hint, and branch on the class.
 
