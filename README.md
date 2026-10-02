@@ -76,7 +76,7 @@ $db = Database::postgres([
 
 ```php
 // In-memory database
-$db = Database::sqlite(); // the same as Database::sqlite(':memory:')
+$db = Database::sqlite(':memory:');
 
 // File-based database
 $db = Database::sqlite('/path/to/database.db');
@@ -104,7 +104,7 @@ $db = Database::connect(['driver' => 'mysql', 'host' => 'localhost', 'database' 
 $db = Database::connect(['driver' => 'sqlite', 'path' => ':memory:']);
 ```
 
-Accepted driver names: `mysql` (also `mariadb`), `pgsql` (also `postgres`, `postgresql`), `sqlite`. A missing or unknown driver throws a `ConnectionException`. For SQLite the file is `path`, else `database`; without both the database is in memory.
+Accepted driver names: `mysql` (also `mariadb`), `pgsql` (also `postgres`, `postgresql`), `sqlite`. A missing or unknown driver throws a `ConnectionException`. For SQLite the file is `path`, else `database`; one of them is required (`:memory:` for an in-memory database).
 
 `mysql()`, `postgres()`, `sqlite()` and `connect()` use what they are given and nothing else. They never read the environment: a required value that was not passed throws a `ConnectionException`, whatever `DB_HOST` says.
 
@@ -124,13 +124,13 @@ $db = Database::fromEnv(['driver' => 'mysql', 'charset' => 'utf8mb4']);
 | `DB_HOST`, `DB_DATABASE`, `DB_USERNAME` | MySQL/MariaDB, PostgreSQL | required |
 | `DB_PASSWORD` | MySQL/MariaDB, PostgreSQL | optional |
 | `DB_PORT` | MySQL/MariaDB, PostgreSQL | optional, the driver's default without it |
-| `DB_SQLITE_PATH` | SQLite | optional, an in-memory database without it |
+| `DB_SQLITE_PATH` | SQLite | required: the path of the file, or `:memory:` for an in-memory database |
 
 The list is complete: no other variable is read, and none of these anywhere else.
 
 **Priority:** `$overrides` > `$_ENV` > `getenv()`. A key that is passed counts instead of its variable, also with `null` or an empty value: `fromEnv(['password' => null])` connects without a password whatever `DB_PASSWORD` says. The keys are those of `connect()`; `charset` and `options` have no variable and can only be passed. `$_ENV` is checked first (thread-safe), then `getenv()`.
 
-A variable that is set but empty counts as not set (`DB_HOST=` in a dotenv template): a required value is then reported as missing instead of connecting with an empty one. An empty `DB_SQLITE_PATH` throws instead of falling back to `:memory:`, which would be a database that forgets everything. The SQLite file comes from `DB_SQLITE_PATH` or from a `path`/`database` that is passed, never from `DB_DATABASE`: that is the name of a server database. Use a library like [sodaho/env-loader](https://github.com/sodaho/env-loader) to load `.env` files.
+A variable that is set but empty counts as not set (`DB_HOST=` in a dotenv template): a required value is then reported as missing instead of connecting with an empty one. SQLite has no default path anywhere - `Database::sqlite($path)`, `connect()` and `fromEnv()` throw without one, and so does an empty `DB_SQLITE_PATH`: a missing setting must not end in an in-memory database that forgets everything. The SQLite file comes from `DB_SQLITE_PATH` or from a `path`/`database` that is passed, never from `DB_DATABASE`: that is the name of a server database. Use a library like [sodaho/env-loader](https://github.com/sodaho/env-loader) to load `.env` files.
 
 ## Raw Queries
 
