@@ -647,13 +647,15 @@ abstract class AbstractDriver implements DatabaseInterface
      * Triggers 'transaction.begin' hook on success. A throwing hook must not leave the transaction
      * it was told about open: a rollback is attempted on raw PDO (best effort, no 'transaction.rollback'
      * hooks; if it fails, the transaction may still be open) and the hook's exception reaches the
-     * caller, a PDOException as TransactionException.
+     * caller, a PDOException as TransactionException. A hook that ends the transaction it was told
+     * about (a commit() or rollback() through this driver) makes the call fail as well: the caller
+     * would go on outside of the transaction it asked for.
      *
      * A transaction begun through this driver that PDO no longer reports is told as 'lost' first;
      * so is one an end listener of that 'lost' begins and loses the same way. A third in a row is
      * not told here: the call throws and begins nothing.
      *
-     * @throws TransactionException On failure, including PDO::beginTransaction() returning false (non-exception error mode), and when transaction.end listeners keep leaving behind a transaction that ended outside this driver
+     * @throws TransactionException On failure, including PDO::beginTransaction() returning false (non-exception error mode), when a transaction.begin listener ended the transaction, and when transaction.end listeners keep leaving behind a transaction that ended outside this driver
      */
     public function beginTransaction(): void
     {
@@ -715,14 +717,14 @@ abstract class AbstractDriver implements DatabaseInterface
         }
 
         $this->transactionBegun = true;
-        $this->transactionsBegun++;
+        $number = ++$this->transactionsBegun;
         $this->lostReported = false;
         $this->suspectFailure = null;
 
         try {
             $this->trigger('transaction.begin', []);
         } catch (PDOException $e) {
-            $this->rollbackRawQuietly();
+            $this->rollbackJustBegunQuietly($number);
             throw new TransactionException(
                 message: 'Failed to begin transaction',
                 code: (int)$e->getCode(),
@@ -730,8 +732,29 @@ abstract class AbstractDriver implements DatabaseInterface
                 debugMessage: $e->getMessage()
             );
         } catch (Throwable $e) {
-            $this->rollbackRawQuietly();
+            $this->rollbackJustBegunQuietly($number);
             throw $e;
+        }
+
+        // The caller is about to work in the transaction it asked for. A listener that ended it
+        // would leave that work outside of any transaction, or inside one somebody began afterwards
+        if (!$this->stillTheTransaction($number)) {
+            throw new TransactionException(
+                message: 'Failed to begin transaction',
+                debugMessage: 'A transaction.begin listener ended the transaction that was just begun (a commit() or rollback() through this driver); its end was told then. A transaction that is open now was begun afterwards and is left to whoever began it.'
+            );
+        }
+    }
+
+    /**
+     * After a throwing 'transaction.begin' listener: undo the transaction that was just begun -
+     * unless a listener ended it itself. What is open then was begun afterwards and is not this
+     * call's to roll back.
+     */
+    private function rollbackJustBegunQuietly(int $number): void
+    {
+        if ($this->stillTheTransaction($number)) {
+            $this->rollbackRawQuietly();
         }
     }
 
@@ -1306,9 +1329,10 @@ abstract class AbstractDriver implements DatabaseInterface
 
     /**
      * The number of the transaction a beginTransaction() call has just begun, for
-     * stillTheTransaction(). Null after an overriding beginTransaction() that bypasses the one of
-     * this class: nothing tells that driver's transactions apart, and whoever began one ends
-     * whatever is open, as before.
+     * stillTheTransaction(): the beginTransaction() of this class returns only while that
+     * transaction is the one at hand. Null after an overriding beginTransaction() that bypasses
+     * the one of this class: nothing tells that driver's transactions apart, and whoever began
+     * one ends whatever is open, as before.
      */
     private function transactionJustBegun(): ?int
     {

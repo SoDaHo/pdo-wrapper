@@ -1872,6 +1872,103 @@ abstract class AbstractTransactionEndScenarios extends TestCase
         $this->assertVisible([]);
     }
 
+    /**
+     * A 'transaction.begin' listener that ends the transaction it was told about leaves the
+     * caller without one: beginTransaction() fails, and transaction() does not run the callback
+     * outside of a transaction - or inside one an end listener began in response.
+     */
+    public function testABeginListenerThatEndsTheTransactionMakesTheBeginFail(): void
+    {
+        $armed = true;
+        $this->db->on('transaction.begin', function () use (&$armed): void {
+            if ($armed) {
+                $armed = false;
+                $this->db->rollback();
+            }
+        });
+        $ran = false;
+
+        try {
+            $this->db->transaction(static function () use (&$ran): void {
+                $ran = true;
+            });
+            $this->fail('Expected TransactionException');
+        } catch (TransactionException $e) {
+            $this->assertNotInstanceOf(CommitFailedException::class, $e);
+            $this->assertSame('Failed to begin transaction', $e->getMessage());
+            $this->assertStringStartsWith('A transaction.begin listener ended the transaction that was just begun', (string) $e->getDebugMessage());
+        }
+        $this->assertFalse($ran, 'the callback did not run outside of a transaction');
+        $this->assertSame(['rollback', 'end'], $this->events);
+        $this->assertFalse($this->pdo->reallyInTransaction());
+
+        // updateMultiple() does not send its updates in autocommit either
+        $this->db->insert(self::TABLE, ['id' => 9, 'name' => 'before']);
+        $armed = true;
+        try {
+            $this->db->updateMultiple(self::TABLE, [['id' => 9, 'name' => 'after']]);
+            $this->fail('Expected TransactionException');
+        } catch (TransactionException $e) {
+            $this->assertStringStartsWith('A transaction.begin listener ended the transaction that was just begun', (string) $e->getDebugMessage());
+        }
+        $this->assertSame(['before'], array_column($this->rows(), 'name'));
+        $this->db->delete(self::TABLE, ['id' => 9]);
+
+        // the same with a transaction an end listener begins in response: not the caller's
+        $this->events = [];
+        $armed = true;
+        $this->beginInAnEndListenerOnce();
+        try {
+            $this->db->transaction(static function (DatabaseInterface $db) use (&$ran): void {
+                $ran = true;
+                $db->insert(self::TABLE, ['id' => 1, 'name' => 'a']);
+            });
+            $this->fail('Expected TransactionException');
+        } catch (TransactionException $e) {
+            $this->assertNotInstanceOf(CommitFailedException::class, $e);
+            $this->assertStringStartsWith('A transaction.begin listener ended the transaction that was just begun', (string) $e->getDebugMessage());
+        }
+        $this->assertFalse($ran);
+        $this->assertSame(['rollback', 'end'], $this->events);
+        $this->assertTrue($this->pdo->reallyInTransaction(), "the listener's transaction, left to the listener");
+        $this->assertNotVisibleElsewhere(2);
+        $this->db->rollback();
+        $this->assertVisible([]);
+    }
+
+    /**
+     * After a throwing 'transaction.begin' listener the transaction just begun is rolled back on
+     * raw PDO - but not one the listener began itself after ending the first: that one keeps its
+     * mark and its end.
+     */
+    public function testAThrowingBeginListenerDoesNotHaveItsOwnTransactionRolledBack(): void
+    {
+        $armed = true;
+        $failure = new RuntimeException('begin listener failed');
+        $this->db->on('transaction.begin', function () use (&$armed, $failure): void {
+            if ($armed) {
+                $armed = false;
+                $this->db->rollback();
+                $this->db->beginTransaction();
+                $this->db->insert(self::TABLE, ['id' => 2, 'name' => 'listener']);
+                throw $failure;
+            }
+        });
+
+        try {
+            $this->db->beginTransaction();
+            $this->fail('Expected the listener exception');
+        } catch (RuntimeException $e) {
+            $this->assertSame($failure, $e);
+        }
+        $this->assertSame(['rollback', 'end'], $this->events);
+        $this->assertTrue($this->pdo->reallyInTransaction(), "the listener's own transaction is still open");
+
+        $this->db->commit();
+        $this->assertSame(['rollback', 'end', 'commit', 'end'], $this->events, 'and its end is told when it is ended');
+        $this->assertVisible([2]);
+    }
+
     /** An end listener that, once, answers a 'rolled_back' with a transaction of its own and a row in it. */
     private function beginInAnEndListenerOnce(): void
     {
