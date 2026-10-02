@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- MySQL/MariaDB: a statement with an implicit commit (most DDL) commits the open transaction even when it fails itself (`CREATE TABLE` for a table that exists), and the server's error does not tell the client, so PDO kept reporting the transaction. When that failure left the callback of `transaction()` right away - or `rollback()` was called after it -, the `ROLLBACK` went through over nothing and `transaction.end` reported `rolled_back` although the rows written before the statement were committed. Before a `ROLLBACK` that follows a failed statement the driver now asks the server (one no-op statement on raw PDO, no hook sees it); when the transaction is gone, nothing is sent, no `transaction.rollback` listener runs and `transaction.end` reports `lost`. When the question itself fails while the connection goes on working (a proxy that rejects the statement), the `ROLLBACK` is sent to clean up, but it confirms nothing: `lost` as well. A failed statement that cost only itself still ends in `rolled_back`; after a deadlock nothing changes. A lock wait timeout that ended the transaction (`innodb_rollback_on_timeout`) and leaves the callback right away is told as `lost` now as well, without `transaction.rollback` listeners - as it already was when the callback swallowed it and the commit was refused. When PDO reports no transaction at the moment of the `rollback()`, nothing is asked and nothing changes. A custom driver can do the same by overriding the new protected `refreshTransactionState()` (a driver that already has a method of that name has to rename it). Not covered: with autocommit switched off, a statement sent after the failed DDL statement opens the next transaction, and the question finds that one in its place.
+
 ## [1.6.0] - 2026-10-02
 
 ### Added
