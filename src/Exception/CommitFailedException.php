@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Sodaho\PdoWrapper\Exception;
 
+use LogicException;
+
 /**
  * Thrown by commit() when the commit failed or was refused: PDO::commit() failed, or the driver
  * refused to send the COMMIT because the server had already ended the transaction (see
@@ -38,11 +40,32 @@ namespace Sodaho\PdoWrapper\Exception;
 class CommitFailedException extends TransactionException
 {
     /**
-     * Set by the driver when it ends the transaction (see above), before the 'transaction.end'
-     * listeners run. Not readonly for that reason: the exception exists before the outcome is
-     * known, and the caller gets the very object the listeners were handed.
+     * Readable by everyone, written through settle() alone - once. No readonly property: the
+     * exception exists before the outcome is known, and the caller gets the very object the
+     * listeners were handed.
      *
      * @var 'rolled_back'|'lost'|null
      */
-    public ?string $outcome = null;
+    public private(set) ?string $outcome = null;
+
+    /**
+     * Says what became of the transaction. Called by the driver when it ends the transaction
+     * (see above), before the 'transaction.end' listeners run - and only once: what was told
+     * stays told. Application code has no reason to call it; a test that needs an exception with
+     * an outcome may.
+     *
+     * @internal
+     *
+     * @param 'rolled_back'|'lost' $outcome
+     *
+     * @throws LogicException When an outcome has been told already
+     */
+    public function settle(string $outcome): void
+    {
+        if ($this->outcome !== null) {
+            throw new LogicException('The outcome of this failed commit has already been told');
+        }
+
+        $this->outcome = $outcome;
+    }
 }

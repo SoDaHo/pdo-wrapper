@@ -119,16 +119,10 @@ use Sodaho\PdoWrapper\Exception\DatabaseException;
  * a transaction PDO no longer reports, see below), and so does the raw rollback after a throwing
  * 'transaction.begin' listener (when that listener ended the transaction behind this library's
  * back before it threw, nothing is left to roll back and the end is told as 'lost', with the
- * exception the caller gets as error). In a custom driver, a commit()/rollback() override that does not
- * call the parent dispatches no 'transaction.end' for that call, and a beginTransaction() override
- * that does not call the parent leaves this library unaware of the transaction (no 'lost' for it).
- * An override that ends or begins transactions of its own around the parent call is outside of
- * what is told here. One that commits on raw PDO and begins again on raw PDO - a rollback()
- * override before it calls the parent, or a commit() override after the parent failed, before
- * it throws that failure on - gets the rollback of the second transaction told as the end of
- * the one whose commit failed ('rolled_back', also in CommitFailedException::$outcome),
- * although its data is committed. A commit() override that runs another commit() through this
- * library before it throws the parent's failure on leaves that failure without an outcome.
+ * exception the caller gets as error). beginTransaction(), commit() and rollback() are final in
+ * AbstractDriver: what is told here is decided in them. A custom driver extends them through
+ * listeners and through the protected hooks (failureToRemember(), transactionEndedBy(),
+ * transactionIsOver(), refreshTransactionState()), not by overriding them.
  *
  * A transaction the server has ended although PDO still reports it: on PostgreSQL every statement
  * error aborts the transaction unless a savepoint catches it; on MySQL/MariaDB a deadlock rolls
@@ -168,7 +162,7 @@ use Sodaho\PdoWrapper\Exception\DatabaseException;
  * it for the commit they run themselves: the outcome they tell with it as error, before the end
  * listeners run - 'rolled_back' (the rollback is confirmed, nothing is committed) or 'lost' -
  * and 'lost' where no end was told with it (the callback had ended the transaction itself: no
- * COMMIT is sent then; in a custom driver also a rollback that told no end); never null. And
+ * COMMIT is sent then); never null. And
  * commit() sets 'lost' when it tells the end itself,
  * as just described. Every other commit() a caller issues - directly, inside a callback, inside
  * a listener - keeps null, whoever ends the transaction afterwards: thrown out of a

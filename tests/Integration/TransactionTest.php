@@ -10,6 +10,7 @@ use LogicException;
 use PDO;
 use PDOException;
 use PHPUnit\Framework\TestCase;
+use ReflectionMethod;
 use RuntimeException;
 use Sodaho\PdoWrapper\Database;
 use Sodaho\PdoWrapper\DatabaseInterface;
@@ -19,16 +20,31 @@ use Sodaho\PdoWrapper\Exception\CommitFailedException;
 use Sodaho\PdoWrapper\Exception\CommitHookException;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Exception\TransactionException;
+use Sodaho\PdoWrapper\Tests\Integration\TransactionEnd\ScenarioPdo;
 use Throwable;
 
 class TransactionTest extends TestCase
 {
     private DatabaseInterface $db;
 
+    /** The connection of scenarioDriver(): its rollBack() calls are counted, its commit() and rollBack() can be made to fail */
+    private ScenarioPdo $scenarioPdo;
+
     protected function setUp(): void
     {
         $this->db = Database::sqlite(':memory:');
         $this->db->execute('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)');
+    }
+
+    /**
+     * What the library tells about a transaction is decided in these three methods: a custom
+     * driver cannot override them (it has listeners and the protected hooks instead).
+     */
+    public function testTheTransactionMethodsOfTheBaseDriverAreFinal(): void
+    {
+        foreach (['beginTransaction', 'commit', 'rollback'] as $method) {
+            $this->assertTrue((new ReflectionMethod(AbstractDriver::class, $method))->isFinal(), $method);
+        }
     }
 
     public function testManualTransactionCommit(): void
@@ -412,90 +428,48 @@ class TransactionTest extends TestCase
     // =========================================================================
 
     /**
-     * Test that transaction() preserves original exception when rollback fails.
-     *
-     * Uses a driver that throws on rollback to simulate connection loss.
-     * The original exception should be re-thrown, not the rollback failure.
+     * transaction() preserves the original exception when the rollback fails (a lost connection):
+     * the callback's exception is re-thrown, not the rollback failure.
      */
     public function testTransactionPreservesOriginalExceptionWhenRollbackFails(): void
     {
-        $failingDb = new class () extends \Sodaho\PdoWrapper\Driver\SqliteDriver {
-            private bool $shouldFailRollback = false;
+        $failingDb = $this->scenarioDriver();
+        $this->scenarioPdo->failRollBackAlways = true;
 
-            public function __construct()
-            {
-                parent::__construct(':memory:');
-                $this->execute('CREATE TABLE test (id INTEGER PRIMARY KEY)');
-            }
+        try {
+            $failingDb->transaction(function (DatabaseInterface $driver): void {
+                $driver->execute('INSERT INTO users (id) VALUES (1)');
+                throw new RuntimeException('Original error');
+            });
+            $this->fail('Expected the callback exception');
+        } catch (RuntimeException $e) {
+            $this->assertSame('Original error', $e->getMessage());
+        }
 
-            public function setShouldFailRollback(bool $fail): void
-            {
-                $this->shouldFailRollback = $fail;
-            }
-
-            public function rollback(): void
-            {
-                if ($this->shouldFailRollback) {
-                    throw new \Sodaho\PdoWrapper\Exception\TransactionException('Rollback failed');
-                }
-                parent::rollback();
-            }
-        };
-
-        $failingDb->setShouldFailRollback(true);
-
-        $this->expectException(RuntimeException::class);
-        $this->expectExceptionMessage('Original error');
-
-        $failingDb->transaction(function ($driver) {
-            $driver->execute('INSERT INTO test (id) VALUES (1)');
-            throw new RuntimeException('Original error');
-        });
+        $this->assertSame(1, $this->scenarioPdo->rollBackCalls, 'the rollback was tried');
     }
 
     /**
-     * Test that updateMultiple() preserves original exception when rollback fails.
-     *
-     * Simulates connection loss by closing PDO mid-operation.
-     * The original exception should be re-thrown, not the rollback failure.
+     * updateMultiple() preserves the original exception when the rollback fails (a lost
+     * connection): the QueryException of the batch is re-thrown, not the rollback failure.
      */
     public function testUpdateMultiplePreservesOriginalExceptionWhenRollbackFails(): void
     {
-        // We use a custom driver that throws on rollback to simulate connection loss
-        $failingDb = new class () extends \Sodaho\PdoWrapper\Driver\SqliteDriver {
-            private bool $shouldFailRollback = false;
+        $failingDb = $this->scenarioDriver();
+        $failingDb->insert('users', ['id' => 1, 'name' => 'Original']);
+        $this->scenarioPdo->failRollBackAlways = true;
 
-            public function __construct()
-            {
-                parent::__construct(':memory:');
-                $this->execute('CREATE TABLE test (id INTEGER PRIMARY KEY, name TEXT)');
-                $this->insert('test', ['id' => 1, 'name' => 'Original']);
-            }
+        try {
+            $failingDb->updateMultiple('users', [
+                ['id' => 1, 'name' => 'Updated'],
+                ['name' => 'No ID'], // Missing key column - triggers error
+            ]);
+            $this->fail('Expected QueryException');
+        } catch (QueryException $e) {
+            $this->assertSame('Update failed', $e->getMessage());
+        }
 
-            public function setShouldFailRollback(bool $fail): void
-            {
-                $this->shouldFailRollback = $fail;
-            }
-
-            public function rollback(): void
-            {
-                if ($this->shouldFailRollback) {
-                    throw new \Sodaho\PdoWrapper\Exception\TransactionException('Rollback failed');
-                }
-                parent::rollback();
-            }
-        };
-
-        $failingDb->setShouldFailRollback(true);
-
-        $this->expectException(QueryException::class);
-        $this->expectExceptionMessage('Update failed');
-
-        // This should throw QueryException for missing key, not TransactionException
-        $failingDb->updateMultiple('test', [
-            ['id' => 1, 'name' => 'Updated'],
-            ['name' => 'No ID'], // Missing key column - triggers error
-        ]);
+        $this->assertSame(1, $this->scenarioPdo->rollBackCalls, 'the rollback was tried');
     }
 
     // =========================================================================
@@ -506,7 +480,7 @@ class TransactionTest extends TestCase
 
     public function testThrowingCommitHookKeepsCommittedDataWithoutRollback(): void
     {
-        $db = $this->rollbackCountingDriver();
+        $db = $this->scenarioDriver();
         $events = [];
         $hookError = new RuntimeException('hook failed');
         $db->on('transaction.commit', static fn () => throw $hookError);
@@ -525,7 +499,7 @@ class TransactionTest extends TestCase
 
         $this->assertSame(1, $this->userCount($db));
         $this->assertSame([], $events);
-        $this->assertSame(0, $db->rollbackCalls);
+        $this->assertSame(0, $this->scenarioPdo->rollBackCalls);
         $this->assertFalse($db->getPdo()->inTransaction());
     }
 
@@ -823,10 +797,16 @@ class TransactionTest extends TestCase
         $this->assertSame(1, $this->userCount($db));
     }
 
-    public function testCommitOverrideErrorInTransactionIsRolledBack(): void
+    /**
+     * What leaves commit() without being PDO's failure - an error handler's exception for a PDO
+     * warning - is no failed commit of this library, but the transaction is still open: it is
+     * rolled back and the exception reaches the caller.
+     */
+    public function testAnExceptionFromTheCommitThatIsNotPdosIsRolledBackInTransaction(): void
     {
-        $db = $this->failingCommitDriver();
-        $commitError = $db->commitError;
+        $db = $this->scenarioDriver();
+        $commitError = new RuntimeException('thrown inside PDO::commit()');
+        $this->scenarioPdo->throwFromCommit = $commitError;
 
         try {
             $db->transaction(static fn (DatabaseInterface $db) => $db->execute('INSERT INTO users (name) VALUES (?)', ['Max']));
@@ -835,16 +815,17 @@ class TransactionTest extends TestCase
             $this->assertSame($commitError, $e);
         }
 
-        $this->assertSame(1, $db->rollbackCalls);
+        $this->assertSame(1, $this->scenarioPdo->rollBackCalls);
         $this->assertFalse($db->getPdo()->inTransaction());
         $this->assertSame(0, $this->userCount($db));
     }
 
-    public function testCommitOverrideErrorInUpdateMultipleIsRolledBack(): void
+    public function testAnExceptionFromTheCommitThatIsNotPdosIsRolledBackInUpdateMultiple(): void
     {
-        $db = $this->failingCommitDriver();
+        $db = $this->scenarioDriver();
         $db->insert('users', ['id' => 1, 'name' => 'Max']);
-        $commitError = $db->commitError;
+        $commitError = new RuntimeException('thrown inside PDO::commit()');
+        $this->scenarioPdo->throwFromCommit = $commitError;
 
         try {
             $db->updateMultiple('users', [['id' => 1, 'name' => 'Max Updated']]);
@@ -853,7 +834,7 @@ class TransactionTest extends TestCase
             $this->assertSame($commitError, $e);
         }
 
-        $this->assertSame(1, $db->rollbackCalls);
+        $this->assertSame(1, $this->scenarioPdo->rollBackCalls);
         $this->assertFalse($db->getPdo()->inTransaction());
         $this->assertSame('Max', $db->findOne('users', ['id' => 1])['name'] ?? null);
     }
@@ -879,7 +860,7 @@ class TransactionTest extends TestCase
 
     public function testUpdateMultipleReportsCommitHookErrorWithoutRollback(): void
     {
-        $db = $this->rollbackCountingDriver();
+        $db = $this->scenarioDriver();
         $db->insert('users', ['id' => 1, 'name' => 'Max']);
         $hookError = new RuntimeException('hook');
         $db->on('transaction.commit', static fn () => throw $hookError);
@@ -892,13 +873,13 @@ class TransactionTest extends TestCase
         }
 
         $this->assertSame('Max Updated', $db->findOne('users', ['id' => 1])['name'] ?? null);
-        $this->assertSame(0, $db->rollbackCalls);
+        $this->assertSame(0, $this->scenarioPdo->rollBackCalls);
         $this->assertFalse($db->getPdo()->inTransaction());
     }
 
     public function testCommitListenerRunningItsOwnTransaction(): void
     {
-        $db = $this->rollbackCountingDriver();
+        $db = $this->scenarioDriver();
         $innerError = new RuntimeException('inner listener');
         $nested = false;
         $thrown = false;
@@ -926,7 +907,7 @@ class TransactionTest extends TestCase
         }
 
         $this->assertSame(2, $this->userCount($db));
-        $this->assertSame(0, $db->rollbackCalls);
+        $this->assertSame(0, $this->scenarioPdo->rollBackCalls);
         $this->assertFalse($db->getPdo()->inTransaction());
     }
 
@@ -1051,88 +1032,18 @@ class TransactionTest extends TestCase
     }
 
     /**
-     * A driver whose beginTransaction() does not go through the one of AbstractDriver has no
-     * numbered transactions: transaction() and updateMultiple() commit and roll back what is
-     * open, as they always did.
+     * SQLite driver on a ScenarioPdo ($this->scenarioPdo): the ROLLBACKs sent are counted there -
+     * after a successful commit there must be none -, and its commit() and rollBack() fail on demand.
      */
-    public function testATransactionBegunByAnOverrideThatBypassesTheBaseClassIsStillEnded(): void
+    private function scenarioDriver(): SqliteDriver
     {
-        $db = new class () extends SqliteDriver {
-            public function beginTransaction(): void
+        $this->scenarioPdo = new ScenarioPdo('sqlite::memory:', null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC]);
+        $db = new class ($this->scenarioPdo) extends SqliteDriver {
+            public function __construct(PDO $pdo)
             {
-                $this->getPdo()->beginTransaction();
+                $this->pdo = $pdo;
             }
         };
-        $db->execute('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)');
-
-        $db->transaction(static fn (DatabaseInterface $db) => $db->insert('users', ['name' => 'Max']));
-        $this->assertFalse($db->getPdo()->inTransaction(), 'committed');
-        $this->assertSame(1, $this->userCount($db));
-
-        try {
-            $db->transaction(static function (DatabaseInterface $db): void {
-                $db->insert('users', ['name' => 'Moritz']);
-                throw new RuntimeException('callback failed');
-            });
-            $this->fail('Expected the callback exception');
-        } catch (RuntimeException $e) {
-            $this->assertSame('callback failed', $e->getMessage());
-        }
-        $this->assertFalse($db->getPdo()->inTransaction(), 'rolled back');
-        $this->assertSame(1, $this->userCount($db));
-
-        $this->assertSame(1, $db->updateMultiple('users', [['id' => 1, 'name' => 'Max Updated']]));
-        $this->assertFalse($db->getPdo()->inTransaction());
-
-        try {
-            $db->updateMultiple('users', [['id' => 1, 'name' => 'x'], ['name' => 'no key']]);
-            $this->fail('Expected QueryException');
-        } catch (QueryException) {
-            $this->assertFalse($db->getPdo()->inTransaction(), 'rolled back');
-        }
-        $this->assertSame('Max Updated', $db->findOne('users', ['id' => 1])['name'] ?? null);
-    }
-
-    /**
-     * SQLite driver counting rollback() calls: after a successful commit there must be none.
-     */
-    private function rollbackCountingDriver(): SqliteDriver
-    {
-        $db = new class () extends SqliteDriver {
-            public int $rollbackCalls = 0;
-
-            public function rollback(): void
-            {
-                $this->rollbackCalls++;
-                parent::rollback();
-            }
-        };
-        $db->execute('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)');
-
-        return $db;
-    }
-
-    /**
-     * Driver whose commit() override fails without committing (an allowed override), counting rollback() calls.
-     */
-    private function failingCommitDriver(): SqliteDriver
-    {
-        $db = new class () extends SqliteDriver {
-            public int $rollbackCalls = 0;
-            public RuntimeException $commitError;
-
-            public function commit(): void
-            {
-                throw $this->commitError;
-            }
-
-            public function rollback(): void
-            {
-                $this->rollbackCalls++;
-                parent::rollback();
-            }
-        };
-        $db->commitError = new RuntimeException('commit override failed');
         $db->execute('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)');
 
         return $db;

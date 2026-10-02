@@ -730,50 +730,6 @@ class TransactionEndHookTest extends TestCase
     }
 
     /**
-     * A custom driver overriding rollback() sees a rollback listener's exception on the automatic
-     * path as in 1.3: parent::rollback() re-throws it, rollbackQuietly() swallows it outside.
-     */
-    public function testACustomDriverOverridingRollbackStillSeesARollbackListenerExceptionOnTheAutomaticPath(): void
-    {
-        $db = new class () extends SqliteDriver {
-            public ?Throwable $caught = null;
-
-            public function rollback(): void
-            {
-                try {
-                    parent::rollback();
-                } catch (Throwable $e) {
-                    $this->caught = $e;
-                    throw $e;
-                }
-            }
-        };
-        $db->execute('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)');
-        $cause = new RuntimeException('domain error');
-        $listenerFailure = new LogicException('rollback listener failed');
-        $ends = [];
-        $db->on('transaction.rollback', static function () use ($listenerFailure): void {
-            throw $listenerFailure;
-        });
-        $db->on('transaction.end', static function (array $data) use (&$ends): void {
-            $ends[] = $data;
-        });
-
-        try {
-            $db->transaction(static function () use ($cause): void {
-                throw $cause;
-            });
-            $this->fail('Expected the callback exception');
-        } catch (RuntimeException $e) {
-            $this->assertSame($cause, $e);
-        }
-
-        $this->assertSame($listenerFailure, $db->caught, 'the override saw the listener exception');
-        $this->assertSame([['outcome' => 'rolled_back', 'error' => $cause]], $ends, 'the end fired before the re-throw');
-        $this->assertFalse($db->inTransaction());
-    }
-
-    /**
      * A transaction a commit listener begins through the driver and leaves open is rolled back
      * (without rollback hooks) and gets its own 'transaction.end' before the outer one.
      */

@@ -458,31 +458,15 @@ class SqliteTransactionEndScenariosTest extends AbstractTransactionEndScenarios
     }
 
     /**
-     * A custom driver may override commit() and throw what it likes - here the exception of an
-     * earlier transaction, whose second commit attempt went through. transaction() rolls back,
-     * but that exception is not the failure of the commit it ran: it is not written to.
+     * Not everything that leaves commit() is the failure of the commit it ran: what is thrown
+     * inside PDO::commit() without being PDO's own (an error handler's exception) passes through -
+     * here the exception of an earlier transaction, whose second commit attempt went through.
+     * transaction() rolls back, but that exception is not the failure of its commit: it is not
+     * written to.
      */
-    public function testAnOverridingCommitThatThrowsAnOlderFailedCommitDoesNotGetItSettled(): void
+    public function testAnOlderFailedCommitThrownInsideTheCommitDoesNotGetItSettled(): void
     {
-        $db = new class ($this->pdo) extends SqliteDriver {
-            public ?\Throwable $throwFromCommit = null;
-
-            public function __construct(PDO $pdo)
-            {
-                $this->pdo = $pdo;
-            }
-
-            public function commit(): void
-            {
-                if ($this->throwFromCommit !== null) {
-                    $thrown = $this->throwFromCommit;
-                    $this->throwFromCommit = null;
-
-                    throw $thrown;
-                }
-                parent::commit();
-            }
-        };
+        $db = $this->db;
         $ends = [];
         $db->on('transaction.end', static function (array $data) use (&$ends): void {
             $ends[] = $data;
@@ -500,10 +484,10 @@ class SqliteTransactionEndScenariosTest extends AbstractTransactionEndScenarios
         $this->pdo->commit(); // the second attempt, on raw PDO, goes through: row 1 is committed
 
         $ends = [];
-        $db->throwFromCommit = $old;
+        $this->pdo->throwFromCommit = $old;
         try {
-            $db->transaction(static fn (SqliteDriver $db) => $db->insert(self::TABLE, ['id' => 2, 'name' => 'b']));
-            $this->fail('Expected the exception of the overriding commit()');
+            $db->transaction(static fn (DatabaseInterface $db) => $db->insert(self::TABLE, ['id' => 2, 'name' => 'b']));
+            $this->fail('Expected the exception thrown inside the commit');
         } catch (CommitFailedException $e) {
             $this->assertSame($old, $e);
         }
@@ -511,168 +495,6 @@ class SqliteTransactionEndScenariosTest extends AbstractTransactionEndScenarios
         $this->assertSame($old, $ends[1]['error']);
         $this->assertNull($old->outcome, 'its own transaction was committed on the second attempt');
         $this->assertSame([1], array_column($db->table(self::TABLE)->get(), 'id'));
-    }
-
-    /**
-     * A custom driver may override rollback() too - here it gets the failed commit through after
-     * all and moves on to another transaction before it calls the parent. What the parent rolls
-     * back then is not the transaction whose commit failed: no 'rolled_back' for that exception.
-     */
-    public function testAnOverridingRollbackThatCommitsAfterAllVoidsTheSettlement(): void
-    {
-        foreach (['commits through the library, begins on raw PDO', 'commits on raw PDO, begins through the library'] as $how) {
-            $db = new class ($this->pdo) extends SqliteDriver {
-                public ?string $retry = null;
-
-                public function __construct(PDO $pdo)
-                {
-                    $this->pdo = $pdo;
-                }
-
-                public function rollback(): void
-                {
-                    $retry = $this->retry;
-                    $this->retry = null;
-                    if ($retry === 'commits through the library, begins on raw PDO') {
-                        $this->commit();
-                        $this->pdo->beginTransaction();
-                    } elseif ($retry !== null) {
-                        $this->pdo->commit();
-                        $this->beginTransaction();
-                    }
-                    parent::rollback();
-                }
-            };
-            $db->execute('DELETE FROM ' . self::TABLE);
-            $db->retry = $how;
-
-            try {
-                $db->transaction(function (SqliteDriver $db): void {
-                    $db->insert(self::TABLE, ['id' => 1, 'name' => 'a']);
-                    $this->pdo->failCommit = true;
-                });
-                $this->fail('Expected CommitFailedException: ' . $how);
-            } catch (CommitFailedException $e) {
-                $this->assertSame(DatabaseInterface::TRANSACTION_LOST, $e->outcome, $how);
-            }
-            $this->assertFalse($this->pdo->reallyInTransaction(), $how);
-            $this->assertSame([1], array_column($db->table(self::TABLE)->get(), 'id'), 'the row is committed: ' . $how);
-        }
-    }
-
-    /**
-     * An overriding rollback() that does not go through the one of this library tells no end. The
-     * failed commit of transaction() still leaves with an outcome - 'lost', nothing was confirmed -
-     * and what nobody took is taken back: a later transaction rolled back with the same exception
-     * does not write into it.
-     */
-    public function testAFailedCommitLeavesWithAnOutcomeWhenAnOverridingRollbackTellsNoEnd(): void
-    {
-        $db = new class ($this->pdo) extends SqliteDriver {
-            public bool $bypass = true;
-
-            public function __construct(PDO $pdo)
-            {
-                $this->pdo = $pdo;
-            }
-
-            public function rollback(): void
-            {
-                if ($this->bypass) {
-                    $this->pdo->rollBack();
-
-                    return;
-                }
-                parent::rollback();
-            }
-        };
-        $ends = [];
-        $db->on('transaction.end', static function (array $data) use (&$ends): void {
-            $ends[] = $data['outcome'];
-        });
-
-        try {
-            $db->transaction(function (DatabaseInterface $db): void {
-                $db->insert(self::TABLE, ['id' => 1, 'name' => 'a']);
-                $this->pdo->failCommit = true;
-            });
-            $this->fail('Expected CommitFailedException');
-        } catch (CommitFailedException $first) {
-            $this->assertSame(DatabaseInterface::TRANSACTION_LOST, $first->outcome, 'never without an outcome');
-        }
-        $this->assertSame([], $ends, 'the override told none');
-        $this->assertFalse($this->pdo->reallyInTransaction());
-
-        $db->bypass = false;
-        try {
-            $db->transaction(static function () use ($first): void {
-                throw $first;
-            });
-            $this->fail('Expected the callback exception');
-        } catch (CommitFailedException $e) {
-            $this->assertSame($first, $e);
-        }
-        $this->assertSame(
-            [DatabaseInterface::TRANSACTION_LOST, DatabaseInterface::TRANSACTION_ROLLED_BACK],
-            $ends,
-            'the end the override never told is told when the next transaction begins; then the end of that one'
-        );
-        $this->assertSame(DatabaseInterface::TRANSACTION_LOST, $first->outcome, 'the later rollback is not about that commit');
-    }
-
-    /**
-     * A rollback that tells no end - a 'lost' was told before, for a transaction that may still
-     * be open - confirms nothing: the failed commit says 'lost', not 'rolled_back'. Since
-     * transaction() ends only the transaction it began, only a driver whose beginTransaction()
-     * bypasses this library's gets there: its transactions have no number.
-     */
-    public function testARollbackThatTellsNoEndDoesNotMakeAFailedCommitRolledBack(): void
-    {
-        $db = new class ($this->pdo) extends SqliteDriver {
-            public bool $join = false;
-
-            public function __construct(PDO $pdo)
-            {
-                $this->pdo = $pdo;
-            }
-
-            public function beginTransaction(): void
-            {
-                if (!$this->join) {
-                    parent::beginTransaction();
-                }
-                // join: the transaction that is still open is taken as the one to work in
-            }
-        };
-        $ends = [];
-        $db->on('transaction.end', static function (array $data) use (&$ends): void {
-            $ends[] = $data['outcome'];
-        });
-
-        // told as lost, and still open: its rollback failed
-        $this->pdo->failRollBackAlways = true;
-        try {
-            $db->transaction(static function (DatabaseInterface $db): void {
-                $db->insert(self::TABLE, ['id' => 1, 'name' => 'a']);
-                throw new \RuntimeException('callback failed');
-            });
-            $this->fail('Expected the callback exception');
-        } catch (\RuntimeException) {
-            $this->pdo->failRollBackAlways = false;
-        }
-        $this->assertSame([DatabaseInterface::TRANSACTION_LOST], $ends);
-        $this->assertTrue($this->pdo->reallyInTransaction());
-
-        $db->join = true;
-        $this->pdo->failCommit = true;
-        try {
-            $db->transaction(static fn (): null => null);
-            $this->fail('Expected CommitFailedException');
-        } catch (CommitFailedException $e) {
-            $this->assertSame(DatabaseInterface::TRANSACTION_LOST, $e->outcome, 'no end was told with it: no rollback is confirmed');
-        }
-        $this->assertSame([DatabaseInterface::TRANSACTION_LOST], $ends, 'no second end');
-        $this->assertFalse($this->pdo->reallyInTransaction(), 'the rollback went through');
     }
 
     /**

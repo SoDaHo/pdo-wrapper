@@ -6,6 +6,7 @@ namespace Sodaho\PdoWrapper\Tests\Integration\TransactionEnd;
 
 use PDO;
 use PDOException;
+use Throwable;
 
 /**
  * A real connection whose commit(), rollBack() and inTransaction() can be made to fail or lie on
@@ -17,7 +18,13 @@ final class ScenarioPdo extends PDO
 {
     public bool $failRollBackAlways = false;
 
+    /** How often rollBack() was called, failed or not */
+    public int $rollBackCalls = 0;
+
     public bool $failCommit = false;
+
+    /** Thrown by commit() once, before anything is sent: what is not PDO's own failure (an error handler's exception for a PDO warning) */
+    public ?Throwable $throwFromCommit = null;
 
     /** The failure as a non-exception error mode reports it: commit() returns false, once */
     public bool $commitReturnsFalse = false;
@@ -50,6 +57,7 @@ final class ScenarioPdo extends PDO
 
     public function rollBack(): bool
     {
+        $this->rollBackCalls++;
         if ($this->failRollBackAlways) {
             throw new PDOException('rollback failed (scenario)');
         }
@@ -59,6 +67,12 @@ final class ScenarioPdo extends PDO
 
     public function commit(): bool
     {
+        if ($this->throwFromCommit !== null) {
+            $thrown = $this->throwFromCommit;
+            $this->throwFromCommit = null;
+
+            throw $thrown;
+        }
         if ($this->failCommit) {
             $this->failCommit = false;
             $this->vanish();
