@@ -25,7 +25,10 @@ class DatabaseException extends Exception
      * ('Query hook failed', CommitHookException, a failing rollback or end listener): the codes say
      * how the operation itself failed, and there the database did what it was asked - a listener's
      * deadlock must not look like a reason to run a committed transaction again (its codes are in
-     * getPrevious()). Five characters, as the database sent them: compare as a string.
+     * getPrevious()). A failing begin listener makes the begin fail and hands its codes on -
+     * unless the transaction it was told about ended behind the library's back or could not be
+     * found out ('lost'): nothing is certain there, and there are none. Five characters, as the
+     * database sent them: compare as a string.
      */
     public readonly ?string $sqlState;
 

@@ -894,8 +894,8 @@ class SqliteTransactionEndScenariosTest extends AbstractTransactionEndScenarios
     /**
      * The same for an earlier failed commit of the very transaction transaction() began: the
      * callback tried to commit, caught the failure, and that exception is thrown again inside the
-     * commit transaction() runs. It is still not the failure of that commit - commit() forgets
-     * what an earlier call threw - and keeps no outcome.
+     * commit transaction() runs. It is still not the failure of that commit - it was thrown by
+     * an earlier call of commit() - and keeps no outcome.
      */
     public function testAnEarlierFailedCommitOfTheSameTransactionThrownInsideTheCommitIsNotSettled(): void
     {
@@ -1077,6 +1077,22 @@ class SqliteTransactionEndScenariosTest extends AbstractTransactionEndScenarios
             $this->assertFalse($this->pdo->reallyInTransaction(), $how);
             $this->assertSame([], $ends->all(), 'told already: ' . $how);
         }
+
+        // ... and an error handler inside that failing ROLLBACK commits the transaction through the
+        // driver: that commit tells the end, the cleanup tells nothing more
+        $pdo->duringRollBack = static function () use ($db): void {
+            $db->commit();
+        };
+        $pdo->rollBackReturnsFalse = true;
+        try {
+            $db->beginTransaction();
+            $this->fail('Expected QueryException');
+        } catch (QueryException) {
+            $this->assertSame([[DatabaseInterface::TRANSACTION_COMMITTED, null]], $ends->all());
+        }
+        $pdo->rollBackReturnsFalse = false;
+        $this->assertFalse($this->pdo->reallyInTransaction());
+        $ends->clear();
 
         // swallowed, and the driver could not find out: the begin fails, cleaned up, 'lost' - on that
         // one answer: asked again, the driver might say "still there", and no end would be told

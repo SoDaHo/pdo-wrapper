@@ -132,7 +132,11 @@ use Sodaho\PdoWrapper\Exception\DatabaseException;
  * under way, that call tells the end, and the one it interrupted tells none: transaction() and
  * updateMultiple() look again whether the transaction is still theirs, and a failed commit of
  * theirs leaves with outcome 'lost' then. What such a handler begins and ends itself stays its
- * own: the failed commit() of a transaction it began is not taken for the one transaction() ran.
+ * own: the failed commit() of a transaction it began, or of a commit() it issued itself, is not
+ * taken for the one transaction() ran. One limit, for a transaction begun on raw PDO: when it
+ * vanished with its failed COMMIT and the handler runs more than one transaction of its own in
+ * there, the 'lost' of the vanished one is not told (the ends are told apart only up to the
+ * first transaction begun since).
  * beginTransaction(), commit() and rollback() are final in
  * AbstractDriver: what is told here is decided in them. A custom driver extends them through
  * listeners and through the protected hooks (failureToRemember(), transactionEndedBy(),
