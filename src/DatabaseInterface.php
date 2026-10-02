@@ -79,12 +79,15 @@ interface DatabaseInterface
      *
      * After a throwing 'transaction.begin' listener a rollback of the new transaction is attempted
      * directly (best effort, without 'transaction.rollback' listeners; if it fails, the transaction
-     * may still be open) and the listener's exception is re-thrown. A transaction begun through
+     * may still be open) and the listener's exception is re-thrown - unless the listener ended that
+     * transaction itself: one it began afterwards is left open, with its end owed. A listener that
+     * ended the transaction it was told about without throwing makes the call fail as well: the
+     * caller would go on outside of the transaction it asked for. A transaction begun through
      * this library that PDO no longer reports (an implicit commit by a DDL statement, ended by the
      * server or on raw PDO) is told as 'transaction.end' 'lost' first - except after a MySQL/MariaDB
      * deadlock: then beginTransaction() refuses, and rollback() tells that end.
      *
-     * @throws Exception\TransactionException When the transaction cannot be started (including PDO reporting the failure without throwing), when a transaction begun through this library was rolled back by the server (a MySQL/MariaDB deadlock) and has not been ended with rollback() yet, or a listener threw a PDOException
+     * @throws Exception\TransactionException When the transaction cannot be started (including PDO reporting the failure without throwing), when a transaction begun through this library was rolled back by the server (a MySQL/MariaDB deadlock) and has not been ended with rollback() yet, a listener threw a PDOException, or a listener ended the transaction it was told about
      * @throws \Throwable Re-throws any other exception of a 'transaction.begin' listener
      */
     public function beginTransaction(): void;
@@ -153,7 +156,8 @@ interface DatabaseInterface
      * Auto-commits on success, auto-rollback on exception.
      *
      * What can go wrong:
-     * - the transaction could not be started (BEGIN failed, or a transaction.begin listener threw):
+     * - the transaction could not be started (BEGIN failed, a transaction.begin listener threw, or
+     *   such a listener ended the transaction it was told about):
      *   the callback did not run; after a throwing listener a rollback is attempted (best effort);
      *   the exception is re-thrown, a PDOException from the listener as TransactionException;
      * - the callback threw: rollback attempted, the callback's exception is re-thrown

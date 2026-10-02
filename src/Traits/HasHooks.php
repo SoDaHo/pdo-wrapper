@@ -11,7 +11,8 @@ namespace Sodaho\PdoWrapper\Traits;
  * exceptions in those hooks bubble up to the caller (a PDOException from a 'transaction.begin' or
  * 'transaction.rollback' hook arrives as TransactionException) and the first failing hook stops the
  * remaining ones (after a failing 'transaction.begin' hook a rollback of the new transaction is
- * attempted, best effort, see AbstractDriver). 'transaction.commit' and 'transaction.end' listeners
+ * attempted, best effort, see AbstractDriver - unless the hook ended it itself; a transaction it
+ * began afterwards is left open, with its end owed). 'transaction.commit' and 'transaction.end' listeners
  * run after the fact, so all of them run and their failures are collected: a commit listener's in a
  * CommitHookException - unless a transaction left open by a commit listener cannot be rolled back
  * (or the connection state cannot be read); the remaining commit listeners are then skipped and

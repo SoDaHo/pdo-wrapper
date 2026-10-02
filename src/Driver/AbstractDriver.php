@@ -647,7 +647,8 @@ abstract class AbstractDriver implements DatabaseInterface
      * Triggers 'transaction.begin' hook on success. A throwing hook must not leave the transaction
      * it was told about open: a rollback is attempted on raw PDO (best effort, no 'transaction.rollback'
      * hooks; if it fails, the transaction may still be open) and the hook's exception reaches the
-     * caller, a PDOException as TransactionException. A hook that ends the transaction it was told
+     * caller, a PDOException as TransactionException - unless the hook ended that transaction
+     * itself: one it began afterwards is left open, with its end owed. A hook that ends the transaction it was told
      * about (a commit() or rollback() through this driver) makes the call fail as well: the caller
      * would go on outside of the transaction it asked for.
      *
@@ -1256,7 +1257,8 @@ abstract class AbstractDriver implements DatabaseInterface
      * Execute a callback within a transaction.
      *
      * Auto-commits on success, auto-rollback on exception. What can go wrong:
-     * - the transaction could not be started (BEGIN failed, or a transaction.begin listener threw):
+     * - the transaction could not be started (BEGIN failed, a transaction.begin listener threw, or
+     *   such a listener ended the transaction it was told about):
      *   the callback did not run; after a throwing listener a rollback is attempted (best effort);
      *   the exception is re-thrown, a PDOException from the listener as TransactionException;
      * - the callback threw: rollback attempted, the callback's exception is re-thrown
