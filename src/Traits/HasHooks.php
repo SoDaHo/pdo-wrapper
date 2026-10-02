@@ -86,9 +86,11 @@ namespace Sodaho\PdoWrapper\Traits;
  * one that throws gets its exception back, and the open transaction is left to whoever began it.
  * A transaction ended and begun again on raw PDO alone is not told apart from the first.
  * A 'transaction.begin' listener that ends the transaction it was told about makes
- * beginTransaction() throw a TransactionException: the caller - and with it the callback of
- * transaction() and the batch of updateMultiple() - would go on outside of the transaction it
- * asked for, or inside one somebody began afterwards.
+ * beginTransaction() throw a TransactionException, and no further begin listener runs: they and
+ * the caller - and with it the callback of transaction() and the batch of updateMultiple() -
+ * would go on outside of the transaction that was asked for, or inside one somebody began
+ * afterwards. An end behind this library's back (an implicit commit by a DDL statement on
+ * MySQL/MariaDB, raw PDO) is told as 'lost' with that exception as error before it is thrown.
  *
  * Not paired and other caveats: a failing explicit commit() or rollback() fires nothing (the
  * transaction is still the caller's to end; the one exception is the failed or refused commit of

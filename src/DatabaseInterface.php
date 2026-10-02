@@ -81,8 +81,10 @@ interface DatabaseInterface
      * directly (best effort, without 'transaction.rollback' listeners; if it fails, the transaction
      * may still be open) and the listener's exception is re-thrown - unless the listener ended that
      * transaction itself: one it began afterwards is left open, with its end owed. A listener that
-     * ended the transaction it was told about without throwing makes the call fail as well: the
-     * caller would go on outside of the transaction it asked for. A transaction begun through
+     * ended the transaction it was told about without throwing makes the call fail as well, and no
+     * further listener runs: the caller would go on outside of the transaction it asked for (an
+     * end behind this library's back - a DDL statement on MySQL/MariaDB, raw PDO - is told as
+     * 'lost' first). A transaction begun through
      * this library that PDO no longer reports (an implicit commit by a DDL statement, ended by the
      * server or on raw PDO) is told as 'transaction.end' 'lost' first - except after a MySQL/MariaDB
      * deadlock: then beginTransaction() refuses, and rollback() tells that end.

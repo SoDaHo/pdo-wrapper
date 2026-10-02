@@ -98,6 +98,39 @@ class MySqlTransactionEndScenariosTest extends AbstractTransactionEndScenarios
     }
 
     /**
+     * A 'transaction.begin' listener that sends a DDL statement commits the transaction it was
+     * told about implicitly: the begin fails, its end is told as 'lost', and the callback does
+     * not run in autocommit.
+     */
+    public function testADdlStatementInABeginListenerMakesTheBeginFailAsLost(): void
+    {
+        $this->db->execute('DROP TABLE IF EXISTS end_scenarios_ddl');
+        $this->db->on('transaction.begin', static function () use (&$db): void {
+            $db->execute('CREATE TABLE end_scenarios_ddl (id INT PRIMARY KEY)'); // implicit COMMIT
+        });
+        $db = $this->db;
+        $this->events = [];
+        $this->ends = [];
+        $ran = false;
+
+        try {
+            $this->db->transaction(static function (DatabaseInterface $db) use (&$ran): void {
+                $ran = true;
+                $db->insert(self::TABLE, ['id' => 1, 'name' => 'in autocommit']);
+            });
+            $this->fail('Expected TransactionException');
+        } catch (TransactionException $e) {
+            $this->assertNotInstanceOf(CommitFailedException::class, $e);
+            $this->assertStringStartsWith('A transaction.begin listener ended the transaction that was just begun outside this driver', (string) $e->getDebugMessage());
+            $this->assertSame([['outcome' => DatabaseInterface::TRANSACTION_LOST, 'error' => $e]], $this->ends);
+        } finally {
+            $this->db->getPdo()->exec('DROP TABLE IF EXISTS end_scenarios_ddl');
+        }
+        $this->assertFalse($ran);
+        $this->assertVisible([]);
+    }
+
+    /**
      * The DDL statement ended the callback's transaction behind the library's back. A further
      * transaction begun inside the callback (updateMultiple() opens its own when PDO reports none)
      * must not take the owed end's place: the first one is told as 'lost' before the next begins,

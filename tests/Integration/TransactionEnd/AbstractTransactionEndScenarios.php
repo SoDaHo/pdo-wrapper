@@ -1937,6 +1937,84 @@ abstract class AbstractTransactionEndScenarios extends TestCase
     }
 
     /**
+     * Once a 'transaction.begin' listener has ended the transaction, no further begin listener
+     * runs: it would write outside of any transaction.
+     */
+    public function testNoBeginListenerRunsAfterOneThatEndedTheTransaction(): void
+    {
+        $armed = true;
+        $this->db->on('transaction.begin', function () use (&$armed): void {
+            if ($armed) {
+                $this->db->rollback();
+            }
+        });
+        $this->db->on('transaction.begin', function (): void {
+            $this->db->insert(self::TABLE, ['id' => 3, 'name' => 'second begin listener']);
+        });
+
+        try {
+            $this->db->beginTransaction();
+            $this->fail('Expected TransactionException');
+        } catch (TransactionException $e) {
+            $this->assertStringStartsWith('A transaction.begin listener ended the transaction that was just begun', (string) $e->getDebugMessage());
+        }
+        $this->assertSame(['rollback', 'end'], $this->events);
+        $this->assertVisible([], 'the second listener did not write in autocommit');
+
+        $armed = false;
+        $this->db->transaction(static fn (): null => null);
+        $this->assertVisible([3], 'both listeners run for a transaction that stays open');
+    }
+
+    /**
+     * A 'transaction.begin' listener that ends the transaction behind the library's back (here: on
+     * raw PDO; on MySQL/MariaDB a DDL statement does the same): PDO reports none any more. Its end
+     * is told as 'lost', the begin fails, and the callback does not run in autocommit.
+     */
+    public function testABeginListenerThatEndsTheTransactionOnRawPdoMakesTheBeginFailAsLost(): void
+    {
+        $written = false;
+        $this->db->on('transaction.begin', function () use (&$written): void {
+            if (!$written) {
+                $written = true;
+                $this->db->insert(self::TABLE, ['id' => 1, 'name' => 'listener']);
+            }
+            $this->pdo->commit();
+        });
+        $ran = false;
+
+        try {
+            $this->db->transaction(static function (DatabaseInterface $db) use (&$ran): void {
+                $ran = true;
+                $db->insert(self::TABLE, ['id' => 2, 'name' => 'callback']);
+            });
+            $this->fail('Expected TransactionException');
+        } catch (TransactionException $e) {
+            $this->assertNotInstanceOf(CommitFailedException::class, $e);
+            $this->assertSame('Failed to begin transaction', $e->getMessage());
+            $this->assertStringStartsWith('A transaction.begin listener ended the transaction that was just begun outside this driver', (string) $e->getDebugMessage());
+            $this->assertSame([['outcome' => self::LOST, 'error' => $e]], $this->ends, 'told once, with the exception the caller gets');
+        }
+        $this->assertFalse($ran);
+        $this->assertSame(['end'], $this->events);
+        $this->assertVisible([1], 'what the listener committed itself; nothing of the callback');
+
+        // gone for certain: no mark of a transaction that "may still be open" stays behind, so a
+        // transaction begun on raw PDO and committed through the library tells its end as usual
+        $this->pdo->beginTransaction();
+        $this->db->commit();
+        $this->assertSame(['end', 'commit', 'end'], $this->events);
+
+        try {
+            $this->db->updateMultiple(self::TABLE, [['id' => 1, 'name' => 'batch']]);
+            $this->fail('Expected TransactionException');
+        } catch (TransactionException $e) {
+            $this->assertStringStartsWith('A transaction.begin listener ended the transaction that was just begun outside this driver', (string) $e->getDebugMessage());
+        }
+        $this->assertSame(['listener'], array_column($this->db->findAll(self::TABLE, ['id' => 1]), 'name'), 'the batch did not run in autocommit');
+    }
+
+    /**
      * After a throwing 'transaction.begin' listener the transaction just begun is rolled back on
      * raw PDO - but not one the listener began itself after ending the first: that one keeps its
      * mark and its end.

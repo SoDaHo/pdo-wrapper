@@ -648,9 +648,11 @@ abstract class AbstractDriver implements DatabaseInterface
      * it was told about open: a rollback is attempted on raw PDO (best effort, no 'transaction.rollback'
      * hooks; if it fails, the transaction may still be open) and the hook's exception reaches the
      * caller, a PDOException as TransactionException - unless the hook ended that transaction
-     * itself: one it began afterwards is left open, with its end owed. A hook that ends the transaction it was told
-     * about (a commit() or rollback() through this driver) makes the call fail as well: the caller
-     * would go on outside of the transaction it asked for.
+     * itself: one it began afterwards is left open, with its end owed. A hook that ends the
+     * transaction it was told about makes the call fail as well, and no further hook runs: the
+     * caller would go on outside of the transaction it asked for. Ended through this driver
+     * (commit(), rollback()) its end was told by that call; ended behind the driver's back (an
+     * implicit commit by a DDL statement, raw PDO) it is told as 'lost' before the call fails.
      *
      * A transaction begun through this driver that PDO no longer reports is told as 'lost' first;
      * so is one an end listener of that 'lost' begins and loses the same way. A third in a row is
@@ -723,7 +725,12 @@ abstract class AbstractDriver implements DatabaseInterface
         $this->suspectFailure = null;
 
         try {
-            $this->trigger('transaction.begin', []);
+            // One by one: after a listener that ended the transaction no further one runs - it would
+            // write outside of any transaction, or into one somebody began afterwards
+            foreach ($this->hooks['transaction.begin'] ?? [] as $listener) {
+                $listener([]);
+                $this->failIfNoLongerOpen($number);
+            }
         } catch (PDOException $e) {
             $this->rollbackJustBegunQuietly($number);
             throw new TransactionException(
@@ -736,14 +743,35 @@ abstract class AbstractDriver implements DatabaseInterface
             $this->rollbackJustBegunQuietly($number);
             throw $e;
         }
+    }
 
-        // The caller is about to work in the transaction it asked for. A listener that ended it
-        // would leave that work outside of any transaction, or inside one somebody began afterwards
+    /**
+     * After a 'transaction.begin' listener: the caller is about to work in the transaction it
+     * asked for. A listener that ended it would leave that work outside of any transaction, or
+     * inside one somebody began afterwards - the call fails instead. Ended through this driver
+     * (commit(), rollback()), its end has been told; ended behind the driver's back (an implicit
+     * commit by a DDL statement on MySQL/MariaDB, raw PDO), it is told here, as 'lost'. An
+     * unreadable state is not "gone".
+     *
+     * @throws TransactionException When the transaction with that number is no longer open
+     */
+    private function failIfNoLongerOpen(int $number): void
+    {
         if (!$this->stillTheTransaction($number)) {
             throw new TransactionException(
                 message: 'Failed to begin transaction',
                 debugMessage: 'A transaction.begin listener ended the transaction that was just begun (a commit() or rollback() through this driver); its end was told then. A transaction that is open now was begun afterwards and is left to whoever began it.'
             );
+        }
+
+        if ($this->reportsNoTransaction()) {
+            $gone = new TransactionException(
+                message: 'Failed to begin transaction',
+                debugMessage: 'A transaction.begin listener ended the transaction that was just begun outside this driver: PDO reports no transaction any more (an implicit commit by a DDL statement, or raw PDO). What the listener wrote before may be committed.'
+            );
+            $this->endLostTransaction($gone, mayStillBeOpen: false);
+
+            throw $gone;
         }
     }
 
