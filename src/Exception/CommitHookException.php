@@ -22,6 +22,11 @@ use Throwable;
  * listeners' failures first, then the failures of the 'transaction.end' listeners for transactions
  * commit listeners left open, then those of the committed transaction's end. getPrevious() is the
  * first failure.
+ *
+ * All of this is what the exception says when the library throws it. One that arrives through
+ * commit() from elsewhere - thrown by the commit() of a caller's PDO class ('pdoClass'), or by an
+ * error handler - is passed on unchanged and says nothing about the transaction: transaction()
+ * and updateMultiple() end theirs as after any other failure, and nothing is committed.
  */
 class CommitHookException extends DatabaseException
 {
