@@ -59,6 +59,98 @@ class QueryBuilderDialectTest extends TestCase
     }
 
     /**
+     * The alias of a column or a table is quoted with the dialect's quote character, like the
+     * name it stands for.
+     */
+    public function testAliasesAreQuotedOnEveryDialect(): void
+    {
+        foreach ([
+            [QueryBuilder::DIALECT_MYSQL, '`'],
+            [QueryBuilder::DIALECT_SQLITE, '`'],
+            [QueryBuilder::DIALECT_PGSQL, '"'],
+            [QueryBuilder::DIALECT_ANSI, '"'],
+        ] as [$dialect, $q]) {
+            $builder = new QueryBuilder(Database::sqlite(), 'users as U', $q, $dialect);
+            [$sql] = $builder
+                ->select(['U.name as UserName', 'id  AS  order'])
+                ->join('posts as P', 'P.user_id', '=', 'U.id')
+                ->orderBy('UserName')
+                ->toSql();
+
+            $this->assertSame(
+                str_replace('"', $q, 'SELECT "U"."name" as "UserName", "id" as "order" FROM "users" as "U" INNER JOIN "posts" as "P" ON "P"."user_id" = "U"."id" ORDER BY "UserName" ASC'),
+                $sql,
+                $dialect
+            );
+        }
+    }
+
+    /**
+     * Which select() entries count as the same output name in a counted derived table: MySQL/MariaDB
+     * and SQLite compare names without case; on PostgreSQL and in ANSI SQL a quoted name - and an
+     * alias is one now - is case-sensitive.
+     */
+    public function testAliasesThatDifferInCaseAreOneNameOnlyWhereTheDatabaseFoldsThem(): void
+    {
+        $db = Database::sqlite();
+        $db->execute('CREATE TABLE users (a INTEGER, b INTEGER)');
+        $db->insert('users', ['a' => 1, 'b' => 2]);
+        $count = static fn (string $dialect, string $q, array $columns): int => (new QueryBuilder($db, 'users', $q, $dialect))->select($columns)->distinct()->count();
+
+        foreach ([[QueryBuilder::DIALECT_MYSQL, '`'], [QueryBuilder::DIALECT_SQLITE, '`']] as [$dialect, $q]) {
+            try {
+                $count($dialect, $q, ['a as X', 'b as x']);
+                $this->fail("Expected QueryException on {$dialect}: X and x are one name there");
+            } catch (QueryException $e) {
+                $this->assertStringContainsString('names: "x" appears twice as an output name', (string) $e->getDebugMessage());
+            }
+        }
+
+        foreach ([QueryBuilder::DIALECT_PGSQL, QueryBuilder::DIALECT_ANSI] as $dialect) {
+            $this->assertSame(1, $count($dialect, '"', ['a as X', 'b as x']), $dialect);
+            $this->assertSame(1, $count($dialect, '"', ['a', 'b as A']), $dialect);
+
+            foreach ([[['a as X', 'b as X'], 'X'], [['a', 'b as a'], 'a'], [['A', 'b as A'], 'A'], [['a as x', 'b as x'], 'x']] as [$columns, $name]) {
+                try {
+                    $count($dialect, '"', $columns);
+                    $this->fail("Expected QueryException on {$dialect}");
+                } catch (QueryException $e) {
+                    $this->assertStringContainsString(sprintf('names: "%s" appears twice as an output name', $name), (string) $e->getDebugMessage());
+                }
+            }
+        }
+    }
+
+    /**
+     * A grouped count keeps one select() entry per alias. A string entry's alias and a raw
+     * expression's bare alias are the same name where the database folds them (MySQL/MariaDB,
+     * SQLite) and two names where a quoted alias keeps its case (PostgreSQL, ANSI).
+     */
+    public function testAGroupedCountKeepsOneEntryPerAlias(): void
+    {
+        $db = Database::sqlite();
+        $db->execute('CREATE TABLE users (a INTEGER, b INTEGER)');
+        $rendered = [];
+        $db->on('query', static function (array $context) use (&$rendered): void {
+            $rendered[] = $context['sql'];
+        });
+        $columns = ['a as N', Database::raw('COUNT(*) AS n')];
+
+        (new QueryBuilder($db, 'users', '`', QueryBuilder::DIALECT_SQLITE))->select($columns)->groupBy('a')->count();
+        $this->assertSame('SELECT COUNT(*) as aggregate FROM (SELECT `a` as `N` FROM `users` GROUP BY `a`) as grouped', array_pop($rendered));
+
+        $pgsql = static fn (array $columns): int => (new QueryBuilder($db, 'users', '"', QueryBuilder::DIALECT_PGSQL))->select($columns)->groupBy('a')->count();
+        $pgsql($columns);
+        $this->assertSame('SELECT COUNT(*) as aggregate FROM (SELECT "a" as "N", COUNT(*) AS n FROM "users" GROUP BY "a") as grouped', array_pop($rendered));
+
+        // "n" is the name a bare n folds to, and "N" is the "N" of a raw expression
+        $pgsql(['a as n', Database::raw('COUNT(*) AS N')]);
+        $this->assertSame('SELECT COUNT(*) as aggregate FROM (SELECT "a" as "n" FROM "users" GROUP BY "a") as grouped', array_pop($rendered));
+        $pgsql(['a as N', Database::raw('COUNT(*) AS "N"')]);
+        $this->assertSame('SELECT COUNT(*) as aggregate FROM (SELECT "a" as "N" FROM "users" GROUP BY "a") as grouped', array_pop($rendered));
+    }
+
+    /**
      * delete() with limit(): `DELETE ... [ORDER BY ...] LIMIT n` on MySQL only; the other dialects
      * throw instead of silently deleting every matching row.
      */

@@ -240,6 +240,44 @@ abstract class AbstractWorkflowTest extends TestCase
         $this->assertSame('Author', $comments[1]['author_name']);
     }
 
+    /**
+     * An alias is quoted like every other name. The result key is the alias as written on every
+     * database (PostgreSQL folds a bare alias to lower case), orderBy() and groupBy() find it
+     * under that name, a table alias with an upper-case letter works, and a reserved word is a
+     * valid alias.
+     */
+    public function testAnAliasIsTheSameNameEverywhere(): void
+    {
+        $ada = (int) $this->db->insert('users', ['email' => 'ada@example.com', 'name' => 'Ada']);
+        $bob = (int) $this->db->insert('users', ['email' => 'bob@example.com', 'name' => 'Bob']);
+        $this->db->insert('posts', ['user_id' => $ada, 'title' => 'First']);
+        $this->db->insert('posts', ['user_id' => $bob, 'title' => 'Second']);
+        $this->db->insert('posts', ['user_id' => $bob, 'title' => 'Third']);
+
+        $rows = $this->db->table('users')->select(['name as UserName'])->orderBy('UserName', 'DESC')->get();
+        $this->assertSame([['UserName' => 'Bob'], ['UserName' => 'Ada']], $rows);
+
+        $rows = $this->db->table('posts')
+            ->select(['user_id as AuthorId', Database::raw('COUNT(*) AS n')])
+            ->groupBy('AuthorId')
+            ->orderBy('AuthorId')
+            ->get();
+        $this->assertSame(['AuthorId', 'n'], array_keys($rows[0]));
+        $this->assertSame([[$ada, 1], [$bob, 2]], array_map(static fn (array $row): array => [(int) $row['AuthorId'], (int) $row['n']], $rows));
+
+        $rows = $this->db->table('posts as P')
+            ->join('users as U', 'U.id', '=', 'P.user_id')
+            ->select(['P.title as order', 'U.name as Author'])
+            ->where('U.name', 'Bob')
+            ->orderBy('P.id')
+            ->get();
+        $this->assertSame([['order' => 'Second', 'Author' => 'Bob'], ['order' => 'Third', 'Author' => 'Bob']], $rows);
+
+        $this->assertSame(2, $this->db->table('posts as P')->where('P.user_id', $bob)->count());
+        $this->assertSame(2, $this->db->table('posts')->select(['user_id as AuthorId'])->groupBy('AuthorId')->count(), 'a grouped count keeps the alias');
+        $this->assertSame(2, $this->db->table('posts')->select(['user_id as AuthorId'])->distinct()->count());
+    }
+
     // =========================================================================
     // TRANSACTION WORKFLOW
     // =========================================================================

@@ -775,10 +775,13 @@ class QueryBuilder
     }
 
     /**
-     * The alias of a select() entry as a comparison key, or null: a trailing `AS name`. In a string
-     * entry the name is bare (that is what quoteIdentifier() renders); in a raw expression it may
-     * also be double-quoted or backtick-quoted, which PostgreSQL treats case-sensitively, so only
-     * bare names are folded to lower case.
+     * The alias of a select() entry as a comparison key, or null: a trailing `AS name`. In a raw
+     * expression the name may be bare, double-quoted or backtick-quoted: a quoted one is
+     * case-sensitive on PostgreSQL, so only bare names are folded to lower case. In a string
+     * entry quoteIdentifier() renders the alias quoted: MySQL/MariaDB and SQLite compare column
+     * names without case all the same (folded), PostgreSQL and ANSI SQL tell "Total" from "total"
+     * - there a name with an upper-case letter gets the key of a quoted name, and one without is
+     * the name a bare alias folds to.
      */
     private function aliasKey(string|RawExpression $entry): ?string
     {
@@ -790,7 +793,24 @@ class QueryBuilder
             return null;
         }
 
-        return preg_match('/\s+as\s+(\w+)$/i', $entry, $match) === 1 ? strtolower($match[1]) : null;
+        return preg_match('/\s+as\s+(\w+)$/i', $entry, $match) === 1 ? $this->quotedNameKey($match[1]) : null;
+    }
+
+    /**
+     * A name the builder renders quoted (a column, a string entry's alias) as a comparison key.
+     * MySQL/MariaDB and SQLite compare column names without case: folded to lower case. A quoted
+     * name is case-sensitive on PostgreSQL and in ANSI SQL ("Name" and "name" are two columns):
+     * one without an upper-case letter is the name a bare one folds to, any other gets the key
+     * aliasKey() gives a quoted alias in a raw expression.
+     */
+    private function quotedNameKey(string $name): string
+    {
+        $folded = strtolower($name);
+        if ($this->dialect === self::DIALECT_MYSQL || $this->dialect === self::DIALECT_SQLITE || $folded === $name) {
+            return $folded;
+        }
+
+        return $this->quoteChar . $name;
     }
 
     /**
@@ -817,15 +837,10 @@ class QueryBuilder
             $name = $this->aliasKey($entry);
             if ($name === null) {
                 $dot = strrpos($entry, '.');
-                $name = $dot === false ? $entry : substr($entry, $dot + 1);
-                // A quoted column name is case-sensitive on PostgreSQL and in ANSI SQL ("Name" and
-                // "name" are two columns); MySQL and SQLite compare column names without case.
-                if ($this->dialect === self::DIALECT_MYSQL || $this->dialect === self::DIALECT_SQLITE) {
-                    $name = strtolower($name);
-                }
+                $name = $this->quotedNameKey($dot === false ? $entry : substr($entry, $dot + 1));
             }
             if (isset($names[$name])) {
-                return sprintf('"%s" appears twice as an output name', $name);
+                return sprintf('"%s" appears twice as an output name', ltrim($name, $this->quoteChar));
             }
             $names[$name] = true;
         }
@@ -1519,12 +1534,17 @@ class QueryBuilder
      *
      * Handles simple, dotted (table.column), and alias (column as alias) formats.
      * Escapes the quote character within identifiers to prevent SQL injection.
+     *
+     * The alias is quoted like every other name: it is then the same name wherever the builder
+     * refers to it (orderBy(), groupBy(), a column of an aliased table - all rendered quoted), a
+     * reserved word is a valid alias, and the result key is the alias as written on every
+     * database (PostgreSQL folds a bare alias to lower case).
      */
     private function quoteIdentifier(string $identifier): string
     {
         // Handle alias: "column as alias" or "table.column as alias"
         if (preg_match('/^(.+)\s+as\s+(\w+)$/i', $identifier, $matches)) {
-            return $this->quoteIdentifier(trim($matches[1])) . ' as ' . $matches[2];
+            return $this->quoteIdentifier(trim($matches[1])) . ' as ' . $this->quoteChar . $matches[2] . $this->quoteChar;
         }
 
         // Escape character: double the quote char (standard SQL escaping)

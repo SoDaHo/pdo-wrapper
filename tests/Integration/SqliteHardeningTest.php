@@ -32,7 +32,7 @@ class SqliteHardeningTest extends TestCase
     {
         [$sql] = $this->db->table('users')->select(['id', 'users.country as c'])->where('score', '>', 1)->orderBy('id')->toSql();
 
-        $this->assertSame('SELECT `id`, `users`.`country` as c FROM `users` WHERE `score` > ? ORDER BY `id` ASC', $sql);
+        $this->assertSame('SELECT `id`, `users`.`country` as `c` FROM `users` WHERE `score` > ? ORDER BY `id` ASC', $sql);
     }
 
     public function testDriverStatementsUseBackticksAndEscapeThem(): void
