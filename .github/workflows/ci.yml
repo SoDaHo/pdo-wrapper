@@ -42,6 +42,12 @@ jobs:
           extensions: pdo_sqlite
           coverage: none
 
+      - name: Check the PHP version
+        run: |
+          php -r 'echo PHP_VERSION, PHP_EOL; exit(str_starts_with(PHP_VERSION, getenv("WANTED") . ".") ? 0 : 1);'
+        env:
+          WANTED: ${{ matrix.php }}
+
       - name: Get Composer Cache Directory
         id: composer-cache
         run: echo "dir=$(composer config cache-files-dir)" >> $GITHUB_OUTPUT
@@ -101,6 +107,12 @@ jobs:
           php-version: ${{ matrix.php }}
           extensions: pdo_mysql
           coverage: none
+
+      - name: Check the PHP version
+        run: |
+          php -r 'echo PHP_VERSION, PHP_EOL; exit(str_starts_with(PHP_VERSION, getenv("WANTED") . ".") ? 0 : 1);'
+        env:
+          WANTED: ${{ matrix.php }}
 
       - name: Get Composer Cache Directory
         id: composer-cache
@@ -169,6 +181,12 @@ jobs:
           php-version: ${{ matrix.php }}
           extensions: pdo_mysql
           coverage: none
+
+      - name: Check the PHP version
+        run: |
+          php -r 'echo PHP_VERSION, PHP_EOL; exit(str_starts_with(PHP_VERSION, getenv("WANTED") . ".") ? 0 : 1);'
+        env:
+          WANTED: ${{ matrix.php }}
 
       - name: Get Composer Cache Directory
         id: composer-cache
@@ -239,6 +257,12 @@ jobs:
           php-version: ${{ matrix.php }}
           extensions: pdo_pgsql
           coverage: none
+
+      - name: Check the PHP version
+        run: |
+          php -r 'echo PHP_VERSION, PHP_EOL; exit(str_starts_with(PHP_VERSION, getenv("WANTED") . ".") ? 0 : 1);'
+        env:
+          WANTED: ${{ matrix.php }}
 
       - name: Get Composer Cache Directory
         id: composer-cache
