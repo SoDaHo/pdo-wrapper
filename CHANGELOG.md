@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-10-02
+
 ### Added
 - `groupBy()` accepts `Database::raw()`, alone or inside the array, to group by an expression (`groupBy(Database::raw('DATE(created_at)'))`).
 - README: the table "Database Differences" lists what differs between MySQL/MariaDB, PostgreSQL and SQLite; SECURITY.md and the README name what the library cannot protect (parameters in logs, overridden PDO options, identifiers from request input without a whitelist).
