@@ -13,125 +13,138 @@ use Sodaho\PdoWrapper\Query\RawExpression;
 /**
  * Factory class for creating database connections.
  *
- * Configuration priority: $config array > $_ENV > getenv(). An environment variable that is set
- * but empty counts as not set (a required value is then reported as missing); an empty
- * DB_SQLITE_PATH throws.
+ * mysql(), postgres(), sqlite() and connect() use what they are given and nothing else: they
+ * never read the environment. fromEnv() is the one entry that does - DB_DRIVER, DB_HOST, DB_PORT,
+ * DB_DATABASE, DB_USERNAME, DB_PASSWORD and DB_SQLITE_PATH, from $_ENV first, then getenv().
  *
  * Usage:
- * - Database::connect(['driver' => 'mysql', 'host' => '...', ...]) or with DB_DRIVER set
- * - Database::mysql(['host' => '...', 'database' => '...', ...])
- * - Database::postgres(['host' => '...', 'database' => '...', ...])
- * - Database::sqlite(':memory:')
+ * - Database::mysql(['host' => '...', 'database' => '...', 'username' => '...', ...])
+ * - Database::postgres(['host' => '...', 'database' => '...', 'username' => '...', ...])
+ * - Database::sqlite('/path/to/database.db') or Database::sqlite() for an in-memory database
+ * - Database::connect(['driver' => 'mysql', 'host' => '...', ...])
+ * - Database::fromEnv() or Database::fromEnv(['password' => $secret])
  */
 class Database
 {
     /**
-     * Create a MySQL database connection.
+     * Create a MySQL/MariaDB connection from the given config (see MySqlDriver for the keys).
+     * Nothing is read from the environment: use fromEnv() for that.
      *
-     * Falls back to environment variables if config values are not provided:
-     * DB_HOST, DB_DATABASE, DB_USERNAME, DB_PASSWORD, DB_PORT
+     * @param array{host?: string|null, database?: string|null, username?: string|null, password?: string|null, port?: int|string, charset?: string, options?: array<int, mixed>} $config
      *
-     * @param array{host?: string, database?: string, username?: string, password?: string, port?: int|string, charset?: string, options?: array<int, mixed>} $config
-     *
-     * @throws Exception\ConnectionException When connection fails
+     * @throws Exception\ConnectionException When a required value is missing or the connection fails
      */
-    public static function mysql(#[\SensitiveParameter] array $config = []): MySqlDriver
+    public static function mysql(#[\SensitiveParameter] array $config): MySqlDriver
     {
-        $envPort = trim((string) self::env('DB_PORT'));
-
-        $mergedConfig = [
-            'host' => $config['host'] ?? self::env('DB_HOST'),
-            'database' => $config['database'] ?? self::env('DB_DATABASE'),
-            'username' => $config['username'] ?? self::env('DB_USERNAME'),
-            'password' => $config['password'] ?? self::env('DB_PASSWORD'),
-            'port' => $config['port'] ?? ($envPort !== '' ? $envPort : 3306),
-            'charset' => $config['charset'] ?? 'utf8mb4',
-            'options' => $config['options'] ?? [],
-        ];
-
-        return new MySqlDriver($mergedConfig);
+        return new MySqlDriver($config);
     }
 
     /**
-     * Create a PostgreSQL database connection.
+     * Create a PostgreSQL connection from the given config (see PostgresDriver for the keys).
+     * Nothing is read from the environment: use fromEnv() for that.
      *
-     * Falls back to environment variables if config values are not provided:
-     * DB_HOST, DB_DATABASE, DB_USERNAME, DB_PASSWORD, DB_PORT
+     * @param array{host?: string|null, database?: string|null, username?: string|null, password?: string|null, port?: int|string, options?: array<int, mixed>} $config
      *
-     * @param array{host?: string, database?: string, username?: string, password?: string, port?: int|string, options?: array<int, mixed>} $config
-     *
-     * @throws Exception\ConnectionException When connection fails
+     * @throws Exception\ConnectionException When a required value is missing or the connection fails
      */
-    public static function postgres(#[\SensitiveParameter] array $config = []): PostgresDriver
+    public static function postgres(#[\SensitiveParameter] array $config): PostgresDriver
     {
-        $envPort = trim((string) self::env('DB_PORT'));
-
-        $mergedConfig = [
-            'host' => $config['host'] ?? self::env('DB_HOST'),
-            'database' => $config['database'] ?? self::env('DB_DATABASE'),
-            'username' => $config['username'] ?? self::env('DB_USERNAME'),
-            'password' => $config['password'] ?? self::env('DB_PASSWORD'),
-            'port' => $config['port'] ?? ($envPort !== '' ? $envPort : 5432),
-            'options' => $config['options'] ?? [],
-        ];
-
-        return new PostgresDriver($mergedConfig);
+        return new PostgresDriver($config);
     }
 
     /**
-     * Create a SQLite database connection.
+     * Create a SQLite connection. Nothing is read from the environment: use fromEnv() for that.
      *
-     * Falls back to DB_SQLITE_PATH environment variable if path is null.
-     * Defaults to ':memory:' if neither is set. A DB_SQLITE_PATH that is set but empty (or not a
-     * scalar) is not "not set": the default would be a database that forgets everything, so it
-     * throws.
+     * @param string $path Path to the SQLite file, or ':memory:' (the default) for an in-memory database
      *
-     * @param string|null $path Path to SQLite file, ':memory:' for in-memory, or null for default
-     *
-     * @throws Exception\ConnectionException When the path is an empty string, DB_SQLITE_PATH is set but empty or not a scalar, or the connection fails
+     * @throws Exception\ConnectionException When the path is an empty string or the connection fails
      */
-    public static function sqlite(?string $path = null): SqliteDriver
+    public static function sqlite(string $path = ':memory:'): SqliteDriver
     {
-        if ($path === null) {
-            $path = self::env('DB_SQLITE_PATH', keepEmpty: true) ?? ':memory:';
-            if ($path === '') {
-                throw new ConnectionException(
-                    message: 'Database connection failed',
-                    debugMessage: 'DB_SQLITE_PATH is set but empty or not a scalar: unset it for the default in-memory database, or set it to ":memory:" or the path of a file'
-                );
-            }
-        }
-
         return new SqliteDriver($path);
     }
 
     /**
-     * Create a connection for the driver named in the config or in DB_DRIVER.
+     * Create a connection for the driver named in the config.
      *
      * 'mysql' (also 'mariadb'), 'pgsql' (also 'postgres', 'postgresql') and 'sqlite' delegate to
-     * mysql(), postgres() and sqlite() with the same config keys and environment fallbacks; the
-     * SQLite path comes from 'path', else 'database', else DB_SQLITE_PATH. One config array for
-     * every environment: the driver decides which of them is used.
+     * mysql(), postgres() and sqlite() with the same config keys; the SQLite path comes from
+     * 'path', else 'database', else it is ':memory:'. One config array for every environment:
+     * the driver decides which of the keys are used. Nothing is read from the environment: use
+     * fromEnv() for that.
      *
-     * @param array{driver?: string, path?: string, host?: string, database?: string, username?: string, password?: string, port?: int|string, charset?: string, options?: array<int, mixed>} $config
+     * @param array{driver?: string|null, path?: string|null, host?: string|null, database?: string|null, username?: string|null, password?: string|null, port?: int|string, charset?: string, options?: array<int, mixed>} $config
      *
-     * @throws ConnectionException When no or an unknown driver is named, or the connection fails
+     * @throws ConnectionException When no or an unknown driver is named, a required value is missing, or the connection fails
      */
-    public static function connect(#[\SensitiveParameter] array $config = []): DatabaseInterface
+    public static function connect(#[\SensitiveParameter] array $config): DatabaseInterface
     {
-        $driver = strtolower(trim($config['driver'] ?? self::env('DB_DRIVER') ?? ''));
+        $driver = strtolower(trim($config['driver'] ?? ''));
 
         return match ($driver) {
             'mysql', 'mariadb' => self::mysql($config),
             'pgsql', 'postgres', 'postgresql' => self::postgres($config),
-            'sqlite' => self::sqlite($config['path'] ?? $config['database'] ?? null),
+            'sqlite' => self::sqlite($config['path'] ?? $config['database'] ?? ':memory:'),
             default => throw new ConnectionException(
                 message: 'Database connection failed',
                 debugMessage: $driver === ''
-                    ? 'No database driver given: set $config[\'driver\'] or DB_DRIVER to mysql, pgsql or sqlite'
+                    ? 'No database driver given: pass \'driver\' (mysql, pgsql or sqlite), or set DB_DRIVER for fromEnv()'
                     : sprintf('Unknown database driver "%s": use mysql, pgsql or sqlite', $driver)
             ),
         };
+    }
+
+    /**
+     * Create a connection from the environment: the one place in this library that reads it.
+     *
+     * Variables, $_ENV first, then getenv(): DB_DRIVER (mysql, pgsql or sqlite), DB_HOST, DB_PORT,
+     * DB_DATABASE, DB_USERNAME, DB_PASSWORD, and for SQLite DB_SQLITE_PATH. A variable that is
+     * set but empty counts as not set (`DB_HOST=` in a dotenv template): a required value is
+     * then reported as missing, DB_PORT takes the driver's default. An empty DB_SQLITE_PATH
+     * throws; without the variable the SQLite database is ':memory:'. The SQLite file never
+     * comes from DB_DATABASE, the name of a server database.
+     *
+     * What is passed in $overrides counts instead of the environment - also null and an empty
+     * string: fromEnv(['password' => null]) connects without a password whatever DB_PASSWORD
+     * says. The keys are those of connect(), 'charset' and 'options' included.
+     *
+     * @param array{driver?: string|null, path?: string|null, host?: string|null, database?: string|null, username?: string|null, password?: string|null, port?: int|string, charset?: string, options?: array<int, mixed>} $overrides
+     *
+     * @throws ConnectionException When no or an unknown driver is named, a required value is missing, DB_SQLITE_PATH is set but empty, or the connection fails
+     */
+    public static function fromEnv(#[\SensitiveParameter] array $overrides = []): DatabaseInterface
+    {
+        // What was passed stays, null included: the union only adds the keys that are missing
+        $config = $overrides + [
+            'driver' => self::env('DB_DRIVER'),
+            'host' => self::env('DB_HOST'),
+            'database' => self::env('DB_DATABASE'),
+            'username' => self::env('DB_USERNAME'),
+            'password' => self::env('DB_PASSWORD'),
+        ];
+        $port = trim((string) self::env('DB_PORT')); // surrounding whitespace (a trailing CR from an .env file) is not part of the value
+        if ($port !== '' && !array_key_exists('port', $config)) {
+            $config['port'] = $port;
+        }
+
+        if (strtolower(trim($config['driver'] ?? '')) === 'sqlite') {
+            // The file comes from what was passed or from DB_SQLITE_PATH - never from DB_DATABASE
+            if (array_key_exists('path', $overrides) || array_key_exists('database', $overrides)) {
+                return self::connect(['driver' => 'sqlite'] + $overrides);
+            }
+
+            $path = self::env('DB_SQLITE_PATH', keepEmpty: true);
+            if ($path === '') {
+                throw new ConnectionException(
+                    message: 'Database connection failed',
+                    debugMessage: 'DB_SQLITE_PATH is set but empty or not a scalar: unset it for an in-memory database, or set it to ":memory:" or the path of a file'
+                );
+            }
+
+            return self::sqlite($path ?? ':memory:');
+        }
+
+        return self::connect($config);
     }
 
     /**
@@ -192,7 +205,7 @@ class Database
     /**
      * Get environment variable value.
      *
-     * Priority: $_ENV > getenv()
+     * Read by fromEnv() only. Priority: $_ENV > getenv()
      * This ensures thread-safety when using $_ENV while maintaining
      * compatibility with legacy code that uses putenv/getenv.
      *

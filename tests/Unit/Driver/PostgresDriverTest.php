@@ -20,6 +20,8 @@ class PostgresDriverTest extends TestCase
         putenv('DB_USERNAME');
         putenv('DB_PASSWORD');
         putenv('DB_PORT');
+        unset($_ENV['DB_DRIVER']);
+        putenv('DB_DRIVER');
     }
 
     /**
@@ -69,7 +71,7 @@ class PostgresDriverTest extends TestCase
         $_ENV['DB_PORT'] = 'abc';
 
         try {
-            Database::postgres();
+            Database::fromEnv(['driver' => 'pgsql']);
             $this->fail('Expected ConnectionException for DB_PORT=abc');
         } catch (ConnectionException $e) {
             $this->assertSame('Invalid config value "port": expected a whole number between 1 and 65535', $e->getDebugMessage());
@@ -120,7 +122,7 @@ class PostgresDriverTest extends TestCase
     }
 
     /**
-     * Test that Factory reads from $_ENV.
+     * fromEnv() reads from $_ENV.
      */
     public function testFactoryReadsConfigFromEnv(): void
     {
@@ -131,12 +133,11 @@ class PostgresDriverTest extends TestCase
 
         $this->expectException(ConnectionException::class);
 
-        // Factory reads $_ENV and passes to driver
-        Database::postgres();
+        Database::fromEnv(['driver' => 'pgsql']);
     }
 
     /**
-     * Test that Factory reads from getenv() as fallback.
+     * fromEnv() reads from getenv() as fallback.
      */
     public function testFactoryReadsConfigFromGetenv(): void
     {
@@ -147,7 +148,7 @@ class PostgresDriverTest extends TestCase
         $this->expectException(ConnectionException::class);
 
         try {
-            Database::postgres();
+            Database::fromEnv(['driver' => 'pgsql']);
         } catch (ConnectionException $e) {
             $this->assertStringContainsString('getenv-host-invalid', $e->getDebugMessage());
             throw $e;
@@ -167,7 +168,7 @@ class PostgresDriverTest extends TestCase
         $this->expectException(ConnectionException::class);
 
         try {
-            Database::postgres();
+            Database::fromEnv(['driver' => 'pgsql']);
         } catch (ConnectionException $e) {
             $this->assertStringContainsString('env-host-invalid', $e->getDebugMessage());
             $this->assertStringNotContainsString('getenv-host', $e->getDebugMessage());
@@ -175,24 +176,35 @@ class PostgresDriverTest extends TestCase
         }
     }
 
-    public function testArrayConfigOverridesEnv(): void
+    public function testTheFactoryIgnoresTheEnvironmentAndFromEnvLetsOverridesWin(): void
     {
         $_ENV['DB_HOST'] = 'env-host';
         $_ENV['DB_DATABASE'] = 'env-db';
         $_ENV['DB_USERNAME'] = 'env-user';
 
-        $this->expectException(ConnectionException::class);
-
+        // the factory takes what it is given: nothing is filled in from the environment
         try {
-            Database::postgres([
-                'host' => 'array-host',
-                'database' => 'array-db',
-                'username' => 'array-user',
-            ]);
+            Database::postgres(['database' => 'array-db', 'username' => 'array-user']);
+            $this->fail('Expected ConnectionException: no host was passed');
         } catch (ConnectionException $e) {
-            // Verify array config was used, not ENV
-            $this->assertStringContainsString('array-host', $e->getDebugMessage());
-            throw $e;
+            $this->assertSame('Missing required config: host, database, or username', $e->getDebugMessage());
+        }
+
+        // fromEnv(): what is passed counts instead of the variable ...
+        try {
+            Database::fromEnv(['driver' => 'pgsql', 'host' => 'array-host']);
+            $this->fail('Expected ConnectionException: no such host');
+        } catch (ConnectionException $e) {
+            $this->assertStringContainsString('array-host', (string) $e->getDebugMessage());
+            $this->assertStringNotContainsString('env-host', (string) $e->getDebugMessage());
+        }
+
+        // ... also null: an explicit null is a missing value, not "ask the environment"
+        try {
+            Database::fromEnv(['driver' => 'pgsql', 'host' => null]);
+            $this->fail('Expected ConnectionException: the host was passed as null');
+        } catch (ConnectionException $e) {
+            $this->assertSame('Missing required config: host, database, or username', $e->getDebugMessage());
         }
     }
 
@@ -239,7 +251,7 @@ class PostgresDriverTest extends TestCase
         $this->expectException(ConnectionException::class);
 
         try {
-            Database::postgres();
+            Database::fromEnv(['driver' => 'pgsql']);
         } catch (ConnectionException $e) {
             $this->assertStringContainsString(':5434', $e->getDebugMessage());
             throw $e;

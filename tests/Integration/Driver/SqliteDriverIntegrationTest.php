@@ -86,26 +86,16 @@ class SqliteDriverIntegrationTest extends TestCase
         $this->assertSame(PDO::FETCH_ASSOC, $fetchMode);
     }
 
-    public function testReadsPathFromEnv(): void
+    public function testTheDriverDoesNotReadTheEnvironment(): void
     {
-        $_ENV['DB_SQLITE_PATH'] = ':memory:';
+        $_ENV['DB_SQLITE_PATH'] = '/no/such/directory/path.db';
 
-        $driver = new SqliteDriver();
-
-        $this->assertInstanceOf(PDO::class, $driver->getPdo());
-
-        unset($_ENV['DB_SQLITE_PATH']);
-    }
-
-    public function testExplicitPathOverridesEnv(): void
-    {
-        $_ENV['DB_SQLITE_PATH'] = '/some/other/path.db';
-
-        $driver = new SqliteDriver(':memory:');
-
-        $this->assertInstanceOf(PDO::class, $driver->getPdo());
-
-        unset($_ENV['DB_SQLITE_PATH']);
+        try {
+            $this->assertInstanceOf(PDO::class, (new SqliteDriver())->getPdo(), 'the default, :memory:');
+            $this->assertInstanceOf(PDO::class, (new SqliteDriver(':memory:'))->getPdo());
+        } finally {
+            unset($_ENV['DB_SQLITE_PATH']);
+        }
     }
 
     public function testInvalidPathThrowsConnectionException(): void

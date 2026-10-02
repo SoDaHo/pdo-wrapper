@@ -20,6 +20,8 @@ class MySqlDriverTest extends TestCase
         putenv('DB_USERNAME');
         putenv('DB_PASSWORD');
         putenv('DB_PORT');
+        unset($_ENV['DB_DRIVER']);
+        putenv('DB_DRIVER');
     }
 
     /**
@@ -79,7 +81,7 @@ class MySqlDriverTest extends TestCase
         foreach (['abc', '1e3', '1.9', '70000', '65536', '0', '-1', '33 06'] as $port) {
             $_ENV['DB_PORT'] = $port;
             try {
-                Database::mysql();
+                Database::fromEnv(['driver' => 'mysql']);
                 $this->fail("Expected ConnectionException for DB_PORT={$port}");
             } catch (ConnectionException $e) {
                 $this->assertSame('Invalid config value "port": expected a whole number between 1 and 65535', $e->getDebugMessage());
@@ -91,7 +93,7 @@ class MySqlDriverTest extends TestCase
         foreach (['' => 3306, '   ' => 3306, " 59998\r\n" => 59998] as $value => $expected) {
             $_ENV['DB_PORT'] = $value;
             try {
-                Database::mysql(['host' => '127.0.0.1', 'password' => 'wrong-on-purpose']);
+                Database::fromEnv(['driver' => 'mysql', 'host' => '127.0.0.1', 'password' => 'wrong-on-purpose']);
                 $this->fail('Expected ConnectionException: wrong password or nothing listening');
             } catch (ConnectionException $e) {
                 $this->assertStringContainsString("MySQL connection to 127.0.0.1:{$expected} failed", (string) $e->getDebugMessage());
@@ -163,7 +165,7 @@ class MySqlDriverTest extends TestCase
     }
 
     /**
-     * Test that Factory reads from $_ENV.
+     * fromEnv() reads from $_ENV.
      */
     public function testFactoryReadsConfigFromEnv(): void
     {
@@ -174,12 +176,11 @@ class MySqlDriverTest extends TestCase
 
         $this->expectException(ConnectionException::class);
 
-        // Factory reads $_ENV and passes to driver
-        Database::mysql();
+        Database::fromEnv(['driver' => 'mysql']);
     }
 
     /**
-     * Test that Factory reads from getenv() as fallback.
+     * fromEnv() reads from getenv() as fallback.
      */
     public function testFactoryReadsConfigFromGetenv(): void
     {
@@ -190,7 +191,7 @@ class MySqlDriverTest extends TestCase
         $this->expectException(ConnectionException::class);
 
         try {
-            Database::mysql();
+            Database::fromEnv(['driver' => 'mysql']);
         } catch (ConnectionException $e) {
             $this->assertStringContainsString('getenv-host-invalid', $e->getDebugMessage());
             throw $e;
@@ -210,7 +211,7 @@ class MySqlDriverTest extends TestCase
         $this->expectException(ConnectionException::class);
 
         try {
-            Database::mysql();
+            Database::fromEnv(['driver' => 'mysql']);
         } catch (ConnectionException $e) {
             $this->assertStringContainsString('env-host-invalid', $e->getDebugMessage());
             $this->assertStringNotContainsString('getenv-host', $e->getDebugMessage());
@@ -218,24 +219,35 @@ class MySqlDriverTest extends TestCase
         }
     }
 
-    public function testArrayConfigOverridesEnv(): void
+    public function testTheFactoryIgnoresTheEnvironmentAndFromEnvLetsOverridesWin(): void
     {
         $_ENV['DB_HOST'] = 'env-host';
         $_ENV['DB_DATABASE'] = 'env-db';
         $_ENV['DB_USERNAME'] = 'env-user';
 
-        $this->expectException(ConnectionException::class);
-
+        // the factory takes what it is given: nothing is filled in from the environment
         try {
-            Database::mysql([
-                'host' => 'array-host',
-                'database' => 'array-db',
-                'username' => 'array-user',
-            ]);
+            Database::mysql(['database' => 'array-db', 'username' => 'array-user']);
+            $this->fail('Expected ConnectionException: no host was passed');
         } catch (ConnectionException $e) {
-            // Verify array config was used, not ENV
-            $this->assertStringContainsString('array-host', $e->getDebugMessage());
-            throw $e;
+            $this->assertSame('Missing required config: host, database, or username', $e->getDebugMessage());
+        }
+
+        // fromEnv(): what is passed counts instead of the variable ...
+        try {
+            Database::fromEnv(['driver' => 'mysql', 'host' => 'array-host']);
+            $this->fail('Expected ConnectionException: no such host');
+        } catch (ConnectionException $e) {
+            $this->assertStringContainsString('array-host', (string) $e->getDebugMessage());
+            $this->assertStringNotContainsString('env-host', (string) $e->getDebugMessage());
+        }
+
+        // ... also null: an explicit null is a missing value, not "ask the environment"
+        try {
+            Database::fromEnv(['driver' => 'mysql', 'host' => null]);
+            $this->fail('Expected ConnectionException: the host was passed as null');
+        } catch (ConnectionException $e) {
+            $this->assertSame('Missing required config: host, database, or username', $e->getDebugMessage());
         }
     }
 
@@ -272,6 +284,21 @@ class MySqlDriverTest extends TestCase
         }
     }
 
+    public function testAPortThatIsPassedBeatsDbPort(): void
+    {
+        $_ENV['DB_HOST'] = 'localhost';
+        $_ENV['DB_DATABASE'] = 'test';
+        $_ENV['DB_USERNAME'] = 'root';
+        $_ENV['DB_PORT'] = '3308';
+
+        try {
+            Database::fromEnv(['driver' => 'mysql', 'port' => 59997, 'password' => 'wrong-on-purpose']);
+            $this->fail('Expected ConnectionException: nothing listens there');
+        } catch (ConnectionException $e) {
+            $this->assertStringContainsString(':59997', (string) $e->getDebugMessage());
+        }
+    }
+
     public function testCustomPortFromEnv(): void
     {
         $_ENV['DB_HOST'] = 'localhost';
@@ -282,7 +309,7 @@ class MySqlDriverTest extends TestCase
         $this->expectException(ConnectionException::class);
 
         try {
-            Database::mysql();
+            Database::fromEnv(['driver' => 'mysql']);
         } catch (ConnectionException $e) {
             $this->assertStringContainsString(':3308', $e->getDebugMessage());
             throw $e;

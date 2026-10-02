@@ -16,7 +16,7 @@ use Throwable;
  * PostgreSQL database driver.
  *
  * Connects to PostgreSQL databases using PDO.
- * Use Database::postgres() factory for environment variable support.
+ * Database::postgres() does the same; Database::fromEnv() reads the config from the environment.
  */
 class PostgresDriver extends AbstractDriver
 {

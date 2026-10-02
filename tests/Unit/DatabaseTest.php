@@ -18,7 +18,7 @@ class DatabaseTest extends TestCase
     private array $savedEnvironment = [];
 
     /**
-     * The factories read DB_* from $_ENV and getenv(): both channels are cleared for the tests and
+     * fromEnv() reads DB_* from $_ENV and getenv(): both channels are cleared for the tests and
      * restored afterwards.
      */
     protected function setUp(): void
@@ -41,26 +41,147 @@ class DatabaseTest extends TestCase
         }
     }
 
-    public function testConnectPicksTheDriverFromConfigOrEnvironment(): void
+    public function testConnectPicksTheDriverFromTheConfig(): void
     {
         $this->assertInstanceOf(SqliteDriver::class, Database::connect(['driver' => 'sqlite']));
         $this->assertInstanceOf(SqliteDriver::class, Database::connect(['driver' => ' SQLite ', 'path' => ':memory:']));
         $this->assertInstanceOf(SqliteDriver::class, Database::connect(['driver' => 'sqlite', 'database' => ':memory:']));
 
+        // 'path' comes before 'database'
+        $file = sys_get_temp_dir() . '/pdo-wrapper-connect-' . bin2hex(random_bytes(4)) . '.db';
+        $other = $file . '.other';
+
+        try {
+            Database::connect(['driver' => 'sqlite', 'database' => $other, 'path' => $file])->execute('CREATE TABLE t (id INTEGER)');
+            $this->assertFileExists($file);
+            $this->assertFileDoesNotExist($other);
+        } finally {
+            @unlink($file);
+            @unlink($other);
+        }
+    }
+
+    public function testFromEnvPicksTheDriverAndThePathFromTheEnvironment(): void
+    {
+        $file = sys_get_temp_dir() . '/pdo-wrapper-fromenv-' . bin2hex(random_bytes(4)) . '.db';
+        $_ENV['DB_DRIVER'] = ' SQLite ';
+        $_ENV['DB_SQLITE_PATH'] = $file;
+
+        try {
+            $db = Database::fromEnv();
+            $this->assertInstanceOf(SqliteDriver::class, $db);
+            $db->execute('CREATE TABLE t (id INTEGER)');
+            $this->assertFileExists($file);
+        } finally {
+            @unlink($file);
+        }
+
+        // without DB_SQLITE_PATH: in memory
+        unset($_ENV['DB_SQLITE_PATH']);
+        $this->assertSame(1, (int) Database::fromEnv()->query('SELECT 1')->fetchColumn());
+
+        // getenv() is the second channel
+        unset($_ENV['DB_DRIVER']);
+        putenv('DB_DRIVER=sqlite');
+        $this->assertInstanceOf(SqliteDriver::class, Database::fromEnv());
+    }
+
+    /**
+     * The factories take what they are given. Whatever the environment says, nothing of it is
+     * filled in: that is fromEnv()'s job alone.
+     */
+    public function testTheFactoriesDoNotReadTheEnvironment(): void
+    {
+        $file = sys_get_temp_dir() . '/pdo-wrapper-ignored-' . bin2hex(random_bytes(4)) . '.db';
         $_ENV['DB_DRIVER'] = 'sqlite';
-        $_ENV['DB_SQLITE_PATH'] = ':memory:';
-        $db = Database::connect();
-        $this->assertInstanceOf(SqliteDriver::class, $db);
-        $this->assertSame(1, (int) $db->query('SELECT 1')->fetchColumn());
+        $_ENV['DB_SQLITE_PATH'] = $file;
+        $_ENV['DB_HOST'] = '127.0.0.1';
+        $_ENV['DB_DATABASE'] = 'app';
+        $_ENV['DB_USERNAME'] = 'app';
+
+        try {
+            Database::connect([]);
+            $this->fail('Expected ConnectionException: no driver was passed');
+        } catch (ConnectionException $e) {
+            $this->assertStringStartsWith('No database driver given', (string) $e->getDebugMessage());
+        }
+        $this->assertMissingConfig(static fn (): MySqlDriver => Database::mysql([]));
+        $this->assertMissingConfig(static fn (): PostgresDriver => Database::postgres([]));
+        $this->assertMissingConfig(static fn (): \Sodaho\PdoWrapper\DatabaseInterface => Database::connect(['driver' => 'mysql']));
+
+        Database::sqlite()->execute('CREATE TABLE t (id INTEGER)');
+        Database::connect(['driver' => 'sqlite'])->execute('CREATE TABLE t (id INTEGER)');
+        $this->assertFileDoesNotExist($file, 'in memory: DB_SQLITE_PATH was not read');
+    }
+
+    /**
+     * What fromEnv() is handed counts instead of the environment, null and empty included, and
+     * DB_DATABASE - the name of a server database - never becomes the SQLite file.
+     */
+    public function testFromEnvLetsOverridesWinAndKeepsDbDatabaseOutOfSqlite(): void
+    {
+        $serverDatabase = sys_get_temp_dir() . '/pdo-wrapper-server-database-' . bin2hex(random_bytes(4));
+        $file = sys_get_temp_dir() . '/pdo-wrapper-override-' . bin2hex(random_bytes(4)) . '.db';
+        $_ENV['DB_DRIVER'] = 'sqlite';
+        $_ENV['DB_DATABASE'] = $serverDatabase;
+
+        try {
+            Database::fromEnv()->execute('CREATE TABLE t (id INTEGER)');
+            $this->assertFileDoesNotExist($serverDatabase, 'DB_DATABASE is not the SQLite path');
+
+            // 'database' passed by the application is one, as in connect()
+            Database::fromEnv(['database' => $file])->execute('CREATE TABLE t (id INTEGER)');
+            $this->assertFileExists($file);
+            @unlink($file);
+
+            $_ENV['DB_SQLITE_PATH'] = $serverDatabase;
+            Database::fromEnv(['path' => $file])->execute('CREATE TABLE t (id INTEGER)');
+            $this->assertFileExists($file, "'path' beats DB_SQLITE_PATH");
+            $this->assertFileDoesNotExist($serverDatabase);
+
+            // a path passed as null is "no path" (in memory), not "ask the environment"
+            @unlink($file);
+            $_ENV['DB_SQLITE_PATH'] = $file;
+            Database::fromEnv(['path' => null])->execute('CREATE TABLE t (id INTEGER)');
+            $this->assertFileDoesNotExist($file);
+            $this->assertFileDoesNotExist($serverDatabase, 'and DB_DATABASE does not step in for it');
+            Database::fromEnv(['database' => null])->execute('CREATE TABLE t (id INTEGER)');
+            $this->assertFileDoesNotExist($file);
+            $this->assertFileDoesNotExist($serverDatabase);
+            $_ENV['DB_SQLITE_PATH'] = $serverDatabase;
+
+            // an empty path that was passed is an empty path, not "ask the environment"
+            try {
+                Database::fromEnv(['path' => '']);
+                $this->fail('Expected ConnectionException');
+            } catch (ConnectionException $e) {
+                $this->assertStringStartsWith('SQLite path is empty', (string) $e->getDebugMessage());
+            }
+
+            // the driver that was passed beats DB_DRIVER
+            $_ENV['DB_HOST'] = '127.0.0.1';
+            $_ENV['DB_USERNAME'] = 'app';
+            $this->assertMissingConfig(static fn (): \Sodaho\PdoWrapper\DatabaseInterface => Database::fromEnv(['driver' => 'mysql', 'database' => null]));
+        } finally {
+            @unlink($file);
+            @unlink($serverDatabase);
+        }
     }
 
     public function testConnectRejectsMissingAndUnknownDrivers(): void
     {
         try {
-            Database::connect();
+            Database::connect([]);
             $this->fail('Expected ConnectionException without a driver');
         } catch (ConnectionException $e) {
-            $this->assertStringContainsString('No database driver given', $e->getDebugMessage() ?? '');
+            $this->assertSame('No database driver given: pass \'driver\' (mysql, pgsql or sqlite), or set DB_DRIVER for fromEnv()', $e->getDebugMessage());
+        }
+
+        try {
+            Database::fromEnv();
+            $this->fail('Expected ConnectionException without DB_DRIVER');
+        } catch (ConnectionException $e) {
+            $this->assertStringStartsWith('No database driver given', (string) $e->getDebugMessage());
         }
 
         try {
@@ -99,6 +220,46 @@ class DatabaseTest extends TestCase
                 'password' => $_ENV['POSTGRES_PASSWORD'] ?? 'postgres',
             ]));
         }
+    }
+
+    /**
+     * Everything from the environment, the password included; a password that is passed - null
+     * too - counts instead of DB_PASSWORD.
+     */
+    #[Group('mysql')]
+    public function testFromEnvConnectsToMysqlFromTheEnvironmentAlone(): void
+    {
+        $_ENV['DB_DRIVER'] = 'mysql';
+        $_ENV['DB_HOST'] = $_ENV['MYSQL_HOST'] ?? '127.0.0.1';
+        $_ENV['DB_PORT'] = (string) ($_ENV['MYSQL_PORT'] ?? 3306);
+        $_ENV['DB_DATABASE'] = $_ENV['MYSQL_DATABASE'] ?? 'pdo_wrapper_test';
+        $_ENV['DB_USERNAME'] = $_ENV['MYSQL_USERNAME'] ?? 'root';
+        $_ENV['DB_PASSWORD'] = $_ENV['MYSQL_PASSWORD'] ?? 'root';
+
+        $db = Database::fromEnv();
+        $this->assertInstanceOf(MySqlDriver::class, $db);
+        $this->assertSame(1, (int) $db->query('SELECT 1')->fetchColumn());
+
+        $this->expectException(ConnectionException::class);
+        Database::fromEnv(['password' => null]);
+    }
+
+    #[Group('postgres')]
+    public function testFromEnvConnectsToPostgresFromTheEnvironmentAlone(): void
+    {
+        $_ENV['DB_DRIVER'] = 'pgsql';
+        $_ENV['DB_HOST'] = $_ENV['POSTGRES_HOST'] ?? '127.0.0.1';
+        $_ENV['DB_PORT'] = (string) ($_ENV['POSTGRES_PORT'] ?? 5432);
+        $_ENV['DB_DATABASE'] = $_ENV['POSTGRES_DATABASE'] ?? 'pdo_wrapper_test';
+        $_ENV['DB_USERNAME'] = $_ENV['POSTGRES_USERNAME'] ?? 'postgres';
+        $_ENV['DB_PASSWORD'] = $_ENV['POSTGRES_PASSWORD'] ?? 'postgres';
+
+        $db = Database::fromEnv();
+        $this->assertInstanceOf(PostgresDriver::class, $db);
+        $this->assertSame(1, (int) $db->query('SELECT 1')->fetchColumn());
+
+        $this->expectException(ConnectionException::class);
+        Database::fromEnv(['password' => null]);
     }
 
     #[Group('mysql')]
@@ -177,19 +338,19 @@ class DatabaseTest extends TestCase
         putenv('DB_HOST=127.0.0.1'); // $_ENV has the key: it decides
         $_ENV['DB_DATABASE'] = 'app';
         $_ENV['DB_USERNAME'] = 'app';
-        $this->assertMissingConfig(static fn (): MySqlDriver => Database::mysql());
-        $this->assertMissingConfig(static fn (): PostgresDriver => Database::postgres());
+        $this->assertMissingConfig(static fn (): \Sodaho\PdoWrapper\DatabaseInterface => Database::fromEnv(['driver' => 'mysql']));
+        $this->assertMissingConfig(static fn (): \Sodaho\PdoWrapper\DatabaseInterface => Database::fromEnv(['driver' => 'pgsql']));
         putenv('DB_HOST');
 
         $_ENV['DB_HOST'] = ['127.0.0.1'];
-        $this->assertMissingConfig(static fn (): MySqlDriver => Database::mysql());
+        $this->assertMissingConfig(static fn (): \Sodaho\PdoWrapper\DatabaseInterface => Database::fromEnv(['driver' => 'mysql']));
 
         // null in $_ENV is no value (as before): getenv() is asked
         $file = sys_get_temp_dir() . '/pdo-wrapper-env-' . bin2hex(random_bytes(4)) . '.db';
         $_ENV['DB_SQLITE_PATH'] = null;
         putenv('DB_SQLITE_PATH=' . $file);
         try {
-            Database::sqlite()->execute('CREATE TABLE t (id INTEGER)');
+            Database::fromEnv(['driver' => 'sqlite'])->execute('CREATE TABLE t (id INTEGER)');
             $this->assertFileExists($file);
         } finally {
             @unlink($file);
@@ -199,10 +360,10 @@ class DatabaseTest extends TestCase
         // getenv()
         unset($_ENV['DB_HOST'], $_ENV['DB_DRIVER']);
         putenv('DB_HOST=');
-        $this->assertMissingConfig(static fn (): MySqlDriver => Database::mysql());
+        $this->assertMissingConfig(static fn (): \Sodaho\PdoWrapper\DatabaseInterface => Database::fromEnv(['driver' => 'mysql']));
         putenv('DB_DRIVER=');
         try {
-            Database::connect();
+            Database::fromEnv();
             $this->fail('Expected ConnectionException');
         } catch (ConnectionException $e) {
             $this->assertStringStartsWith('No database driver given', (string) $e->getDebugMessage());
@@ -215,7 +376,7 @@ class DatabaseTest extends TestCase
      */
     public function testAnEmptySqlitePathFromTheEnvironmentIsRejected(): void
     {
-        $this->assertSame(1, (int) Database::sqlite()->query('SELECT 1')->fetchColumn(), 'not set: :memory:');
+        $this->assertSame(1, (int) Database::fromEnv(['driver' => 'sqlite'])->query('SELECT 1')->fetchColumn(), 'not set: :memory:');
 
         $attempts = [
             'in $_ENV' => static function (): void {
@@ -237,18 +398,17 @@ class DatabaseTest extends TestCase
 
         foreach ($attempts as $where => $prepare) {
             $prepare();
-            foreach ([static fn (): SqliteDriver => Database::sqlite(), static fn (): \Sodaho\PdoWrapper\DatabaseInterface => Database::connect(['driver' => 'sqlite'])] as $connect) {
-                try {
-                    $connect();
-                    $this->fail('Expected ConnectionException: ' . $where);
-                } catch (ConnectionException $e) {
-                    $this->assertStringStartsWith('DB_SQLITE_PATH is set but empty', (string) $e->getDebugMessage(), $where);
-                }
+            try {
+                Database::fromEnv(['driver' => 'sqlite']);
+                $this->fail('Expected ConnectionException: ' . $where);
+            } catch (ConnectionException $e) {
+                $this->assertStringStartsWith('DB_SQLITE_PATH is set but empty', (string) $e->getDebugMessage(), $where);
             }
-        }
 
-        // an explicit path wins over the broken variable
-        $this->assertSame(1, (int) Database::sqlite(':memory:')->query('SELECT 1')->fetchColumn());
+            // a path that was passed wins over the broken variable, and another driver does not look at it
+            $this->assertSame(1, (int) Database::fromEnv(['driver' => 'sqlite', 'path' => ':memory:'])->query('SELECT 1')->fetchColumn());
+            $this->assertMissingConfig(static fn (): \Sodaho\PdoWrapper\DatabaseInterface => Database::fromEnv(['driver' => 'mysql']));
+        }
     }
 
     private function assertMissingConfig(callable $connect): void
@@ -270,6 +430,7 @@ class DatabaseTest extends TestCase
             new \ReflectionParameter([Database::class, 'mysql'], 'config'),
             new \ReflectionParameter([Database::class, 'postgres'], 'config'),
             new \ReflectionParameter([Database::class, 'connect'], 'config'),
+            new \ReflectionParameter([Database::class, 'fromEnv'], 'overrides'),
             new \ReflectionParameter([MySqlDriver::class, '__construct'], 'config'),
             new \ReflectionParameter([PostgresDriver::class, '__construct'], 'config'),
         ];

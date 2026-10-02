@@ -16,7 +16,7 @@ use Throwable;
  * MySQL database driver.
  *
  * Connects to MySQL databases using PDO with utf8mb4 charset by default.
- * Use Database::mysql() factory for environment variable support.
+ * Database::mysql() does the same; Database::fromEnv() reads the config from the environment.
  */
 class MySqlDriver extends AbstractDriver
 {
