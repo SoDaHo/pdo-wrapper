@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Sodaho\PdoWrapper\Tests\Unit;
 
+use PDO;
 use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\TestCase;
 use Sodaho\PdoWrapper\Database;
@@ -89,6 +90,31 @@ class DatabaseTest extends TestCase
      * SQLite has no default path: a call that names none must not end in a database that forgets
      * everything. sqlite() requires the argument, connect() and fromEnv() report what is missing.
      */
+    /**
+     * SQLite takes PDO options like the other drivers: as the second argument of sqlite(), as
+     * 'options' in connect() and in fromEnv() - with a path that is passed and with the path
+     * from DB_SQLITE_PATH.
+     */
+    public function testSqliteTakesPdoOptionsThroughEveryFactory(): void
+    {
+        $options = [PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_NUM];
+        $_ENV['DB_DRIVER'] = 'sqlite';
+        $_ENV['DB_SQLITE_PATH'] = ':memory:';
+
+        $connections = [
+            'sqlite()' => Database::sqlite(':memory:', $options),
+            'connect()' => Database::connect(['driver' => 'sqlite', 'path' => ':memory:', 'options' => $options]),
+            'fromEnv() with a path' => Database::fromEnv(['path' => ':memory:', 'options' => $options]),
+            'fromEnv() with DB_SQLITE_PATH' => Database::fromEnv(['options' => $options]),
+        ];
+        foreach ($connections as $how => $db) {
+            $this->assertSame(PDO::FETCH_NUM, $db->getPdo()->getAttribute(PDO::ATTR_DEFAULT_FETCH_MODE), $how);
+        }
+
+        $this->assertSame(PDO::FETCH_ASSOC, Database::sqlite(':memory:')->getPdo()->getAttribute(PDO::ATTR_DEFAULT_FETCH_MODE), 'without options: the default');
+        $this->assertSame(PDO::FETCH_ASSOC, Database::fromEnv()->getPdo()->getAttribute(PDO::ATTR_DEFAULT_FETCH_MODE), 'without options: the default');
+    }
+
     public function testASqlitePathIsRequired(): void
     {
         $this->assertSame(1, (new \ReflectionMethod(Database::class, 'sqlite'))->getNumberOfRequiredParameters());

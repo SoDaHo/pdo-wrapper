@@ -28,7 +28,7 @@ class QueryBuilderDialectTest extends TestCase
      */
     public function testACustomDriverGetsItsDialectFromTheQuoteCharacter(): void
     {
-        $backtick = new class () extends SqliteDriver {
+        $backtick = new class (':memory:') extends SqliteDriver {
             protected function getQuoteChar(): string
             {
                 return '`';
@@ -39,7 +39,7 @@ class QueryBuilderDialectTest extends TestCase
                 return AbstractDriver::getDialect(); // the default, not SQLite's override
             }
         };
-        $ansi = new class () extends SqliteDriver {
+        $ansi = new class (':memory:') extends SqliteDriver {
             protected function getQuoteChar(): string
             {
                 return '"';
@@ -263,7 +263,7 @@ class QueryBuilderDialectTest extends TestCase
      */
     public function testAbstractDriverTimestampDefaultsAreCurrentTimestamp(): void
     {
-        $driver = new class () extends SqliteDriver {
+        $driver = new class (':memory:') extends SqliteDriver {
             public function now(): RawExpression
             {
                 return AbstractDriver::now();
@@ -288,7 +288,7 @@ class QueryBuilderDialectTest extends TestCase
      */
     public function testAbstractDriverBindsBooleansAsOneAndZero(): void
     {
-        $driver = new class () extends SqliteDriver {
+        $driver = new class (':memory:') extends SqliteDriver {
             protected function bindAndExecute(\PDOStatement $stmt, array $params): bool
             {
                 return AbstractDriver::bindAndExecute($stmt, $params);

@@ -15,18 +15,27 @@ use Sodaho\PdoWrapper\Query\RawExpression;
  * SQLite database driver.
  *
  * Connects to SQLite databases using PDO.
- * Database::sqlite($path) does the same; Database::fromEnv() reads the path from DB_SQLITE_PATH.
+ * Database::sqlite($path, $options) does the same; Database::fromEnv() reads the path from
+ * DB_SQLITE_PATH.
  */
 class SqliteDriver extends AbstractDriver
 {
     /**
      * Create a SQLite database connection.
      *
+     * The path has no default: an in-memory database is asked for by name, so that a call without
+     * a path cannot end in a database that forgets everything.
+     *
      * @param string $path Path to SQLite file or ':memory:' for in-memory database
+     * @param array<int, mixed> $options Additional PDO options; they replace the defaults, the
+     *                                   security-relevant ones included (exceptions as error mode,
+     *                                   native prepared statements). For SQLite: PDO::ATTR_TIMEOUT
+     *                                   (seconds to wait for a lock held by another connection),
+     *                                   Pdo\Sqlite::ATTR_OPEN_FLAGS (Pdo\Sqlite::OPEN_READONLY).
      *
      * @throws ConnectionException When the path is empty or contains a NUL byte, or the connection fails
      */
-    public function __construct(string $path = ':memory:')
+    public function __construct(string $path, array $options = [])
     {
         // SQLite opens a private temporary database for an empty path and deletes it when the
         // connection closes: a missing setting would look like a working database that forgets everything
@@ -54,7 +63,7 @@ class SqliteDriver extends AbstractDriver
         ];
 
         try {
-            $this->pdo = new PDO($dsn, null, null, $defaultOptions);
+            $this->pdo = new PDO($dsn, null, null, array_replace($defaultOptions, $options));
             $this->pdo->exec('PRAGMA foreign_keys = ON');
         } catch (PDOException $e) {
             throw new ConnectionException(

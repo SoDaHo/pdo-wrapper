@@ -1254,7 +1254,7 @@ class TransactionEndHookTest extends TestCase
      */
     private function driver(?PDO $pdo = null): SqliteDriver
     {
-        $db = $pdo === null ? new SqliteDriver() : new class ($pdo) extends SqliteDriver {
+        $db = $pdo === null ? new SqliteDriver(':memory:') : new class ($pdo) extends SqliteDriver {
             public function __construct(PDO $pdo)
             {
                 $this->pdo = $pdo;

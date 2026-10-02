@@ -65,7 +65,7 @@ class HasHooksTest extends TestCase
      */
     public function testADriverAddsItsOwnEvents(): void
     {
-        $db = new class () extends SqliteDriver {
+        $db = new class (':memory:') extends SqliteDriver {
             protected function knownEvents(): array
             {
                 return [...parent::knownEvents(), 'cache.hit'];

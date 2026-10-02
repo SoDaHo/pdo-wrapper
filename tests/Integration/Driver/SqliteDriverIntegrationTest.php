@@ -16,14 +16,14 @@ class SqliteDriverIntegrationTest extends TestCase
 {
     public function testImplementsDatabaseInterface(): void
     {
-        $driver = new SqliteDriver();
+        $driver = new SqliteDriver(':memory:');
 
         $this->assertInstanceOf(DatabaseInterface::class, $driver);
     }
 
     public function testConnectsToMemoryDatabase(): void
     {
-        $driver = new SqliteDriver();
+        $driver = new SqliteDriver(':memory:');
 
         $this->assertInstanceOf(PDO::class, $driver->getPdo());
     }
@@ -37,7 +37,7 @@ class SqliteDriverIntegrationTest extends TestCase
 
     public function testQueryReturnsStatement(): void
     {
-        $driver = new SqliteDriver();
+        $driver = new SqliteDriver(':memory:');
 
         $stmt = $driver->query('SELECT 1 as test');
 
@@ -47,7 +47,7 @@ class SqliteDriverIntegrationTest extends TestCase
 
     public function testExecuteReturnsAffectedRows(): void
     {
-        $driver = new SqliteDriver();
+        $driver = new SqliteDriver(':memory:');
         $driver->execute('CREATE TABLE test (id INTEGER PRIMARY KEY, name TEXT)');
 
         $affected = $driver->execute('INSERT INTO test (name) VALUES (?)', ['hello']);
@@ -57,7 +57,7 @@ class SqliteDriverIntegrationTest extends TestCase
 
     public function testLastInsertId(): void
     {
-        $driver = new SqliteDriver();
+        $driver = new SqliteDriver(':memory:');
         $driver->execute('CREATE TABLE test (id INTEGER PRIMARY KEY, name TEXT)');
         $driver->execute('INSERT INTO test (name) VALUES (?)', ['hello']);
 
@@ -68,7 +68,7 @@ class SqliteDriverIntegrationTest extends TestCase
 
     public function testConnectionUsesExceptionErrorMode(): void
     {
-        $driver = new SqliteDriver();
+        $driver = new SqliteDriver(':memory:');
         $pdo = $driver->getPdo();
 
         $errorMode = $pdo->getAttribute(PDO::ATTR_ERRMODE);
@@ -78,7 +78,7 @@ class SqliteDriverIntegrationTest extends TestCase
 
     public function testConnectionUsesFetchAssoc(): void
     {
-        $driver = new SqliteDriver();
+        $driver = new SqliteDriver(':memory:');
         $pdo = $driver->getPdo();
 
         $fetchMode = $pdo->getAttribute(PDO::ATTR_DEFAULT_FETCH_MODE);
@@ -91,7 +91,7 @@ class SqliteDriverIntegrationTest extends TestCase
         $_ENV['DB_SQLITE_PATH'] = '/no/such/directory/path.db';
 
         try {
-            $this->assertInstanceOf(PDO::class, (new SqliteDriver())->getPdo(), 'the default, :memory:');
+            $this->assertInstanceOf(PDO::class, (new SqliteDriver(':memory:'))->getPdo(), 'the default, :memory:');
             $this->assertInstanceOf(PDO::class, (new SqliteDriver(':memory:'))->getPdo());
         } finally {
             unset($_ENV['DB_SQLITE_PATH']);
@@ -107,7 +107,7 @@ class SqliteDriverIntegrationTest extends TestCase
 
     public function testForeignKeysAreEnabled(): void
     {
-        $driver = new SqliteDriver();
+        $driver = new SqliteDriver(':memory:');
 
         $result = $driver->query('PRAGMA foreign_keys')->fetch();
 
@@ -122,7 +122,7 @@ class SqliteDriverIntegrationTest extends TestCase
      */
     public function testForeignKeyConstraintIsEnforced(): void
     {
-        $driver = new SqliteDriver();
+        $driver = new SqliteDriver(':memory:');
 
         // Create parent table
         $driver->execute('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)');

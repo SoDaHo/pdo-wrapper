@@ -273,7 +273,7 @@ class EdgeCaseTest extends TestCase
     public function testInsertThrowsExceptionWhenLastInsertIdReturnsFalse(): void
     {
         // Create a driver that returns false from lastInsertId()
-        $driver = new class () extends SqliteDriver {
+        $driver = new class (':memory:') extends SqliteDriver {
             public function __construct()
             {
                 parent::__construct(':memory:');
@@ -296,7 +296,7 @@ class EdgeCaseTest extends TestCase
     public function testInsertThrowsExceptionWithDebugMessageContainingSqlAndParams(): void
     {
         // Create a driver that returns false from lastInsertId()
-        $driver = new class () extends SqliteDriver {
+        $driver = new class (':memory:') extends SqliteDriver {
             public function __construct()
             {
                 parent::__construct(':memory:');
@@ -919,7 +919,7 @@ class EdgeCaseTest extends TestCase
 
     public function testAFailingInsertIdReadStillFiresTheQueryHookFirst(): void
     {
-        $driver = new class () extends SqliteDriver {
+        $driver = new class (':memory:') extends SqliteDriver {
             public function lastInsertId(?string $name = null): string|false
             {
                 throw new QueryException(message: 'Failed to get last insert ID');
@@ -944,7 +944,7 @@ class EdgeCaseTest extends TestCase
 
     public function testAnInsertIdReadThatFailsOnceIsNotRetried(): void
     {
-        $driver = new class () extends SqliteDriver {
+        $driver = new class (':memory:') extends SqliteDriver {
             public int $reads = 0;
 
             public function lastInsertId(?string $name = null): string|false
@@ -969,7 +969,7 @@ class EdgeCaseTest extends TestCase
 
     public function testInsertReadsTheIdItselfWhenAnOverriddenQueryBypassesTheDriver(): void
     {
-        $driver = new class () extends SqliteDriver {
+        $driver = new class (':memory:') extends SqliteDriver {
             public int $reads = 0;
 
             public function query(string $sql, array $params = []): \PDOStatement
@@ -1015,7 +1015,7 @@ class EdgeCaseTest extends TestCase
 
     public function testInsertReturnsItsIdWhenAnOverriddenQuerySendsAStatementAhead(): void
     {
-        $driver = new class () extends SqliteDriver {
+        $driver = new class (':memory:') extends SqliteDriver {
             public int $reads = 0;
 
             public function query(string $sql, array $params = []): \PDOStatement
@@ -1077,7 +1077,7 @@ class EdgeCaseTest extends TestCase
         $this->assertSame(2, $db->table('notes')->count());
 
         // A driver that sends a statement ahead, and a listener that mirrors the insert when that one is told
-        $driver = new class () extends SqliteDriver {
+        $driver = new class (':memory:') extends SqliteDriver {
             public int $reads = 0;
 
             public function query(string $sql, array $params = []): \PDOStatement
@@ -1169,7 +1169,7 @@ class EdgeCaseTest extends TestCase
      */
     public function testAPdoExceptionWithoutErrorInfoIsStillAFailedQuery(): void
     {
-        $driver = new class () extends SqliteDriver {
+        $driver = new class (':memory:') extends SqliteDriver {
             public function __construct()
             {
                 $this->pdo = new class ('sqlite::memory:') extends \PDO {
@@ -1411,7 +1411,7 @@ class EdgeCaseTest extends TestCase
 
     public function testADriverThatBindsStreamsDecidesWhatItLetsThrough(): void
     {
-        $driver = new class () extends SqliteDriver {
+        $driver = new class (':memory:') extends SqliteDriver {
             protected function unbindableParameter(array $params): ?string
             {
                 return parent::unbindableParameter(array_filter($params, static fn (mixed $value): bool => !is_resource($value)));

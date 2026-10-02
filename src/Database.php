@@ -58,12 +58,15 @@ class Database
      * without a path cannot end in a database that forgets everything.
      *
      * @param string $path Path to the SQLite file, or ':memory:' for an in-memory database
+     * @param array<int, mixed> $options Additional PDO options (they replace the defaults), as the
+     *                                   'options' of mysql() and postgres(): PDO::ATTR_TIMEOUT,
+     *                                   Pdo\Sqlite::ATTR_OPEN_FLAGS, ...
      *
      * @throws Exception\ConnectionException When the path is an empty string or the connection fails
      */
-    public static function sqlite(string $path): SqliteDriver
+    public static function sqlite(string $path, array $options = []): SqliteDriver
     {
-        return new SqliteDriver($path);
+        return new SqliteDriver($path, $options);
     }
 
     /**
@@ -71,7 +74,8 @@ class Database
      *
      * 'mysql' (also 'mariadb'), 'pgsql' (also 'postgres', 'postgresql') and 'sqlite' delegate to
      * mysql(), postgres() and sqlite() with the same config keys; the SQLite path comes from
-     * 'path', else 'database' - one of them is required (':memory:' for an in-memory database).
+     * 'path', else 'database' - one of them is required (':memory:' for an in-memory database) -,
+     * its PDO options from 'options'.
      * One config array for every environment:
      * the driver decides which of the keys are used. Nothing is read from the environment: use
      * fromEnv() for that.
@@ -90,7 +94,7 @@ class Database
             'sqlite' => self::sqlite($config['path'] ?? $config['database'] ?? throw new ConnectionException(
                 message: 'Database connection failed',
                 debugMessage: 'Missing required config: path (":memory:" for an in-memory database, or the path of a file)'
-            )),
+            ), $config['options'] ?? []),
             default => throw new ConnectionException(
                 message: 'Database connection failed',
                 debugMessage: $driver === ''
@@ -149,7 +153,7 @@ class Database
                 );
             }
 
-            return self::sqlite($path);
+            return self::sqlite($path, $config['options'] ?? []);
         }
 
         return self::connect($config);
