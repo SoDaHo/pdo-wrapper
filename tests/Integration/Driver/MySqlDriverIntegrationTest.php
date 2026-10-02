@@ -184,6 +184,567 @@ class MySqlDriverIntegrationTest extends TestCase
     }
 
     /**
+     * With completion_type=CHAIN the server opens the next transaction with the COMMIT itself.
+     * commit() reports that instead of leaving the caller in a transaction nobody will commit:
+     * committed, commit listeners skipped, CommitHookException with connectionInTransaction.
+     */
+    public function testACommitThatChainsANewTransactionIsReported(): void
+    {
+        $db = $this->driver;
+        $db->execute('DROP TABLE IF EXISTS chain_rows');
+        $db->execute('CREATE TABLE chain_rows (id INT PRIMARY KEY) ENGINE=InnoDB');
+        $listenerRan = false;
+        $db->on('transaction.commit', static function () use (&$listenerRan): void {
+            $listenerRan = true;
+        });
+        $ends = [];
+        $db->on('transaction.end', static function (array $data) use (&$ends): void {
+            $ends[] = $data['outcome'];
+        });
+
+        try {
+            $db->execute('SET SESSION completion_type = CHAIN');
+            try {
+                $db->transaction(static fn (DatabaseInterface $db): int|string => $db->insert('chain_rows', ['id' => 1]));
+                $this->fail('Expected CommitHookException');
+            } catch (CommitHookException $e) {
+                $this->assertTrue($e->connectionInTransaction);
+                $this->assertCount(2, $e->failures);
+                $this->assertInstanceOf(TransactionException::class, $e->failures[0]);
+                $this->assertSame('Connection is in a new transaction', $e->failures[0]->getMessage());
+                $this->assertStringContainsString('right after COMMIT', (string) $e->failures[0]->getDebugMessage());
+                $this->assertStringContainsString('completion_type=CHAIN', (string) $e->failures[0]->getDebugMessage());
+                $this->assertSame('listener skipped: connection left in transaction', $e->failures[1]->getMessage());
+                $this->assertSame($e->failures[0], $e->failures[1]->getPrevious());
+            }
+
+            $this->assertFalse($listenerRan);
+            $this->assertSame(['committed'], $ends, 'the transaction itself is committed');
+            $this->assertTrue($db->inTransaction(), 'the chained transaction is open');
+            $observer = new MySqlDriver(self::getConfig());
+            $this->assertSame(1, $observer->table('chain_rows')->count(), 'committed: another connection sees the row');
+        } finally {
+            $db->execute('SET SESSION completion_type = NO_CHAIN');
+            if ($db->inTransaction()) {
+                $db->rollback();
+            }
+            $db->execute('DROP TABLE IF EXISTS chain_rows');
+        }
+    }
+
+    /**
+     * The same after a ROLLBACK: rolled back, listeners and transaction.end run, then the caller
+     * learns about the chained transaction. On the automatic rollback of transaction() the
+     * callback's exception still reaches the caller unchanged.
+     */
+    public function testARollbackThatChainsANewTransactionIsReported(): void
+    {
+        $db = $this->driver;
+        $events = [];
+        $db->on('transaction.rollback', static function () use (&$events): void {
+            $events[] = 'rollback';
+        });
+        $db->on('transaction.end', static function (array $data) use (&$events): void {
+            $events[] = $data['outcome'];
+        });
+        $reported = [];
+        $db->on('error', static function (array $data) use (&$reported): void {
+            $reported[] = $data;
+        });
+
+        try {
+            $db->execute('SET SESSION completion_type = CHAIN');
+
+            $db->beginTransaction();
+            try {
+                $db->rollback();
+                $this->fail('Expected TransactionException');
+            } catch (TransactionException $e) {
+                $this->assertSame('Connection is in a new transaction', $e->getMessage());
+                $this->assertStringContainsString('right after ROLLBACK', (string) $e->getDebugMessage());
+            }
+            $this->assertSame(['rollback', 'rolled_back'], $events);
+            $this->assertSame([], $reported, 'thrown to the caller: the error hook is not told as well');
+            $this->assertTrue($db->inTransaction(), 'the chained transaction is open');
+
+            $db->getPdo()->exec('SET SESSION completion_type = NO_CHAIN');
+            $db->getPdo()->rollBack();
+            $db->execute('SET SESSION completion_type = CHAIN');
+            $events = [];
+
+            $cause = new \RuntimeException('callback failed');
+            try {
+                $db->transaction(static function () use ($cause): void {
+                    throw $cause;
+                });
+                $this->fail('Expected the callback exception');
+            } catch (\RuntimeException $e) {
+                $this->assertSame($cause, $e);
+            }
+            $this->assertSame(['rollback', 'rolled_back'], $events);
+            $this->assertCount(1, $reported, 'the error hook is where the chained transaction is told');
+            $this->assertSame(['sql', 'params', 'error', 'code', 'outcome', 'exception'], array_keys($reported[0]));
+            $this->assertSame('Connection is in a new transaction', $reported[0]['error']);
+            $this->assertSame('rolled_back', $reported[0]['outcome']);
+            $this->assertInstanceOf(TransactionException::class, $reported[0]['exception']);
+        } finally {
+            $db->getPdo()->exec('SET SESSION completion_type = NO_CHAIN');
+            if ($db->getPdo()->inTransaction()) {
+                $db->getPdo()->rollBack();
+            }
+        }
+    }
+
+    /**
+     * A rollback listener's own exception keeps its precedence over the chained transaction.
+     */
+    public function testARollbackListenerExceptionWinsOverTheChainedTransaction(): void
+    {
+        $db = $this->driver;
+        $listenerFailure = new \RuntimeException('listener failed');
+        $db->on('transaction.rollback', static function () use ($listenerFailure): void {
+            throw $listenerFailure;
+        });
+        $reported = [];
+        $db->on('error', static function (array $data) use (&$reported): void {
+            $reported[] = $data['error'];
+        });
+
+        try {
+            $db->execute('SET SESSION completion_type = CHAIN');
+            $db->beginTransaction();
+            try {
+                $db->rollback();
+                $this->fail('Expected the listener exception');
+            } catch (\RuntimeException $e) {
+                $this->assertSame($listenerFailure, $e);
+            }
+            $this->assertSame(['Connection is in a new transaction'], $reported, 'not thrown, so the error hook is told');
+        } finally {
+            $db->getPdo()->exec('SET SESSION completion_type = NO_CHAIN');
+            if ($db->getPdo()->inTransaction()) {
+                $db->getPdo()->rollBack();
+            }
+        }
+    }
+
+    /**
+     * Multi-statements are off by default: a second statement smuggled into one string is a syntax
+     * error, on raw PDO and with emulated prepares too. The option brings them back.
+     */
+    public function testMultiStatementsAreOffByDefault(): void
+    {
+        $two = 'SELECT 1; SELECT 2';
+
+        try {
+            $this->driver->getPdo()->exec($two);
+            $this->fail('Expected a syntax error on raw PDO');
+        } catch (\PDOException $e) {
+            $this->assertSame(1064, $e->errorInfo[1] ?? null);
+        }
+
+        $emulated = new MySqlDriver(self::getConfig() + ['options' => [PDO::ATTR_EMULATE_PREPARES => true]]);
+        try {
+            $emulated->query($two);
+            $this->fail('Expected a syntax error with emulated prepares');
+        } catch (QueryException $e) {
+            $this->assertSame(1064, $e->getPrevious()?->errorInfo[1] ?? null);
+        }
+
+        $attribute = constant(PHP_VERSION_ID >= 80400 ? 'Pdo\\Mysql::ATTR_MULTI_STATEMENTS' : 'PDO::MYSQL_ATTR_MULTI_STATEMENTS');
+        $optedIn = new MySqlDriver(self::getConfig() + ['options' => [$attribute => true]]);
+        $this->assertSame(0, $optedIn->getPdo()->exec($two));
+    }
+
+    /**
+     * A deadlock rolls the whole transaction back on the server, but PDO keeps reporting it. A
+     * callback that swallows the error and returns would get a COMMIT that succeeds and commits
+     * nothing. commit() refuses; PDO still reports the transaction, so the rollback goes through
+     * and 'transaction.end' reports 'rolled_back'.
+     */
+    public function testASwallowedDeadlockMakesTheCommitFail(): void
+    {
+        [$e, $listenerRuns, $measured] = $this->runSwallowedDeadlock();
+
+        $this->assertSame(1213, $measured['swallowed']?->errorInfo[1] ?? null, 'ER_LOCK_DEADLOCK: this connection was the victim');
+        $this->assertSame('Failed to commit transaction', $e->getMessage());
+        $this->assertSame($measured['swallowed'], $e->getPrevious());
+        $this->assertStringContainsString('deadlock (error 1213', (string) $e->getDebugMessage());
+        $this->assertSame([['outcome' => 'rolled_back', 'error' => $e]], $measured['ends']);
+        $this->assertSame(1, $listenerRuns);
+        $this->assertFalse($measured['inTransactionAfterwards']);
+        $this->assertSame('Max', $measured['user1Name'], 'the update before the deadlock is gone, and nobody was told it was committed');
+        $this->assertSame('Anna', $measured['user2Name']);
+    }
+
+    /**
+     * After the deadlock the library sends nothing more on that connection until the rollback: a
+     * statement the callback runs next would run outside the transaction and be committed on its
+     * own. It throws instead, naming the deadlock, and no hook fires for it.
+     */
+    public function testAfterASwallowedDeadlockNoFurtherStatementIsSent(): void
+    {
+        $blocked = [];
+        $hooks = [];
+        [$e, $listenerRuns, $measured] = $this->runSwallowedDeadlock(
+            afterwards: function (MySqlDriver $db) use (&$blocked, &$hooks): void {
+                $db->on('query', static function (array $data) use (&$hooks): void {
+                    $hooks[] = $data['sql'];
+                });
+                $db->on('error', static function (array $data) use (&$hooks): void {
+                    $hooks[] = $data['sql'];
+                });
+                foreach (['UPDATE lock_users SET name = ? WHERE id = 2', 'SELECT name FROM lock_users WHERE id = ?'] as $sql) {
+                    try {
+                        $db->query($sql, $sql[0] === 'U' ? ['after the deadlock'] : [2]);
+                        $this->fail('Expected QueryException: nothing is sent after the deadlock');
+                    } catch (QueryException $e) {
+                        $blocked[] = $e;
+                    }
+                }
+                $this->assertTrue($db->inTransaction(), 'PDO still reports the transaction the server threw away');
+            }
+        );
+
+        $this->assertCount(2, $blocked);
+        foreach ($blocked as $refused) {
+            $this->assertSame('Query failed', $refused->getMessage());
+            $this->assertSame($measured['swallowed'], $refused->getPrevious(), 'the deadlock, for retry logic that looks at the cause');
+            $this->assertStringContainsString('Not sent: the server rolled the open transaction back', (string) $refused->getDebugMessage());
+        }
+        $this->assertSame([], $hooks, 'not sent: neither query nor error hook');
+        $this->assertSame('Anna', $measured['user2Name'], 'nothing was written outside the transaction');
+        $this->assertSame([['outcome' => 'rolled_back', 'error' => $e]], $measured['ends']);
+        $this->assertSame(1, $listenerRuns);
+        $this->assertStringContainsString('deadlock (error 1213', (string) $e->getDebugMessage());
+    }
+
+    /**
+     * Raw PDO is not held back: what the callback runs there after the swallowed deadlock is
+     * committed on its own, and PDO then knows that the transaction is gone. The commit is refused
+     * all the same, and the end says 'lost' (may be committed), not 'rolled_back'.
+     */
+    public function testRawStatementsAfterASwallowedDeadlockAreCommittedOnTheirOwn(): void
+    {
+        [$e, $listenerRuns, $measured] = $this->runSwallowedDeadlock(
+            afterwards: static fn (MySqlDriver $db): int|false => $db->getPdo()->exec("UPDATE lock_users SET name = 'after the deadlock' WHERE id = 2")
+        );
+
+        $this->assertSame(1213, $e->getPrevious()?->errorInfo[1] ?? null);
+        $this->assertSame([['outcome' => 'lost', 'error' => $e]], $measured['ends']);
+        $this->assertSame(0, $listenerRuns);
+        $this->assertSame('Max', $measured['user1Name'], 'before the deadlock: rolled back by the server');
+        $this->assertSame('after the deadlock', $measured['user2Name'], 'after the deadlock, on raw PDO: committed on its own');
+    }
+
+    /**
+     * A statement on raw PDO tells PDO that the transaction is gone. The library still accepts
+     * nothing but the end of the transaction it began: no statement, no new transaction (which
+     * updateMultiple() would open). The refused commit then tells the end as 'lost'.
+     */
+    public function testRawPdoRevealingTheEndDoesNotLiftTheBlock(): void
+    {
+        [$e, , $measured] = $this->runSwallowedDeadlock(
+            afterwards: function (MySqlDriver $db): void {
+                $db->getPdo()->exec('DO 1');
+                $this->assertFalse($db->inTransaction());
+                try {
+                    $db->execute('UPDATE lock_users SET name = ? WHERE id = 2', ['in autocommit']);
+                    $this->fail('Expected QueryException: still nothing is sent');
+                } catch (QueryException $e) {
+                    $this->assertStringContainsString('Not sent', (string) $e->getDebugMessage());
+                }
+                try {
+                    $db->updateMultiple('lock_users', [['id' => 2, 'name' => 'in a replacement transaction']]);
+                    $this->fail('Expected TransactionException: no new transaction over the dead one');
+                } catch (TransactionException $e) {
+                    $this->assertSame('Failed to begin transaction', $e->getMessage());
+                    $this->assertSame(1213, $e->getPrevious()?->errorInfo[1] ?? null);
+                }
+            }
+        );
+
+        $this->assertSame('Failed to commit transaction', $e->getMessage());
+        $this->assertStringContainsString('deadlock (error 1213', (string) $e->getDebugMessage());
+        $this->assertSame([['outcome' => 'lost', 'error' => $e]], $measured['ends']);
+        $this->assertSame('Anna', $measured['user2Name'], 'nothing was written after the deadlock');
+    }
+
+    /**
+     * rollback() is the way out also when PDO no longer reports the dead transaction: there is
+     * nothing to send, the end is told as 'lost' with the deadlock, and the next transaction begins.
+     */
+    public function testRollbackEndsADeadTransactionThatPdoNoLongerReports(): void
+    {
+        [$e, $listenerRuns, $measured] = $this->runSwallowedDeadlock(
+            afterwards: static function (MySqlDriver $db): void {
+                $db->getPdo()->exec('DO 1');
+                $db->rollback();
+            },
+            manual: true
+        );
+
+        $this->assertStringContainsString('no active transaction', strtolower((string) $e->getDebugMessage()), 'the commit after the rollback: nothing is open');
+        $this->assertSame(0, $listenerRuns, 'no ROLLBACK was sent, no rollback listener ran');
+        $this->assertSame(['lost', 'committed'], array_column($measured['ends'], 'outcome'));
+        $this->assertSame($measured['swallowed'], $measured['ends'][0]['error']);
+    }
+
+    /**
+     * After a deadlock the transaction is to be ended with rollback(). Ended and begun again on
+     * raw PDO, the old deadlock still holds everything back - statements and commit - until
+     * rollback() is called: the library cannot tell the new raw transaction from the dead one.
+     */
+    public function testAfterADeadlockOnlyRollbackLiftsTheBlock(): void
+    {
+        [$e, $listenerRuns, $measured] = $this->runSwallowedDeadlock(
+            afterwards: function (MySqlDriver $db): void {
+                $db->getPdo()->rollBack();
+                $db->getPdo()->beginTransaction();
+                try {
+                    $db->execute('UPDATE lock_users SET name = ? WHERE id = 2', ['in the raw transaction']);
+                    $this->fail('Expected QueryException: still refused for the old deadlock');
+                } catch (QueryException $e) {
+                    $this->assertStringContainsString('Call rollback()', (string) $e->getDebugMessage());
+                }
+                $db->rollback();
+                $this->assertSame(1, $db->execute('UPDATE lock_users SET name = ? WHERE id = 2', ['after rollback()']));
+            }
+        );
+
+        $this->assertStringContainsString('no active transaction', strtolower((string) $e->getDebugMessage()), 'the callback ended the transaction itself');
+        $this->assertSame([['outcome' => 'rolled_back', 'error' => null]], $measured['ends'], "the callback's own rollback() told the end");
+        $this->assertSame(1, $listenerRuns);
+        $this->assertSame('after rollback()', $measured['user2Name']);
+    }
+
+    /**
+     * A refused commit that told 'lost' has ended the transaction: a transaction an end listener
+     * begins in response is the listener's own and is neither rolled back nor told about here.
+     */
+    public function testATransactionAnEndListenerBeginsAfterARefusalIsLeftAlone(): void
+    {
+        [$e, $listenerRuns, $measured] = $this->runSwallowedDeadlock(
+            afterwards: static function (MySqlDriver $db): void {
+                $db->getPdo()->exec("UPDATE lock_users SET name = 'after the deadlock' WHERE id = 2");
+                $db->on('transaction.end', static function (array $data) use ($db): void {
+                    if ($data['outcome'] === 'lost') {
+                        $db->beginTransaction();
+                    }
+                });
+            }
+        );
+
+        $this->assertSame([['outcome' => 'lost', 'error' => $e]], $measured['ends']);
+        $this->assertSame(0, $listenerRuns, 'no rollback was sent for the listener\'s transaction');
+        $this->assertTrue($measured['inTransactionAfterwards'], "the listener's transaction is still open");
+    }
+
+    /**
+     * The same when the end listener first runs a whole transaction of its own (its commit must
+     * not make the library forget that the refusal already told the end) and then leaves another open.
+     */
+    public function testAnEndListenerMayCommitATransactionOfItsOwnAfterARefusal(): void
+    {
+        [$e, $listenerRuns, $measured] = $this->runSwallowedDeadlock(
+            afterwards: static function (MySqlDriver $db): void {
+                $db->getPdo()->exec('DO 1');
+                $db->on('transaction.end', static function (array $data) use ($db): void {
+                    if ($data['outcome'] === 'lost') {
+                        $db->updateMultiple('lock_users', [['id' => 3, 'name' => 'by the end listener']]);
+                        $db->beginTransaction();
+                    }
+                });
+            }
+        );
+
+        $this->assertSame(['lost', 'committed'], array_column($measured['ends'], 'outcome'), "the refused transaction, then the listener's own");
+        $this->assertSame($e, $measured['ends'][0]['error']);
+        $this->assertSame(0, $listenerRuns, 'no rollback was sent for the transaction the listener left open');
+        $this->assertTrue($measured['inTransactionAfterwards']);
+    }
+
+    /**
+     * Nothing replaces a remembered deadlock: also a failure reported outside of query() (a
+     * driver's own statement) leaves the block in place.
+     */
+    public function testNothingReplacesARememberedDeadlock(): void
+    {
+        $db = new class (self::getConfig()) extends MySqlDriver {
+            public function note(int $driverCode, string $state): void
+            {
+                $e = new \PDOException('synthetic failure', 0);
+                $e->errorInfo = [$state, $driverCode, 'synthetic failure'];
+                $this->noteStatementFailure($e);
+            }
+        };
+
+        $db->beginTransaction();
+        $db->note(1213, '40001');
+        $db->note(1062, '23000');
+        try {
+            $db->query('SELECT 1');
+            $this->fail('Expected QueryException: the deadlock is still remembered');
+        } catch (QueryException $e) {
+            $this->assertSame(1213, $e->getPrevious()?->errorInfo[1] ?? null);
+        }
+        $db->rollback();
+        $this->assertSame('1', (string) $db->query('SELECT 1')->fetchColumn());
+    }
+
+    /**
+     * With autocommit switched off, a raw statement after the deadlock silently opens a new
+     * transaction - and PDO reports "in a transaction" again. The commit is refused all the same:
+     * that transaction holds only what came after the deadlock. The rollback undoes it.
+     */
+    public function testASwallowedDeadlockIsRefusedWithAutocommitOffToo(): void
+    {
+        [$e, $listenerRuns, $measured] = $this->runSwallowedDeadlock(
+            afterwards: function (MySqlDriver $db): void {
+                $db->getPdo()->exec("UPDATE lock_users SET name = 'after the deadlock' WHERE id = 2");
+                $this->assertTrue($db->inTransaction(), 'the raw statement opened a new transaction');
+                try {
+                    $db->execute('UPDATE lock_users SET name = ? WHERE id = 3', ['through the library']);
+                    $this->fail('Expected QueryException: nothing is sent after the deadlock');
+                } catch (QueryException $e) {
+                    $this->assertStringContainsString('Not sent', (string) $e->getDebugMessage());
+                }
+            },
+            autocommitOff: true
+        );
+
+        $this->assertSame(1213, $e->getPrevious()?->errorInfo[1] ?? null);
+        $this->assertStringContainsString('deadlock (error 1213', (string) $e->getDebugMessage());
+        $this->assertSame([['outcome' => 'rolled_back', 'error' => $e]], $measured['ends']);
+        $this->assertSame(1, $listenerRuns);
+        $this->assertSame('Max', $measured['user1Name']);
+        $this->assertSame('Anna', $measured['user2Name'], 'nothing of the half transaction is committed');
+    }
+
+    /**
+     * The manual pattern: after the refused commit PDO reports no transaction any more (a raw
+     * statement told it), so no rollback() could end it. The refusal itself tells the end as 'lost',
+     * and the next transaction gets its own end.
+     */
+    public function testARefusedManualCommitOfATransactionThatIsGoneTellsItsEnd(): void
+    {
+        [$e, $listenerRuns, $measured] = $this->runSwallowedDeadlock(
+            afterwards: static fn (MySqlDriver $db): int|false => $db->getPdo()->exec("UPDATE lock_users SET name = 'after the deadlock' WHERE id = 2"),
+            manual: true
+        );
+
+        $this->assertSame('Failed to commit transaction', $e->getMessage());
+        $this->assertFalse($measured['inTransactionAfterwards']);
+        $this->assertSame(0, $listenerRuns);
+        $this->assertSame(['lost', 'committed'], array_column($measured['ends'], 'outcome'), 'the refused one, then the next transaction');
+        $this->assertSame($e, $measured['ends'][0]['error']);
+    }
+
+    /**
+     * For a failure other than a deadlock, commit() asks the server whether the transaction still
+     * exists. The question can fail itself: the connection is gone. A callback that swallowed the
+     * failed statement gets no commit then either; nothing can be confirmed, the end is 'lost'.
+     */
+    public function testCommitAfterAFailedStatementOnALostConnectionIsRefused(): void
+    {
+        foreach ([PDO::ERRMODE_EXCEPTION, PDO::ERRMODE_SILENT] as $mode) {
+            $db = new MySqlDriver(self::getConfig() + ['options' => [PDO::ATTR_ERRMODE => $mode]]);
+            $killer = new MySqlDriver(self::getConfig());
+            $connectionId = (int) $db->query('SELECT CONNECTION_ID()')->fetchColumn();
+            $ends = [];
+            $db->on('transaction.end', static function (array $data) use (&$ends): void {
+                $ends[] = $data;
+            });
+
+            try {
+                $db->transaction(function (MySqlDriver $db) use ($killer, $connectionId): void {
+                    $killer->execute('KILL ' . $connectionId);
+                    $gone = false;
+                    for ($i = 0; $i < 100 && !$gone; $i++) {
+                        $gone = (int) $killer->query('SELECT COUNT(*) FROM information_schema.processlist WHERE id = ?', [$connectionId])->fetchColumn() === 0;
+                        if (!$gone) {
+                            usleep(50_000);
+                        }
+                    }
+                    $this->assertTrue($gone, 'the killed connection did not disappear within 5 s');
+                    try {
+                        $db->execute('DO 1');
+                        $this->fail('Expected QueryException: the connection is gone');
+                    } catch (QueryException) {
+                        // swallowed: the callback returns normally
+                    }
+                });
+                $this->fail('Expected TransactionException');
+            } catch (TransactionException $e) {
+                $this->assertSame('Failed to commit transaction', $e->getMessage());
+                $this->assertStringContainsString('the server could not be asked whether it still exists', (string) $e->getDebugMessage());
+                $this->assertSame([['outcome' => 'lost', 'error' => $e]], $ends);
+            }
+        }
+    }
+
+    /**
+     * @param (Closure(MySqlDriver): mixed)|null $afterwards What the callback does after it swallowed the deadlock
+     * @param bool $manual beginTransaction()/commit() instead of transaction(), followed by one more (empty) transaction
+     *
+     * @return array{\Throwable, int, array<string, mixed>}
+     */
+    private function runSwallowedDeadlock(?Closure $afterwards = null, bool $autocommitOff = false, bool $manual = false): array
+    {
+        [$e, $listenerRuns, $measured, $childOutput] = $this->runLockScenario(
+            <<<'PHP'
+                $pdo->beginTransaction();
+                $pdo->exec('UPDATE lock_attempts SET attempts = attempts + 1 WHERE user_id IN (1, 2, 3, 4)'); // the bigger transaction survives
+                touch($marker);
+                $pdo->query('SELECT id FROM lock_users WHERE id = 1 FOR UPDATE')->fetchAll(); // waits for the test's lock
+                $pdo->commit();
+                echo 'committed';
+                PHP,
+            function (MySqlDriver $db, Closure $startChild) use ($afterwards, $autocommitOff, $manual): array {
+                $measured = ['ends' => [], 'swallowed' => null];
+                $db->on('transaction.end', static function (array $data) use (&$measured): void {
+                    $measured['ends'][] = $data;
+                });
+                if ($autocommitOff) {
+                    $db->execute('SET autocommit = 0');
+                }
+                $work = static function (MySqlDriver $db) use ($startChild, &$measured, $afterwards): void {
+                    $db->execute('UPDATE lock_users SET name = ? WHERE id = 1', ['renamed']);
+                    $startChild();
+                    try {
+                        $db->execute('UPDATE lock_attempts SET attempts = attempts + 1 WHERE user_id = 1');
+                    } catch (QueryException $e) {
+                        $measured['swallowed'] = $e->getPrevious(); // swallowed: the callback goes on
+                    }
+                    if ($afterwards !== null) {
+                        $afterwards($db);
+                    }
+                };
+                try {
+                    if ($manual) {
+                        $db->beginTransaction();
+                        $work($db);
+                        $db->commit();
+                    } else {
+                        $db->transaction($work);
+                    }
+                    $this->fail('Expected TransactionException: nothing was committed');
+                } catch (TransactionException $e) {
+                    $measured['inTransactionAfterwards'] = $db->inTransaction();
+                    if ($manual) {
+                        $db->transaction(static fn (): null => null);
+                    }
+
+                    return [$e, $measured];
+                }
+            }
+        );
+        $this->assertSame('committed', $childOutput);
+
+        return [$e, $listenerRuns, $measured];
+    }
+
+    /**
      * A deadlock makes InnoDB roll back the whole transaction on the server (error 1213). The client
      * still sees inTransaction() as true (mysqlnd keeps the status of the last OK packet), so
      * transaction() sends its ROLLBACK, which succeeds, and the 'transaction.rollback' listeners run.
@@ -354,9 +915,9 @@ class MySqlDriverIntegrationTest extends TestCase
      * $pdo, $marker and $awaitRelease() are available there - and returns once the child touched
      * $marker ("I hold my locks"); the child is released after the scenario and ended with a deadline.
      *
-     * @param Closure(MySqlDriver, Closure): array{QueryException, array<string, mixed>} $scenario
+     * @param Closure(MySqlDriver, Closure): array{\Throwable, array<string, mixed>} $scenario
      *
-     * @return array{QueryException, int, array<string, mixed>, string} exception, rollback listener runs, measurements, child output
+     * @return array{\Throwable, int, array<string, mixed>, string} exception, rollback listener runs, measurements, child output
      */
     private function runLockScenario(?string $childBody, Closure $scenario): array
     {
@@ -410,6 +971,7 @@ class MySqlDriverIntegrationTest extends TestCase
             [$e, $measured] = $scenario($db, $startChild);
             touch($release);
             $measured['user1Name'] = (string) ($this->driver->table('lock_users')->where('id', 1)->first()['name'] ?? '');
+            $measured['user2Name'] = (string) ($this->driver->table('lock_users')->where('id', 2)->first()['name'] ?? '');
 
             if ($child !== null) {
                 $childOutput = $this->collectChildOutput($child, $pipes, 10.0);

@@ -49,6 +49,76 @@ class MySqlDriverTest extends TestCase
         }
     }
 
+    /**
+     * The DSN is built with %d: "abc" would become port 0 and "3306;host=evil" 3306 without a word.
+     */
+    public function testRejectsAPortThatIsNotAWholeNumberInRange(): void
+    {
+        $base = ['host' => '127.0.0.1', 'database' => 'app', 'username' => 'root', 'password' => 'x'];
+
+        foreach (['abc', '3306;host=evil', '', 0, -1, 65536, 3306.5, true] as $port) {
+            try {
+                new MySqlDriver(['port' => $port] + $base);
+                $this->fail('Expected ConnectionException for port ' . var_export($port, true));
+            } catch (ConnectionException $e) {
+                $this->assertSame('Invalid config value "port": expected a whole number between 1 and 65535', $e->getDebugMessage());
+            }
+        }
+    }
+
+    /**
+     * DB_PORT goes through the same check: "abc" no longer falls back to the default silently, and
+     * "1e3" or "1.9" are no longer cut down to a number.
+     */
+    public function testAnInvalidPortFromTheEnvironmentIsRejected(): void
+    {
+        $_ENV['DB_HOST'] = '127.0.0.1';
+        $_ENV['DB_DATABASE'] = 'test';
+        $_ENV['DB_USERNAME'] = 'root';
+
+        foreach (['abc', '1e3', '1.9', '70000', '65536', '0', '-1', '33 06'] as $port) {
+            $_ENV['DB_PORT'] = $port;
+            try {
+                Database::mysql();
+                $this->fail("Expected ConnectionException for DB_PORT={$port}");
+            } catch (ConnectionException $e) {
+                $this->assertSame('Invalid config value "port": expected a whole number between 1 and 65535', $e->getDebugMessage());
+            }
+        }
+
+        // An empty value means "not set": the default port. Surrounding whitespace (a trailing CR
+        // from an .env file) is not part of the value.
+        foreach (['' => 3306, '   ' => 3306, " 59998\r\n" => 59998] as $value => $expected) {
+            $_ENV['DB_PORT'] = $value;
+            try {
+                Database::mysql(['host' => '127.0.0.1', 'password' => 'wrong-on-purpose']);
+                $this->fail('Expected ConnectionException: wrong password or nothing listening');
+            } catch (ConnectionException $e) {
+                $this->assertStringContainsString("MySQL connection to 127.0.0.1:{$expected} failed", (string) $e->getDebugMessage());
+            }
+        }
+
+        // A port given in the config is judged the same way
+        foreach ([0, '0', '', ' 3306'] as $port) {
+            try {
+                Database::mysql(['host' => '127.0.0.1', 'port' => $port]);
+                $this->fail('Expected ConnectionException for port ' . var_export($port, true));
+            } catch (ConnectionException $e) {
+                $this->assertSame('Invalid config value "port": expected a whole number between 1 and 65535', $e->getDebugMessage());
+            }
+        }
+    }
+
+    public function testAcceptsANumericStringAsPort(): void
+    {
+        try {
+            new MySqlDriver(['host' => '127.0.0.1', 'port' => '59999', 'database' => 'app', 'username' => 'root', 'password' => 'x']);
+            $this->fail('Expected ConnectionException: nothing listens there');
+        } catch (ConnectionException $e) {
+            $this->assertStringContainsString('MySQL connection to 127.0.0.1:59999 failed', (string) $e->getDebugMessage());
+        }
+    }
+
     public function testThrowsExceptionWhenHostMissing(): void
     {
         $this->expectException(ConnectionException::class);

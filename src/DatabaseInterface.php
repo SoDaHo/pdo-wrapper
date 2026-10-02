@@ -21,7 +21,7 @@ interface DatabaseInterface
      * @param string $sql SQL query with placeholders
      * @param array<int|string, mixed> $params Parameters to bind
      *
-     * @throws Exception\QueryException When the statement fails (also when PDO reports that without an exception), or when a 'query' listener threw a PDOException ('Query hook failed': the statement did run)
+     * @throws Exception\QueryException When the statement fails (also when PDO reports that without an exception), when a parameter is not null, a scalar or a Stringable object or is a Query\RawExpression (the statement is not sent), when the server has thrown the open transaction away (after a MySQL/MariaDB deadlock nothing is sent until that transaction is ended: by rollback(), by a refused commit() that tells 'lost', and for a transaction begun on raw PDO also once PDO reports none), or when a 'query' listener threw a PDOException ('Query hook failed': the statement did run)
      */
     public function query(string $sql, array $params = []): PDOStatement;
 
@@ -79,9 +79,12 @@ interface DatabaseInterface
      *
      * After a throwing 'transaction.begin' listener a rollback of the new transaction is attempted
      * directly (best effort, without 'transaction.rollback' listeners; if it fails, the transaction
-     * may still be open) and the listener's exception is re-thrown.
+     * may still be open) and the listener's exception is re-thrown. A transaction begun through
+     * this library that PDO no longer reports (an implicit commit by a DDL statement, ended by the
+     * server or on raw PDO) is told as 'transaction.end' 'lost' first - except after a MySQL/MariaDB
+     * deadlock: then beginTransaction() refuses, and rollback() tells that end.
      *
-     * @throws Exception\TransactionException When the transaction cannot be started (including PDO reporting the failure without throwing), or a listener threw a PDOException
+     * @throws Exception\TransactionException When the transaction cannot be started (including PDO reporting the failure without throwing), when a transaction begun through this library was rolled back by the server (a MySQL/MariaDB deadlock) and has not been ended with rollback() yet, or a listener threw a PDOException
      * @throws \Throwable Re-throws any other exception of a 'transaction.begin' listener
      */
     public function beginTransaction(): void;
@@ -98,10 +101,22 @@ interface DatabaseInterface
      * listeners began through the library and left open are dispatched, then 'transaction.end' fires
      * with outcome 'committed' (also after skipped commit listeners; not when a 'lost' was already
      * reported for this transaction); the end listeners' failures follow the commit listeners' in the
-     * same exception, in that order. A failed commit fires no 'transaction.end'.
+     * same exception, in that order. A failed commit fires no 'transaction.end' (one exception: a
+     * refused commit of a transaction PDO no longer reports, see below).
      *
-     * @throws Exception\TransactionException When the commit itself failed; it may or may not have taken effect
-     * @throws Exception\CommitHookException When committed, but a transaction.commit or transaction.end listener failed or the connection state after a commit listener could not be verified
+     * The commit is refused (TransactionException, no COMMIT sent) when a statement failed inside
+     * the transaction in a way that ended it on the server: any statement error on PostgreSQL that
+     * no savepoint caught, a deadlock on MySQL/MariaDB (or, with autocommit on, a lock wait
+     * timeout under innodb_rollback_on_timeout). The server would answer that COMMIT with success. While PDO
+     * still reports the transaction, nothing fires and it stays refused until rollback(); when
+     * PDO reports none any more (MySQL/MariaDB: a statement on raw PDO, or the question to the
+     * server before the commit, told it), nothing is left to roll back and the refusal tells
+     * 'transaction.end' 'lost'. When the connection is in a transaction
+     * right after the COMMIT (MySQL/MariaDB completion_type=CHAIN, not supported), the commit
+     * listeners are skipped and a CommitHookException reports it. See Traits\HasHooks.
+     *
+     * @throws Exception\TransactionException When the commit itself failed (it may or may not have taken effect), or was refused because the server had already ended the transaction (nothing of that transaction is committed; statements run on raw PDO after its end are)
+     * @throws Exception\CommitHookException When committed, but a transaction.commit or transaction.end listener failed, the connection state after a commit listener could not be verified, or the connection is in a new, chained transaction
      */
     public function commit(): void;
 
@@ -112,9 +127,15 @@ interface DatabaseInterface
      * with outcome 'rolled_back' (error null; not when a 'lost' was already reported for this
      * transaction). A rollback listener's exception takes precedence and passes through unchanged
      * (a PDOException as TransactionException); the end listeners' failures then reach only the
-     * 'error' hook. A failed rollback fires nothing.
+     * 'error' hook. A failed rollback fires nothing. After a MySQL/MariaDB deadlock rollback() also
+     * ends a transaction begun through this library that PDO no longer reports (a statement on raw
+     * PDO told it): nothing is sent, no rollback listener runs, and 'transaction.end' reports 'lost'
+     * with the deadlock as error (its listeners' failures then reach only the 'error' hook).
+     * When the connection is in a transaction right
+     * after the ROLLBACK (MySQL/MariaDB completion_type=CHAIN, not supported), that is reported as
+     * TransactionException after the listeners ran, unless a rollback listener threw.
      *
-     * @throws Exception\TransactionException On failure, or when a transaction.end listener failed and no rollback listener did (the first failure; all of them reach the 'error' hook)
+     * @throws Exception\TransactionException On failure, when the connection is in a new, chained transaction afterwards, or when a transaction.end listener failed and no rollback listener did (the first failure; all of them reach the 'error' hook)
      * @throws \Throwable Re-throws a rollback listener's exception
      */
     public function rollback(): void;
@@ -134,6 +155,16 @@ interface DatabaseInterface
      *   transaction, so the rollback is sent, the transaction.rollback listeners run and
      *   transaction.end reports 'rolled_back'; after a lost connection the rollback fails, no
      *   rollback listener runs, PDO still reported the transaction, and transaction.end reports 'lost';
+     * - the callback swallowed a statement error that ended the transaction on the server
+     *   (PostgreSQL: any error no savepoint caught; MySQL/MariaDB: a deadlock, or a lock wait
+     *   timeout under innodb_rollback_on_timeout): the commit is refused before it is sent and the
+     *   TransactionException is thrown, instead of a COMMIT the server answers with success. While
+     *   PDO still reports the transaction the rollback follows and transaction.end reports
+     *   'rolled_back'; on MySQL/MariaDB, once PDO knows that the transaction is gone - from a
+     *   statement on raw PDO after a deadlock, or from the question to the server after another
+     *   failure (the lock wait timeout: statements the callback ran after it were committed on
+     *   their own) - nothing is left to roll back and transaction.end reports 'lost'. Through
+     *   this library nothing is sent between a deadlock and the rollback;
      * - the commit failed: a rollback is attempted when PDO still reports the transaction, the
      *   TransactionException is re-thrown; transaction.end reports 'rolled_back' when that rollback
      *   succeeded (nothing was committed) and 'lost' when it failed too (the commit may or may not
@@ -166,6 +197,8 @@ interface DatabaseInterface
      * Events: 'query', 'error', 'transaction.begin', 'transaction.commit', 'transaction.rollback',
      * 'transaction.end' (array{outcome: 'committed'|'rolled_back'|'lost', error: ?Throwable},
      * once per transaction this library ends, after the commit or rollback listeners; see Traits\HasHooks).
+     * Any other name is accepted; nothing in this library fires it. The 'query' and 'error' payloads carry the SQL and
+     * the parameters as passed, secrets included: redact before logging.
      *
      * A throwing hook stops the remaining hooks of its event (for 'transaction.begin' a rollback
      * of the new transaction is attempted first, best effort), except for 'transaction.commit' and
@@ -175,8 +208,9 @@ interface DatabaseInterface
      * rollback() as TransactionException (unless a rollback listener threw: that exception wins and
      * the end failures reach only the 'error' hook), and after the automatic rollback and on a 'lost'
      * reported there only via the 'error' hook. Dependent steps belong in one listener.
-     * Only if a transaction left open by a commit listener cannot be rolled back (or the connection
-     * state cannot be read) are the remaining commit listeners skipped (listed as failures).
+     * Only if a transaction left open by a commit listener cannot be rolled back, the connection
+     * state cannot be read, or the session chained a new transaction to the COMMIT (then all of
+     * them) are the remaining commit listeners skipped (listed as failures).
      *
      * @param string $event Event name
      * @param callable $callback Callback receiving event data array

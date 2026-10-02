@@ -60,8 +60,8 @@ class PostgresTransactionEndScenariosTest extends AbstractTransactionEndScenario
         return 'CREATE TABLE ' . self::TABLE . ' (id INT PRIMARY KEY, name VARCHAR(50))';
     }
 
-    protected function swallowedStatementErrorKeepsEarlierRows(): bool
+    protected function aFailedStatementAbortsTheTransaction(): bool
     {
-        return false; // the failed statement aborts the transaction: COMMIT becomes a silent ROLLBACK
+        return true; // COMMIT would become a silent ROLLBACK: the library refuses it
     }
 }

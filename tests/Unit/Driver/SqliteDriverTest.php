@@ -24,6 +24,23 @@ class SqliteDriverTest extends TestCase
         $this->assertNotNull($driver->getPdo());
     }
 
+    /**
+     * SQLite reads the path up to a NUL byte: "data.db\0.txt" would open "data.db".
+     */
+    public function testRejectsANulByteInThePath(): void
+    {
+        $path = sys_get_temp_dir() . '/pdo-wrapper-nul-' . bin2hex(random_bytes(4));
+
+        try {
+            new SqliteDriver($path . "\0.txt");
+            $this->fail('Expected ConnectionException');
+        } catch (ConnectionException $e) {
+            $this->assertSame('Invalid character in config value "path"', $e->getDebugMessage());
+        }
+
+        $this->assertFileDoesNotExist($path);
+    }
+
     public function testInvalidPathThrowsConnectionException(): void
     {
         $this->expectException(ConnectionException::class);

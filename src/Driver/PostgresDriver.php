@@ -10,6 +10,7 @@ use Sodaho\PdoWrapper\Exception\ConnectionException;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Query\QueryBuilder;
 use Sodaho\PdoWrapper\Query\RawExpression;
+use Throwable;
 
 /**
  * PostgreSQL database driver.
@@ -27,10 +28,11 @@ class PostgresDriver extends AbstractDriver
      * - database: Database name (required)
      * - username: Database username (required)
      * - password: Database password (optional)
-     * - port: Server port (default: 5432)
-     * - options: Additional PDO options
+     * - port: Server port, a whole number or a string of digits (default: 5432)
+     * - options: Additional PDO options; they replace the defaults, the security-relevant ones
+     *   included (native prepares, exceptions)
      *
-     * @param array{host?: string|null, database?: string|null, username?: string|null, password?: string|null, port?: int, options?: array<int, mixed>} $config
+     * @param array{host?: string|null, database?: string|null, username?: string|null, password?: string|null, port?: int|string, options?: array<int, mixed>} $config
      *
      * @throws ConnectionException When required config is missing or connection fails
      */
@@ -40,7 +42,7 @@ class PostgresDriver extends AbstractDriver
         $database = $config['database'] ?? null;
         $username = $config['username'] ?? null;
         $password = $config['password'] ?? null;
-        $port = $config['port'] ?? 5432;
+        $port = self::validPort($config['port'] ?? 5432);
 
         if ($host === null || $database === null || $username === null) {
             throw new ConnectionException(
@@ -91,8 +93,8 @@ class PostgresDriver extends AbstractDriver
     /**
      * Insert a row and return the last insert ID.
      *
-     * Uses PostgreSQL sequence naming convention ({table}_id_seq) for reliable
-     * ID retrieval. Returns 0 for tables without auto-increment (composite PKs, UUIDs)
+     * Uses PostgreSQL sequence naming convention ({table}_id_seq, in the table's schema when one
+     * is given) for reliable ID retrieval. Returns 0 for tables without auto-increment (composite PKs, UUIDs)
      * and when the sequence has no value in this session yet (explicit id before any
      * sequence-based insert); after an earlier sequence-based insert on the same
      * connection, an explicit-id insert returns that earlier value, as before. Use a raw
@@ -123,12 +125,73 @@ class PostgresDriver extends AbstractDriver
             $values
         );
 
-        $this->query($sql, $params);
+        // Read before the 'query' hook runs: a listener that inserts into the same table would replace the id
+        $id = null;
+        $this->queryThen($sql, $params, function () use (&$id, $table): void {
+            $id = $this->sequenceValue($this->sequenceName($table));
+        });
 
-        // Strip schema prefix for sequence name (e.g. "public.users" -> "users")
-        $baseTable = str_contains($table, '.') ? substr($table, strrpos($table, '.') + 1) : $table;
+        // An overridden query() that bypasses AbstractDriver::query() never ran the step
+        return $id ?? $this->sequenceValue($this->sequenceName($table));
+    }
 
-        return $this->sequenceValue($baseTable . '_id_seq');
+    /**
+     * Every statement error aborts a PostgreSQL transaction, unless a savepoint catches it: the
+     * latest one is remembered. SQLSTATE 25P02 is the answer of a transaction that is aborted
+     * already, a consequence: it does not replace the cause - but it is remembered when nothing
+     * else is, because then the cause was a failure this library did not see (raw PDO).
+     */
+    protected function failureToRemember(?PDOException $remembered, PDOException $failure): PDOException
+    {
+        return $remembered !== null && ($failure->errorInfo[0] ?? null) === '25P02' ? $remembered : $failure;
+    }
+
+    /**
+     * An aborted transaction answers every statement with an error (SQLSTATE 25P02) and a COMMIT
+     * with a silent ROLLBACK that PDO reports as success. One probe statement on raw PDO (no hook
+     * sees it) tells whether a savepoint caught the failure; it runs only after a statement failed.
+     * A probe that fails for any other reason (the connection is gone) refuses the commit as well.
+     */
+    protected function transactionEndedBy(PDOException $failure): ?string
+    {
+        try {
+            if ($this->pdo->query('SELECT 1') !== false) {
+                return null;
+            }
+            $state = $this->pdo->errorCode();
+        } catch (PDOException $e) {
+            $state = $e->getCode();
+        } catch (Throwable) {
+            // PDO::ERRMODE_WARNING with an error handler that throws: PDO recorded the state before it warned
+            $state = $this->pdo->errorCode();
+        }
+
+        return $state === '25P02'
+            ? 'The transaction is aborted: a statement failed inside it (the previous exception) and no savepoint caught the failure. '
+                . 'PostgreSQL would answer COMMIT with a ROLLBACK and report success. Roll back instead.'
+            : sprintf(
+                'The transaction cannot be committed: a statement failed inside it (the previous exception) and the connection no longer answers (SQLSTATE %s). '
+                . 'Roll back, or discard the connection.',
+                is_scalar($state) ? (string) $state : 'unknown'
+            );
+    }
+
+    /**
+     * The table's id sequence by PostgreSQL's naming convention, as a quoted name for currval():
+     * `shop.users` becomes `"shop"."users_id_seq"`. Quoted like the table in the INSERT, so the
+     * sequence of exactly that table is read: an unquoted name would be folded to lower case and
+     * looked up through the search_path, where a table of the same name in another schema could
+     * answer instead.
+     */
+    private function sequenceName(string $table): string
+    {
+        $parts = explode('.', $table);
+        $parts[count($parts) - 1] .= '_id_seq';
+
+        return implode('.', array_map(
+            static fn (string $part): string => '"' . str_replace('"', '""', $part) . '"',
+            $parts
+        ));
     }
 
     /**
@@ -143,10 +206,11 @@ class PostgresDriver extends AbstractDriver
      */
     private function sequenceValue(string $sequence): int
     {
+        // Throwable, not only PDOException: in PDO::ERRMODE_WARNING an error handler that throws reports the failed probe its own way
         if (!$this->pdo->inTransaction()) {
             try {
                 return $this->currentValue($sequence) ?? 0;
-            } catch (PDOException) {
+            } catch (Throwable) {
                 return 0;
             }
         }
@@ -155,7 +219,7 @@ class PostgresDriver extends AbstractDriver
             $this->execRaw('SAVEPOINT pdo_wrapper_insert_id');
             try {
                 $id = $this->currentValue($sequence);
-            } catch (PDOException) {
+            } catch (Throwable) {
                 $id = null;
             }
             if ($id === null) {
@@ -165,6 +229,8 @@ class PostgresDriver extends AbstractDriver
             }
             $this->execRaw('RELEASE SAVEPOINT pdo_wrapper_insert_id');
         } catch (PDOException $e) {
+            $this->noteStatementFailure($e); // without the savepoint the failed probe left the transaction aborted
+
             throw new QueryException(
                 message: 'Insert failed',
                 code: (int)$e->getCode(),
@@ -198,10 +264,18 @@ class PostgresDriver extends AbstractDriver
      * Run a savepoint statement on raw PDO; a false result (non-exception error mode) is a failure too.
      *
      * @throws PDOException When the statement fails
+     * @throws Throwable An error handler's exception that is not about a PDO failure
      */
     private function execRaw(string $sql): void
     {
-        if ($this->pdo->exec($sql) === false) {
+        try {
+            $failed = $this->pdo->exec($sql) === false;
+        } catch (Throwable $e) {
+            // Not PDO's own exception: PDO::ERRMODE_WARNING with an error handler that throws
+            throw $this->failureBehind($e, $this->pdo->errorInfo()) ?? $e;
+        }
+
+        if ($failed) {
             $info = $this->pdo->errorInfo();
             $reason = is_string($info[2] ?? null) ? $info[2] : 'unknown error';
             throw new PDOException(sprintf('%s failed: %s', $sql, $reason));

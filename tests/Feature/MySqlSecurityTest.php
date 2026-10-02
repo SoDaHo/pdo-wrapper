@@ -7,6 +7,7 @@ namespace Sodaho\PdoWrapper\Tests\Feature;
 use PHPUnit\Framework\Attributes\Group;
 use Sodaho\PdoWrapper\Database;
 use Sodaho\PdoWrapper\DatabaseInterface;
+use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Tests\Feature\Concerns\AbstractSecurityTest;
 
 /**
@@ -53,6 +54,68 @@ class MySqlSecurityTest extends AbstractSecurityTest
         $user = $this->db->table('users')->where('name', $nameWithBackslash)->first();
         $this->assertNotNull($user);
         $this->assertSame($nameWithBackslash, $user['name']);
+    }
+
+    /**
+     * NO_BACKSLASH_ESCAPES takes the backslash away as MySQL's default LIKE escape character
+     * (MariaDB keeps it). The bound escape character makes escapeLike() hold in that mode too.
+     */
+    public function testEscapeLikeHoldsUnderNoBackslashEscapes(): void
+    {
+        $this->db->execute("SET SESSION sql_mode = CONCAT(@@sql_mode, ',NO_BACKSLASH_ESCAPES')");
+        $this->seedLikeNames();
+
+        $this->assertLikeFinds(['100% sure'], '100%');
+        $this->assertLikeFinds(['under_score'], 'under_');
+        $this->assertLikeFinds(['back\\slash'], 'back\\');
+    }
+
+    public function testEscapeLikeHoldsWithEmulatedPrepares(): void
+    {
+        $this->db = Database::mysql([
+            'host' => $_ENV['MYSQL_HOST'] ?? '127.0.0.1',
+            'port' => (int) ($_ENV['MYSQL_PORT'] ?? 3306),
+            'database' => $_ENV['MYSQL_DATABASE'] ?? 'pdo_wrapper_test',
+            'username' => $_ENV['MYSQL_USERNAME'] ?? 'root',
+            'password' => $_ENV['MYSQL_PASSWORD'] ?? 'root',
+            'options' => [\PDO::ATTR_EMULATE_PREPARES => true],
+        ]);
+        $this->seedLikeNames();
+
+        $this->assertLikeFinds(['100% sure'], '100%');
+        $this->assertLikeFinds(['back\\slash'], 'back\\');
+
+        $this->db->execute("SET SESSION sql_mode = CONCAT(@@sql_mode, ',NO_BACKSLASH_ESCAPES')");
+
+        $this->assertLikeFinds(['100% sure'], '100%');
+        $this->assertLikeFinds(['back\\slash'], 'back\\');
+    }
+
+    /**
+     * A backtick inside an identifier is doubled, so the name stays one identifier: a column that
+     * really carries a backtick works, and a name built to break out of the quoting is just an
+     * unknown column.
+     */
+    public function testBacktickInAnIdentifierStaysInsideTheIdentifier(): void
+    {
+        $this->db->execute('DROP TABLE IF EXISTS backtick_names');
+        $this->db->execute('CREATE TABLE backtick_names (id INT AUTO_INCREMENT PRIMARY KEY, `we``ird` VARCHAR(20)) ENGINE=InnoDB');
+        try {
+            $id = $this->db->insert('backtick_names', ['we`ird' => 'value']);
+            $this->assertSame('value', $this->db->table('backtick_names')->where('we`ird', 'value')->first()['we`ird'] ?? null);
+            $this->assertSame(1, $this->db->update('backtick_names', ['we`ird' => 'changed'], ['id' => $id]));
+            $this->assertSame(['changed'], array_column($this->db->table('backtick_names')->select('we`ird')->orderBy('we`ird')->get(), 'we`ird'));
+
+            try {
+                $this->db->table('backtick_names')->where('id` = 1 OR `id', 999)->get();
+                $this->fail('Expected QueryException: the name is one unknown column');
+            } catch (QueryException $e) {
+                $this->assertSame(1054, $e->getPrevious()?->errorInfo[1] ?? null, 'ER_BAD_FIELD_ERROR');
+            }
+            $this->assertSame(1, $this->db->table('backtick_names')->count(), 'the row is untouched');
+        } finally {
+            $this->db->execute('DROP TABLE IF EXISTS backtick_names');
+        }
     }
 
     // MySQL-specific: Test that binary data in utf8mb4 TEXT field is rejected

@@ -5,7 +5,9 @@ declare(strict_types=1);
 namespace Sodaho\PdoWrapper\Tests\Feature\Concerns;
 
 use PHPUnit\Framework\TestCase;
+use Sodaho\PdoWrapper\Database;
 use Sodaho\PdoWrapper\DatabaseInterface;
+use Sodaho\PdoWrapper\Exception\QueryException;
 
 /**
  * Abstract base class for security tests.
@@ -169,6 +171,62 @@ abstract class AbstractSecurityTest extends TestCase
         // Table should still exist
         $users = $this->db->table('users')->get();
         $this->assertCount(2, $users);
+    }
+
+    /**
+     * escapeLike() makes %, _ and \ literal on every engine: the builder binds the escape
+     * character (`LIKE ? ESCAPE ?`), so no SQL mode or engine default decides what it means.
+     */
+    public function testEscapeLikeMatchesWildcardsLiterally(): void
+    {
+        $this->seedLikeNames();
+
+        $this->assertLikeFinds(['100% sure'], '100%');
+        $this->assertLikeFinds(['under_score'], 'under_');
+        $this->assertLikeFinds(['back\\slash'], 'back\\');
+    }
+
+    public function testEscapeLikeHoldsInNotLikeAndInHaving(): void
+    {
+        $this->seedLikeNames();
+
+        $pattern = Database::escapeLike('100%') . '%';
+
+        $others = $this->db->table('users')->whereNotLike('name', $pattern)->orderBy('id')->get();
+        $this->assertSame(
+            ['Admin', 'User', '100 percent', 'under_score', 'underXscore', 'back\\slash'],
+            array_column($others, 'name')
+        );
+
+        [$sql, $params] = $this->db->table('users')->select('name')->groupBy('name')->having('name', 'LIKE', $pattern)->toSql();
+        $this->assertStringEndsWith('LIKE ? ESCAPE ?', $sql);
+        $this->assertSame([$pattern, '\\'], $params);
+        $grouped = $this->db->table('users')->select('name')->groupBy('name')->having('name', 'LIKE', $pattern)->get();
+        $this->assertSame(['100% sure'], array_column($grouped, 'name'));
+
+        $grouped = $this->db->table('users')->select('name')->groupBy('name')->having('name', 'NOT LIKE', $pattern)->get();
+        $this->assertCount(6, $grouped);
+    }
+
+    protected function seedLikeNames(): void
+    {
+        foreach (['100% sure', '100 percent', 'under_score', 'underXscore', 'back\\slash'] as $i => $name) {
+            $this->db->insert('users', ['name' => $name, 'email' => "like{$i}@example.com"]);
+        }
+    }
+
+    /**
+     * @param list<string> $expected Names a prefix search for the escaped $literal must find
+     */
+    protected function assertLikeFinds(array $expected, string $literal): void
+    {
+        $pattern = Database::escapeLike($literal) . '%';
+
+        $rows = $this->db->table('users')->whereLike('name', $pattern)->orderBy('id')->get();
+        $this->assertSame($expected, array_column($rows, 'name'), "whereLike() with escaped \"{$literal}\"");
+
+        $rows = $this->db->table('users')->where('name', 'LIKE', $pattern)->orderBy('id')->get();
+        $this->assertSame($expected, array_column($rows, 'name'), "where(LIKE) with escaped \"{$literal}\"");
     }
 
     public function testSqlInjectionInDirectQuery(): void
@@ -399,28 +457,95 @@ abstract class AbstractSecurityTest extends TestCase
         $maliciousInput = '(SELECT secret_data FROM secrets)';
 
         try {
-            $result = $this->db->table('users')
+            $this->db->table('users')
                 ->select(['name', $maliciousInput])
                 ->get();
-
-            // If we get here, the column was quoted and treated as literal
-            // No secret data should be leaked
-            if (!empty($result)) {
-                foreach ($result as $row) {
-                    foreach ($row as $value) {
-                        $this->assertStringNotContainsString(
-                            'TOP SECRET DATA',
-                            (string) $value,
-                            'Secret data should not be leaked'
-                        );
-                    }
-                }
-            }
-        } catch (\Sodaho\PdoWrapper\Exception\QueryException $e) {
-            // Column not found error is expected - the subquery was quoted
-            // This is the secure behavior
-            $this->assertTrue(true);
+            $this->fail('The quoted name is one unknown column on every database');
+        } catch (QueryException $e) {
+            // Quoted as a whole, the subquery is a column name that does not exist
+            $this->assertStringContainsStringIgnoringCase('column', (string) $e->getDebugMessage());
+            $this->assertStringNotContainsString('TOP SECRET DATA', (string) $e->getDebugMessage());
         }
+    }
+
+    // =========================================================================
+    // PARAMETERS THAT CANNOT BE BOUND
+    // PDO would bind an array as the text "Array" and a resource as "Resource id #n"
+    // =========================================================================
+
+    public function testUnbindableParametersAreRejectedBeforeTheStatementRuns(): void
+    {
+        $errors = [];
+        $queries = 0;
+        $this->db->on('error', function (array $data) use (&$errors): void {
+            $errors[] = $data;
+        });
+        $this->db->on('query', function () use (&$queries): void {
+            $queries++;
+        });
+
+        $stream = fopen('php://memory', 'r');
+        $this->assertIsResource($stream);
+        $cases = [
+            'array' => [['a', 'b'], 'array'],
+            'object' => [new \stdClass(), 'stdClass'],
+            'date' => [new \DateTimeImmutable('2026-01-01'), 'DateTimeImmutable'],
+            'resource' => [$stream, 'resource (stream)'],
+        ];
+
+        foreach ($cases as $label => [$value, $type]) {
+            $expected = sprintf('Cannot bind a value of type %s (parameter #2)', $type);
+            try {
+                $this->db->insert('users', ['name' => 'Bound', 'email' => $value]);
+                $this->fail("A value of type {$label} must not be bound");
+            } catch (QueryException $e) {
+                $this->assertSame('Query failed', $e->getMessage());
+                $this->assertStringContainsString($expected, (string) $e->getDebugMessage());
+                $this->assertStringContainsString('INSERT INTO', (string) $e->getDebugMessage());
+            }
+            $error = array_pop($errors);
+            $this->assertIsArray($error);
+            $this->assertStringContainsString($expected, $error['error']);
+            $this->assertSame(0, $error['code']);
+            $this->assertSame(['Bound', $value], $error['params']);
+        }
+        fclose($stream);
+
+        $this->assertSame(0, $queries, 'no statement was sent');
+        $this->assertSame(2, $this->db->table('users')->count());
+    }
+
+    public function testUnbindableParameterIsNamedByItsPlaceholder(): void
+    {
+        try {
+            $this->db->query('SELECT * FROM users WHERE name = :name', ['name' => ['Admin']]);
+            $this->fail('An array must not be bound');
+        } catch (QueryException $e) {
+            $this->assertStringContainsString('Cannot bind a value of type array (parameter "name")', (string) $e->getDebugMessage());
+        }
+
+        try {
+            $this->db->table('users')->where('name', ['Admin'])->get();
+            $this->fail('An array must not be bound');
+        } catch (QueryException $e) {
+            $this->assertStringContainsString('Cannot bind a value of type array (parameter #1)', (string) $e->getDebugMessage());
+        }
+    }
+
+    public function testStringableObjectsAndScalarsAreBound(): void
+    {
+        $name = new class () {
+            public function __toString(): string
+            {
+                return 'Admin';
+            }
+        };
+
+        $rows = $this->db->table('users')->where('name', $name)->get();
+        $this->assertCount(1, $rows);
+        $this->assertSame('admin@example.com', $rows[0]['email']);
+
+        $this->assertCount(1, $this->db->table('users')->where('id', '>', 1)->where('role', 'user')->get());
     }
 
     // =========================================================================

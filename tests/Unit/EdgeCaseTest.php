@@ -757,4 +757,509 @@ class EdgeCaseTest extends TestCase
         $this->assertCount(1, $results);
         $this->assertSame('Rabatt: 100%', $results[0]['name']);
     }
+
+    // =========================================================================
+    // SILENTLY ACCEPTED INPUT
+    // Bug: a negative limit()/offset(), a null in having()/whereBetween() and a list given to
+    // where() were accepted and returned wrong rows (or a TypeError) instead of a QueryException
+    // =========================================================================
+
+    public function testNegativeLimitAndOffsetThrow(): void
+    {
+        $db = Database::sqlite(':memory:');
+        $db->execute('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)');
+        $db->insert('users', ['name' => 'A']);
+        $db->insert('users', ['name' => 'B']);
+
+        try {
+            $db->table('users')->limit(-1);
+            $this->fail('limit(-1) must throw: SQLite reads it as "no limit"');
+        } catch (QueryException $e) {
+            $this->assertSame('limit() needs 0 or more, got -1', $e->getDebugMessage());
+        }
+
+        try {
+            $db->table('users')->limit(1)->offset(-5);
+            $this->fail('offset(-5) must throw: SQLite reads it as 0');
+        } catch (QueryException $e) {
+            $this->assertSame('offset() needs 0 or more, got -5', $e->getDebugMessage());
+        }
+
+        $this->assertSame([], $db->table('users')->limit(0)->get());
+        $this->assertCount(2, $db->table('users')->limit(2)->offset(0)->get());
+    }
+
+    public function testWhereBetweenWithANullBoundThrows(): void
+    {
+        $db = Database::sqlite(':memory:');
+
+        foreach ([[null, 5], [1, null], ['min' => 1, 'max' => null]] as $values) {
+            foreach (['whereBetween', 'whereNotBetween'] as $method) {
+                try {
+                    $db->table('users')->{$method}('age', $values);
+                    $this->fail("{$method}() with a null bound must throw: BETWEEN with NULL matches no row");
+                } catch (QueryException $e) {
+                    $this->assertSame(
+                        sprintf('Cannot use a null bound in %s() for column "age". Use where() with a comparison operator for an open range.', $method),
+                        $e->getDebugMessage()
+                    );
+                }
+            }
+        }
+
+        [$sql, $params] = $db->table('users')->whereBetween('age', [0, Database::raw('18 + 0')])->toSql();
+        $this->assertSame('SELECT * FROM `users` WHERE `age` BETWEEN ? AND 18 + 0', $sql);
+        $this->assertSame([0], $params);
+    }
+
+    public function testHavingWithNullThrowsExceptForTheNullSafeOperators(): void
+    {
+        $db = Database::sqlite(':memory:');
+        $db->execute('CREATE TABLE users (id INTEGER PRIMARY KEY, team TEXT)');
+        $db->insert('users', ['team' => 'a']);
+        $db->insert('users', ['team' => null]);
+
+        foreach (['=', '!=', '>', 'LIKE'] as $operator) {
+            try {
+                $db->table('users')->groupBy('team')->having('team', $operator, null);
+                $this->fail("having() with null and {$operator} must throw: the comparison is never true");
+            } catch (QueryException $e) {
+                $this->assertSame(
+                    sprintf('Cannot use a null value in having() (operator "%s", column "team"). Use the operator IS or IS NOT instead.', $operator),
+                    $e->getDebugMessage()
+                );
+            }
+        }
+
+        try {
+            $db->table('users')->having(Database::raw('COUNT(*)'), '>', null);
+            $this->fail('having() with null must throw for a raw column too');
+        } catch (QueryException $e) {
+            $this->assertStringContainsString('column "COUNT(*)"', (string) $e->getDebugMessage());
+        }
+
+        $rows = $db->table('users')->select('team')->groupBy('team')->having('team', 'IS', null)->get();
+        $this->assertSame([['team' => null]], $rows);
+        $rows = $db->table('users')->select('team')->groupBy('team')->having('team', 'is not', null)->get();
+        $this->assertSame([['team' => 'a']], $rows);
+    }
+
+    public function testWhereArrayWithNumericKeysThrows(): void
+    {
+        $db = Database::sqlite(':memory:');
+
+        try {
+            $db->table('users')->where(['active', 1]);
+            $this->fail('A list given to where() must throw');
+        } catch (QueryException $e) {
+            $this->assertSame(
+                'where() with an array needs column names as keys, got the numeric key 0. Use where(\'column\', $value) instead.',
+                $e->getDebugMessage()
+            );
+        }
+
+        // PHP turns the key '2024' into the integer 2024: a numeric column name needs the two-argument form
+        try {
+            $db->table('users')->where(['name' => 'x', '2024' => 1]);
+            $this->fail('A numeric key in where() must throw');
+        } catch (QueryException $e) {
+            $this->assertStringContainsString('got the numeric key 2024', (string) $e->getDebugMessage());
+        }
+
+        [$sql] = $db->table('stats')->where('2024', 1)->toSql();
+        $this->assertSame('SELECT * FROM `stats` WHERE `2024` = ?', $sql);
+    }
+
+    // =========================================================================
+    // AGGREGATE RESULT KEY
+    // Bug: aggregates read the key "aggregate"; with PDO::ATTR_CASE it is "AGGREGATE" and
+    // count() returned 0, sum()/max() null
+    // =========================================================================
+
+    public function testAggregatesDoNotDependOnTheResultKeyCase(): void
+    {
+        $db = Database::sqlite(':memory:');
+        $db->execute('CREATE TABLE orders (id INTEGER PRIMARY KEY, amount INTEGER, status TEXT)');
+        $db->insert('orders', ['amount' => 10, 'status' => 'a']);
+        $db->insert('orders', ['amount' => 30, 'status' => 'b']);
+        $db->getPdo()->setAttribute(\PDO::ATTR_CASE, \PDO::CASE_UPPER);
+
+        $this->assertSame(2, $db->table('orders')->count());
+        $this->assertSame(40.0, $db->table('orders')->sum('amount'));
+        $this->assertSame(30, $db->table('orders')->max('amount'));
+        $this->assertSame(2, $db->table('orders')->groupBy('status')->count());
+        $this->assertSame(2, $db->table('orders')->select('status')->distinct()->count());
+        $this->assertNull($db->table('orders')->where('amount', '>', 100)->max('amount'));
+    }
+
+    // =========================================================================
+    // INSERT ID AND THE QUERY HOOK
+    // Bug: insert() read lastInsertId() after the 'query' hook; a listener that inserted
+    // replaced the id
+    // =========================================================================
+
+    public function testAFailingInsertIdReadStillFiresTheQueryHookFirst(): void
+    {
+        $driver = new class () extends SqliteDriver {
+            public function lastInsertId(?string $name = null): string|false
+            {
+                throw new QueryException(message: 'Failed to get last insert ID');
+            }
+        };
+        $driver->execute('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)');
+        $seen = [];
+        $driver->on('query', function (array $data) use (&$seen): void {
+            $seen[] = $data['sql'];
+        });
+
+        try {
+            $driver->insert('users', ['name' => 'Test']);
+            $this->fail('The failed id read must reach the caller');
+        } catch (QueryException $e) {
+            $this->assertSame('Failed to get last insert ID', $e->getMessage());
+        }
+
+        $this->assertSame(['INSERT INTO `users` (`name`) VALUES (?)'], $seen, 'the statement ran, so its hook fired');
+        $this->assertSame(1, $driver->table('users')->count());
+    }
+
+    public function testAnInsertIdReadThatFailsOnceIsNotRetried(): void
+    {
+        $driver = new class () extends SqliteDriver {
+            public int $reads = 0;
+
+            public function lastInsertId(?string $name = null): string|false
+            {
+                if (++$this->reads === 1) {
+                    throw new QueryException(message: 'Failed to get last insert ID');
+                }
+
+                return parent::lastInsertId($name);
+            }
+        };
+        $driver->execute('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)');
+
+        try {
+            $driver->insert('users', ['name' => 'Test']);
+            $this->fail('The failed id read must reach the caller');
+        } catch (QueryException $e) {
+            $this->assertSame('Failed to get last insert ID', $e->getMessage());
+        }
+        $this->assertSame(1, $driver->reads);
+    }
+
+    public function testInsertReadsTheIdItselfWhenAnOverriddenQueryBypassesTheDriver(): void
+    {
+        $driver = new class () extends SqliteDriver {
+            public int $reads = 0;
+
+            public function query(string $sql, array $params = []): \PDOStatement
+            {
+                if (!str_starts_with($sql, 'INSERT')) {
+                    return parent::query($sql, $params);
+                }
+                $stmt = $this->pdo->prepare($sql);
+                $stmt->execute(array_values($params));
+
+                return $stmt;
+            }
+
+            public function lastInsertId(?string $name = null): string|false
+            {
+                $this->reads++;
+
+                return parent::lastInsertId($name);
+            }
+        };
+        $driver->execute('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)');
+
+        $this->assertSame('1', $driver->insert('users', ['name' => 'A']));
+        $this->assertSame('2', $driver->insert('users', ['name' => 'B']));
+        $this->assertSame(2, $driver->reads);
+
+        // The step set for a bypassed insert does not run with a later statement
+        $this->assertSame(2, $driver->table('users')->count());
+        $this->assertSame(2, $driver->reads);
+    }
+
+    public function testDebugMessageSurvivesBinaryParameters(): void
+    {
+        $db = Database::sqlite(':memory:');
+
+        try {
+            $db->query('SELECT * FROM missing WHERE a = ? AND b = ?', ["\xFF\xFE", 'ok']);
+            $this->fail('Expected QueryException was not thrown');
+        } catch (QueryException $e) {
+            $this->assertStringContainsString('| Params: ["\ufffd\ufffd","ok"]', (string) $e->getDebugMessage());
+        }
+    }
+
+    public function testInsertReturnsItsIdWhenAnOverriddenQuerySendsAStatementAhead(): void
+    {
+        $driver = new class () extends SqliteDriver {
+            public int $reads = 0;
+
+            public function query(string $sql, array $params = []): \PDOStatement
+            {
+                parent::query('SELECT ?', ['session setting']);
+
+                return parent::query($sql, $params);
+            }
+
+            public function lastInsertId(?string $name = null): string|false
+            {
+                $this->reads++;
+
+                return parent::lastInsertId($name);
+            }
+        };
+        $driver->execute('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)');
+        $driver->execute('CREATE TABLE audit (id INTEGER PRIMARY KEY, note TEXT)');
+        for ($i = 0; $i < 5; $i++) {
+            $driver->execute('INSERT INTO audit (note) VALUES (?)', ['filler']);
+        }
+
+        $this->assertSame('1', $driver->insert('users', ['name' => 'A']));
+        $this->assertSame(1, $driver->reads, 'read once, after the INSERT - not after the statement sent ahead');
+
+        // A listener that inserts when the statement sent ahead is told, and again when the INSERT is
+        // told: the outer step survives the first and has run before the second
+        $busy = false;
+        $driver->on('query', static function (array $data) use ($driver, &$busy): void {
+            if (!$busy && ($data['params'] === ['session setting'] || str_contains($data['sql'], '`users`'))) {
+                $busy = true;
+                $driver->insert('audit', ['note' => 'from the listener']);
+                $busy = false;
+            }
+        });
+        $this->assertSame('2', $driver->insert('users', ['name' => 'B']));
+        // counted on raw PDO: a query through the driver would trigger the listener once more
+        $this->assertSame(7, (int) $driver->getPdo()->query('SELECT COUNT(*) FROM audit')->fetchColumn());
+    }
+
+    /**
+     * The id step is taken by the statement it was set for and by nothing else: a listener that
+     * runs the very same statement - told about the insert itself, or about a statement the
+     * driver sent ahead of it - does not take the step or make it run twice.
+     */
+    public function testAListenerRepeatingTheSameInsertDoesNotReplaceTheId(): void
+    {
+        $db = Database::sqlite(':memory:');
+        $db->execute('CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT)');
+        $repeated = false;
+        $db->on('query', static function (array $data) use ($db, &$repeated): void {
+            if (!$repeated && str_starts_with($data['sql'], 'INSERT')) {
+                $repeated = true;
+                $db->execute($data['sql'], $data['params']);
+            }
+        });
+
+        $this->assertSame('1', $db->insert('notes', ['body' => 'same']));
+        $this->assertSame(2, $db->table('notes')->count());
+
+        // A driver that sends a statement ahead, and a listener that mirrors the insert when that one is told
+        $driver = new class () extends SqliteDriver {
+            public int $reads = 0;
+
+            public function query(string $sql, array $params = []): \PDOStatement
+            {
+                parent::query('SELECT ?', ['session setting']);
+
+                return parent::query($sql, $params);
+            }
+
+            public function lastInsertId(?string $name = null): string|false
+            {
+                $this->reads++;
+
+                return parent::lastInsertId($name);
+            }
+        };
+        $driver->getPdo()->exec('CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT)');
+        $driver->getPdo()->exec('CREATE TABLE mirror (id INTEGER PRIMARY KEY, body TEXT)');
+        $driver->getPdo()->exec("INSERT INTO mirror (body) VALUES ('filler'), ('filler'), ('filler')");
+        $mirrored = false;
+        $driver->on('query', static function (array $data) use ($driver, &$mirrored): void {
+            if (!$mirrored && $data['params'] === ['session setting']) {
+                $mirrored = true;
+                $driver->getPdo()->exec("INSERT INTO mirror (body) VALUES ('raw, so that the last insert id moves')");
+                // the outer insert's own SQL and parameters, run by the listener before the outer statement
+                $driver->execute('INSERT INTO `notes` (`body`) VALUES (?)', ['outer']);
+            }
+        });
+
+        $this->assertSame('2', $driver->insert('notes', ['body' => 'outer']), 'the listener\'s row is 1, the outer row 2');
+        $this->assertSame(1, $driver->reads, 'read once, after the outer INSERT: the listener\'s identical statement did not run the step');
+    }
+
+    // =========================================================================
+    // WARNING MODE WITH A THROWING ERROR HANDLER
+    // Bug: with PDO::ERRMODE_WARNING and an error handler that throws, a failed statement left
+    // query() as ErrorException: no 'error' hook, no QueryException, not remembered for commit()
+    // =========================================================================
+
+    public function testWarningModeWithAThrowingErrorHandlerIsAFailedQuery(): void
+    {
+        $db = Database::sqlite(':memory:');
+        $db->execute('CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT)');
+        $db->getPdo()->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_WARNING);
+        $errors = [];
+        $db->on('error', static function (array $data) use (&$errors): void {
+            $errors[] = $data;
+        });
+        $noisy = new class () {
+            public function __toString(): string
+            {
+                trigger_error('not a database failure', E_USER_WARNING);
+
+                return 'x';
+            }
+        };
+
+        set_error_handler(static function (int $severity, string $message, string $file, int $line): never {
+            throw new \ErrorException($message, 0, $severity, $file, $line);
+        });
+        try {
+            try {
+                $db->query('SELECT * FROM missing_table WHERE id = ?', [1]);
+                $this->fail('Expected QueryException');
+            } catch (QueryException $e) {
+                $this->assertSame('Query failed', $e->getMessage());
+                $this->assertStringContainsString('PDO reported a warning: no such table: missing_table', (string) $e->getDebugMessage());
+                $this->assertInstanceOf(\PDOException::class, $e->getPrevious());
+            }
+            $this->assertCount(1, $errors);
+            $this->assertSame('SELECT * FROM missing_table WHERE id = ?', $errors[0]['sql']);
+
+            // An exception of the handler that is not about a PDO failure passes unchanged
+            try {
+                $db->query('SELECT * FROM notes WHERE body = ?', [$noisy]);
+                $this->fail('Expected ErrorException');
+            } catch (\ErrorException $e) {
+                $this->assertSame('not a database failure', $e->getMessage());
+            }
+            $this->assertCount(1, $errors);
+        } finally {
+            restore_error_handler();
+        }
+    }
+
+    /**
+     * A PDOException is a failed query whoever built it: also one that carries no errorInfo
+     * (PDO's own argument errors, a PDO subclass).
+     */
+    public function testAPdoExceptionWithoutErrorInfoIsStillAFailedQuery(): void
+    {
+        $driver = new class () extends SqliteDriver {
+            public function __construct()
+            {
+                $this->pdo = new class ('sqlite::memory:') extends \PDO {
+                    public function prepare(string $query, array $options = []): \PDOStatement|false
+                    {
+                        throw new \PDOException('no errorInfo on this one');
+                    }
+                };
+            }
+        };
+        $errors = [];
+        $driver->on('error', static function (array $data) use (&$errors): void {
+            $errors[] = $data['error'];
+        });
+
+        try {
+            $driver->query('SELECT 1');
+            $this->fail('Expected QueryException');
+        } catch (QueryException $e) {
+            $this->assertSame('Query failed', $e->getMessage());
+            $this->assertSame('no errorInfo on this one', $e->getPrevious()?->getMessage());
+        }
+        $this->assertSame(['no errorInfo on this one'], $errors);
+    }
+
+    // =========================================================================
+    // WHAT A DRIVER MAY BIND
+    // =========================================================================
+
+    public function testARawExpressionAsParameterIsRejected(): void
+    {
+        $db = Database::sqlite(':memory:');
+        $db->execute('CREATE TABLE notes (id INTEGER PRIMARY KEY, created_at TEXT)');
+
+        try {
+            $db->execute('INSERT INTO notes (created_at) VALUES (?)', [$db->now()]);
+            $this->fail('A raw expression must not be bound: it would be stored as its own text');
+        } catch (QueryException $e) {
+            $this->assertStringContainsString('Cannot bind a raw expression (parameter #1): write it into the SQL instead', (string) $e->getDebugMessage());
+        }
+        try {
+            $db->query('SELECT * FROM notes WHERE created_at < :t', ['t' => Database::raw('1')]);
+            $this->fail('A raw expression must not be bound');
+        } catch (QueryException $e) {
+            $this->assertStringContainsString('Cannot bind a raw expression (parameter "t")', (string) $e->getDebugMessage());
+        }
+
+        $this->assertSame(0, $db->table('notes')->count());
+        // Where the library takes a raw value, it is inlined as before
+        $db->insert('notes', ['created_at' => $db->now()]);
+        $this->assertSame(1, $db->table('notes')->where('created_at', '<=', $db->now())->count());
+    }
+
+    public function testADriverThatBindsStreamsDecidesWhatItLetsThrough(): void
+    {
+        $driver = new class () extends SqliteDriver {
+            protected function unbindableParameter(array $params): ?string
+            {
+                return parent::unbindableParameter(array_filter($params, static fn (mixed $value): bool => !is_resource($value)));
+            }
+
+            protected function bindAndExecute(\PDOStatement $stmt, array $params): bool
+            {
+                foreach ($params as $key => $value) {
+                    $stmt->bindValue($key + 1, $value, is_resource($value) ? \PDO::PARAM_LOB : \PDO::PARAM_STR);
+                }
+
+                return $stmt->execute();
+            }
+        };
+        $driver->execute('CREATE TABLE files (id INTEGER PRIMARY KEY, name TEXT, content BLOB)');
+        $stream = fopen('php://memory', 'r+');
+        $this->assertIsResource($stream);
+        fwrite($stream, "binary\x00content");
+        rewind($stream);
+
+        $driver->insert('files', ['name' => 'a.bin', 'content' => $stream]);
+        fclose($stream);
+
+        $this->assertSame("binary\x00content", $driver->query('SELECT content FROM files')->fetchColumn());
+        try {
+            $driver->insert('files', ['name' => ['not', 'a', 'name'], 'content' => 'x']);
+            $this->fail('The rest of the rule still holds');
+        } catch (QueryException $e) {
+            $this->assertStringContainsString('Cannot bind a value of type array (parameter #1)', (string) $e->getDebugMessage());
+        }
+    }
+
+    // =========================================================================
+    // LIKE IN A JOIN CONDITION
+    // =========================================================================
+
+    public function testLikeInAJoinConditionBindsTheEscapeCharacterToo(): void
+    {
+        $db = Database::sqlite(':memory:');
+        $db->execute('CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT)');
+        $db->execute('CREATE TABLE rules (id INTEGER PRIMARY KEY, pattern TEXT)');
+        $db->insert('files', ['path' => '100% done']);
+        $db->insert('files', ['path' => '1000 lines']);
+        $db->insert('rules', ['pattern' => Database::escapeLike('100%') . '%']);
+
+        $query = $db->table('files')->select('files.path')->join('rules', 'files.path', 'LIKE', 'rules.pattern')->where('files.id', '>', 0);
+        [$sql, $params] = $query->toSql();
+        $this->assertSame('SELECT `files`.`path` FROM `files` INNER JOIN `rules` ON `files`.`path` LIKE `rules`.`pattern` ESCAPE ? WHERE `files`.`id` > ?', $sql);
+        $this->assertSame(['\\', 0], $params, 'the join comes before the WHERE: so does its parameter');
+        $this->assertSame([['path' => '100% done']], $query->get());
+        $this->assertSame(1, $query->count());
+
+        $others = $db->table('files')->select('files.path')->leftJoin('rules', 'files.path', 'NOT LIKE', 'rules.pattern')->whereNotNull('rules.id')->get();
+        $this->assertSame([['path' => '1000 lines']], $others);
+    }
 }

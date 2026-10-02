@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Sodaho\PdoWrapper\Tests\Feature\Concerns;
 
 use PHPUnit\Framework\TestCase;
+use Sodaho\PdoWrapper\Database;
 use Sodaho\PdoWrapper\DatabaseInterface;
 use Sodaho\PdoWrapper\Exception\CommitHookException;
 use Sodaho\PdoWrapper\Exception\QueryException;
@@ -763,5 +764,112 @@ abstract class AbstractWorkflowTest extends TestCase
 
         $this->assertCount(1, $errors);
         $this->assertStringContainsString('nonexistent_table', $errors[0]['sql']);
+    }
+
+    /**
+     * insert() reads the new id before the 'query' hook runs: a listener that inserts on the
+     * same connection (an audit row, here a second user) must not replace the id it returns.
+     */
+    public function testInsertReturnsItsOwnIdWhenAQueryListenerInserts(): void
+    {
+        $listenerId = null;
+        $this->db->on('query', function (array $data) use (&$listenerId): void {
+            if ($listenerId === null && str_contains($data['sql'], 'INSERT')) {
+                $listenerId = 0; // set before the nested inserts fire this hook again
+                // a plain statement first: the outer insert's id must not be read a second time after it
+                $this->db->execute('INSERT INTO users (email, name) VALUES (?, ?)', ['audit2@test.com', 'Audit 2']);
+                $listenerId = $this->db->insert('users', ['email' => 'audit@test.com', 'name' => 'Audit']);
+            }
+        });
+
+        $id = $this->db->insert('users', ['email' => 'own@test.com', 'name' => 'Own']);
+
+        $own = $this->db->findOne('users', ['email' => 'own@test.com']);
+        $audit = $this->db->findOne('users', ['email' => 'audit@test.com']);
+        $this->assertNotNull($own);
+        $this->assertNotNull($audit);
+        $this->assertEquals($own['id'], $id, 'insert() returns the id of its own row');
+        $this->assertEquals($audit['id'], $listenerId);
+        $this->assertNotEquals($id, $listenerId);
+        $this->assertSame(3, $this->db->table('users')->count());
+    }
+
+    /**
+     * groupBy() takes Database::raw() for an expression, alone or next to column names; count()
+     * then counts the groups of that expression.
+     */
+    public function testGroupByARawExpression(): void
+    {
+        foreach ([['Anna', 'anna@a.test'], ['ANNA', 'anna@b.test'], ['Bert', 'bert@a.test']] as [$name, $email]) {
+            $this->db->insert('users', ['name' => $name, 'email' => $email]);
+        }
+        $byName = $this->db->table('users')
+            ->select([Database::raw('LOWER(name) AS lower_name'), Database::raw('COUNT(*) AS total')])
+            ->groupBy(Database::raw('LOWER(name)'));
+
+        [$sql] = $byName->toSql();
+        $this->assertStringEndsWith(' GROUP BY LOWER(name)', $sql);
+        $rows = (clone $byName)->orderBy('lower_name')->get();
+        $this->assertSame(['anna', 'bert'], array_column($rows, 'lower_name'));
+        $this->assertEquals([2, 1], array_column($rows, 'total'));
+        $this->assertSame(2, $byName->count());
+
+        $mixed = $this->db->table('users')
+            ->select([Database::raw('LOWER(name) AS lower_name'), 'email'])
+            ->groupBy([Database::raw('LOWER(name)'), 'email']);
+        $this->assertSame(3, $mixed->count());
+        $this->assertCount(3, $mixed->get());
+    }
+
+    /**
+     * exists() with distinct() and groupBy(), and whereBetween()/whereNotBetween() with a raw
+     * bound, executed on the real engine (the SQL shape differs per dialect).
+     */
+    public function testExistsWithDistinctAndGroupByAndBetweenWithARawBound(): void
+    {
+        foreach ([['a@test.com', 'Anna', 'admin'], ['b@test.com', 'Bert', 'user'], ['c@test.com', 'Cleo', 'user']] as [$email, $name, $role]) {
+            $this->db->insert('users', ['email' => $email, 'name' => $name, 'role' => $role]);
+        }
+        $ids = array_column($this->db->table('users')->orderBy('id')->get(), 'id');
+
+        $this->assertTrue($this->db->table('users')->select('role')->distinct()->groupBy('role')->exists());
+        $this->assertTrue($this->db->table('users')->select('role')->distinct()->groupBy('role')->having(Database::raw('COUNT(*)'), '>', 1)->exists());
+        $this->assertFalse($this->db->table('users')->select('role')->distinct()->groupBy('role')->having(Database::raw('COUNT(*)'), '>', 2)->exists());
+        $this->assertFalse($this->db->table('users')->where('role', 'guest')->select('role')->distinct()->groupBy('role')->exists());
+
+        $between = $this->db->table('users')->whereBetween('id', [Database::raw((string) (int) $ids[0] . ' + 1'), $ids[2]])->orderBy('id')->get();
+        $this->assertSame(['Bert', 'Cleo'], array_column($between, 'name'));
+        $notBetween = $this->db->table('users')->whereNotBetween('id', [$ids[1], Database::raw((string) (int) $ids[2] . ' + 0')])->get();
+        $this->assertSame(['Anna'], array_column($notBetween, 'name'));
+    }
+
+    /**
+     * LIKE in a join condition takes its pattern from a column; the bound escape character makes
+     * an escaped pattern mean the same on every database, in every kind of select.
+     */
+    public function testLikeInAJoinConditionUsesTheBoundEscapeCharacter(): void
+    {
+        $this->assertJoinLikeMatchesTheEscapedPatternOnly();
+    }
+
+    protected function assertJoinLikeMatchesTheEscapedPatternOnly(): void
+    {
+        foreach ([['a@test.com', '100% sure'], ['b@test.com', '1000 lines'], ['c@test.com', '100% done']] as [$email, $name]) {
+            $this->db->insert('users', ['email' => $email, 'name' => $name]);
+        }
+        $this->db->insert('tags', ['name' => Database::escapeLike('100%') . '%']);
+
+        $matching = fn () => $this->db->table('users')->join('tags', 'users.name', 'LIKE', 'tags.name');
+
+        $this->assertSame(['100% sure', '100% done'], array_column($matching()->select('users.name')->orderBy('users.id')->get(), 'name'));
+        $this->assertSame(2, $matching()->count());
+        $this->assertTrue($matching()->where('users.email', 'c@test.com')->exists());
+        $this->assertFalse($matching()->where('users.email', 'b@test.com')->exists());
+        $this->assertSame(2, $matching()->select('users.name')->distinct()->count());
+        $this->assertSame(2, $matching()->groupBy('users.id')->count());
+        $this->assertSame(
+            ['1000 lines'],
+            array_column($this->db->table('users')->select('users.name')->join('tags', 'users.name', 'NOT LIKE', 'tags.name')->get(), 'name')
+        );
     }
 }

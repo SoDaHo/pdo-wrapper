@@ -29,20 +29,20 @@ class Database
      * Falls back to environment variables if config values are not provided:
      * DB_HOST, DB_DATABASE, DB_USERNAME, DB_PASSWORD, DB_PORT
      *
-     * @param array{host?: string, database?: string, username?: string, password?: string, port?: int, charset?: string, options?: array<int, mixed>} $config
+     * @param array{host?: string, database?: string, username?: string, password?: string, port?: int|string, charset?: string, options?: array<int, mixed>} $config
      *
      * @throws Exception\ConnectionException When connection fails
      */
     public static function mysql(array $config = []): MySqlDriver
     {
-        $envPort = self::env('DB_PORT');
+        $envPort = trim((string) self::env('DB_PORT'));
 
         $mergedConfig = [
             'host' => $config['host'] ?? self::env('DB_HOST'),
             'database' => $config['database'] ?? self::env('DB_DATABASE'),
             'username' => $config['username'] ?? self::env('DB_USERNAME'),
             'password' => $config['password'] ?? self::env('DB_PASSWORD'),
-            'port' => $config['port'] ?? (is_numeric($envPort) ? (int)$envPort : 3306),
+            'port' => $config['port'] ?? ($envPort !== '' ? $envPort : 3306),
             'charset' => $config['charset'] ?? 'utf8mb4',
             'options' => $config['options'] ?? [],
         ];
@@ -56,20 +56,20 @@ class Database
      * Falls back to environment variables if config values are not provided:
      * DB_HOST, DB_DATABASE, DB_USERNAME, DB_PASSWORD, DB_PORT
      *
-     * @param array{host?: string, database?: string, username?: string, password?: string, port?: int, options?: array<int, mixed>} $config
+     * @param array{host?: string, database?: string, username?: string, password?: string, port?: int|string, options?: array<int, mixed>} $config
      *
      * @throws Exception\ConnectionException When connection fails
      */
     public static function postgres(array $config = []): PostgresDriver
     {
-        $envPort = self::env('DB_PORT');
+        $envPort = trim((string) self::env('DB_PORT'));
 
         $mergedConfig = [
             'host' => $config['host'] ?? self::env('DB_HOST'),
             'database' => $config['database'] ?? self::env('DB_DATABASE'),
             'username' => $config['username'] ?? self::env('DB_USERNAME'),
             'password' => $config['password'] ?? self::env('DB_PASSWORD'),
-            'port' => $config['port'] ?? (is_numeric($envPort) ? (int)$envPort : 5432),
+            'port' => $config['port'] ?? ($envPort !== '' ? $envPort : 5432),
             'options' => $config['options'] ?? [],
         ];
 
@@ -101,7 +101,7 @@ class Database
      * SQLite path comes from 'path', else 'database', else DB_SQLITE_PATH. One config array for
      * every environment: the driver decides which of them is used.
      *
-     * @param array{driver?: string, path?: string, host?: string, database?: string, username?: string, password?: string, port?: int, charset?: string, options?: array<int, mixed>} $config
+     * @param array{driver?: string, path?: string, host?: string, database?: string, username?: string, password?: string, port?: int|string, charset?: string, options?: array<int, mixed>} $config
      *
      * @throws ConnectionException When no or an unknown driver is named, or the connection fails
      */

@@ -47,6 +47,35 @@ class PostgresDriverTest extends TestCase
         }
     }
 
+    public function testRejectsAPortThatIsNotAWholeNumberInRange(): void
+    {
+        $base = ['host' => '127.0.0.1', 'database' => 'app', 'username' => 'postgres', 'password' => 'x'];
+
+        foreach (['abc', '5432 host=evil', 0, 65536, 5432.5] as $port) {
+            try {
+                new PostgresDriver(['port' => $port] + $base);
+                $this->fail('Expected ConnectionException for port ' . var_export($port, true));
+            } catch (ConnectionException $e) {
+                $this->assertSame('Invalid config value "port": expected a whole number between 1 and 65535', $e->getDebugMessage());
+            }
+        }
+    }
+
+    public function testAnInvalidPortFromTheEnvironmentIsRejected(): void
+    {
+        $_ENV['DB_HOST'] = '127.0.0.1';
+        $_ENV['DB_DATABASE'] = 'test';
+        $_ENV['DB_USERNAME'] = 'postgres';
+        $_ENV['DB_PORT'] = 'abc';
+
+        try {
+            Database::postgres();
+            $this->fail('Expected ConnectionException for DB_PORT=abc');
+        } catch (ConnectionException $e) {
+            $this->assertSame('Invalid config value "port": expected a whole number between 1 and 65535', $e->getDebugMessage());
+        }
+    }
+
     public function testThrowsExceptionWhenHostMissing(): void
     {
         $this->expectException(ConnectionException::class);

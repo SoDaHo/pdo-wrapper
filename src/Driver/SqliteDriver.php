@@ -24,10 +24,18 @@ class SqliteDriver extends AbstractDriver
      *
      * @param string $path Path to SQLite file or ':memory:' for in-memory database
      *
-     * @throws ConnectionException When connection fails
+     * @throws ConnectionException When the path contains a NUL byte or the connection fails
      */
     public function __construct(string $path = ':memory:')
     {
+        // The path ends at a NUL byte for SQLite: "data.db\0.txt" would open "data.db"
+        if (str_contains($path, "\0")) {
+            throw new ConnectionException(
+                message: 'Database connection failed',
+                debugMessage: 'Invalid character in config value "path"'
+            );
+        }
+
         $dsn = sprintf('sqlite:%s', $path);
 
         $defaultOptions = [

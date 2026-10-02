@@ -57,11 +57,12 @@ abstract class AbstractTransactionEndScenarios extends TestCase
     abstract protected function createTableSql(): string;
 
     /**
-     * What a callback that swallows a failed statement and returns normally leaves behind: the rows
-     * written before the failure (MySQL, SQLite) or nothing, because the engine aborts the whole
-     * transaction and COMMIT becomes a silent ROLLBACK (PostgreSQL).
+     * Whether a failed statement aborts the whole transaction (PostgreSQL) or only itself (MySQL,
+     * SQLite). A callback that swallows the failure and returns normally commits the earlier rows
+     * on the latter; on PostgreSQL the commit is refused: the server would turn COMMIT into a
+     * ROLLBACK and report success.
      */
-    abstract protected function swallowedStatementErrorKeepsEarlierRows(): bool;
+    abstract protected function aFailedStatementAbortsTheTransaction(): bool;
 
     protected function setUp(): void
     {
@@ -209,23 +210,42 @@ abstract class AbstractTransactionEndScenarios extends TestCase
         $this->assertVisible([1], 'the row inserted before the violation is gone too');
     }
 
-    public function testASwallowedStatementErrorEndsAsCommittedWithWhatTheEngineKept(): void
+    public function testASwallowedStatementErrorCommitsTheEarlierRowsOrRefusesTheCommit(): void
     {
-        $this->db->transaction(static function (DatabaseInterface $db): void {
+        $swallowed = null;
+        $callback = static function (DatabaseInterface $db) use (&$swallowed): void {
             $db->insert(self::TABLE, ['id' => 1, 'name' => 'before the error']);
             try {
                 $db->insert('no_such_table_' . self::TABLE, ['id' => 1]);
-            } catch (QueryException) {
-                // swallowed: the callback returns normally
+            } catch (QueryException $e) {
+                $swallowed = $e; // swallowed: the callback returns normally
             }
-        });
+        };
 
-        $this->assertSame(['commit', 'end'], $this->events, 'the library reports a commit on every engine');
-        $this->assertSame(self::COMMITTED, $this->ends[0]['outcome']);
-        $this->assertVisible(
-            $this->swallowedStatementErrorKeepsEarlierRows() ? [1] : [],
-            'MySQL and SQLite keep the earlier row; PostgreSQL aborted the transaction, its COMMIT was a silent ROLLBACK'
-        );
+        if (!$this->aFailedStatementAbortsTheTransaction()) {
+            $this->db->transaction($callback);
+
+            $this->assertSame(['commit', 'end'], $this->events);
+            $this->assertSame(self::COMMITTED, $this->ends[0]['outcome']);
+            $this->assertVisible([1], 'MySQL and SQLite roll back only the failed statement');
+
+            return;
+        }
+
+        try {
+            $this->db->transaction($callback);
+            $this->fail('Expected TransactionException: the aborted transaction must not be reported as committed');
+        } catch (TransactionException $e) {
+            $this->assertSame('Failed to commit transaction', $e->getMessage());
+            $this->assertStringContainsString('The transaction is aborted', (string) $e->getDebugMessage());
+            $this->assertNotNull($swallowed);
+            $this->assertSame($swallowed->getPrevious(), $e->getPrevious(), 'the statement failure that aborted it');
+            $this->assertSame([['outcome' => self::ROLLED_BACK, 'error' => $e]], $this->ends);
+        }
+
+        $this->assertSame(['rollback', 'end'], $this->events);
+        $this->assertFalse($this->pdo->reallyInTransaction());
+        $this->assertVisible([]);
     }
 
     public function testNestedTransactionInsideTheCallbackFailsToBeginAndTheOuterRollsBack(): void
@@ -609,6 +629,88 @@ abstract class AbstractTransactionEndScenarios extends TestCase
         $this->assertVisible([2]);
     }
 
+    /**
+     * The other way to end a transaction that was reported as lost but is in fact still open: a
+     * commit(). The commit listeners run, the data is committed, and no second end is told.
+     */
+    public function testAfterLostALaterCommitOfTheStillOpenTransactionTellsNoSecondEnd(): void
+    {
+        $cause = new RuntimeException('statement failed');
+
+        try {
+            $this->db->transaction(function (DatabaseInterface $db) use ($cause): void {
+                $db->insert(self::TABLE, ['id' => 1, 'name' => 'still open']);
+                $this->pdo->failRollBackAlways = true;
+                throw $cause;
+            });
+            $this->fail('Expected the callback exception');
+        } catch (RuntimeException $e) {
+            $this->assertSame($cause, $e);
+        }
+        $this->assertSame([['outcome' => self::LOST, 'error' => $cause]], $this->ends);
+        $this->assertTrue($this->pdo->reallyInTransaction());
+
+        $this->pdo->failRollBackAlways = false;
+        $this->db->commit();
+
+        $this->assertSame(['end', 'commit'], $this->events, 'the commit listeners run, no second end');
+        $this->assertFalse($this->pdo->reallyInTransaction());
+        $this->assertVisible([1]);
+    }
+
+    /**
+     * updateMultiple() inside the caller's transaction does not manage it: a failing row reaches
+     * the caller as QueryException, nothing is rolled back or told by the library, and the caller's
+     * rollback ends the transaction with one end.
+     */
+    public function testUpdateMultipleFailingInsideTheCallersTransactionLeavesItToTheCaller(): void
+    {
+        $this->db->insert(self::TABLE, ['id' => 1, 'name' => 'one']);
+        $this->db->insert(self::TABLE, ['id' => 2, 'name' => 'two']);
+        $this->events = [];
+
+        $this->db->beginTransaction();
+        try {
+            $this->db->updateMultiple(self::TABLE, [
+                ['id' => 1, 'name' => 'changed'],
+                ['id' => 2, 'no_such_column' => 'x'],
+            ]);
+            $this->fail('Expected QueryException');
+        } catch (QueryException $e) {
+            $this->assertSame('Query failed', $e->getMessage());
+        }
+
+        $this->assertSame([], $this->events, 'not the library\'s transaction: no rollback, no end');
+        $this->assertTrue($this->pdo->reallyInTransaction());
+
+        $this->db->rollback();
+        $this->assertSame(['rollback', 'end'], $this->events);
+        $this->assertSame([['outcome' => self::ROLLED_BACK, 'error' => null]], $this->ends);
+        $this->assertSame('one', $this->db->findOne(self::TABLE, ['id' => 1])['name'] ?? null, 'the first row\'s update is rolled back with the rest');
+    }
+
+    /**
+     * A statement failure belongs to the transaction it happened in. When that one was ended on raw
+     * PDO, a transaction begun on raw PDO afterwards commits through the library: where commit()
+     * asks about an earlier failure, it asks the server, and the server has a transaction.
+     */
+    public function testAFailureOfATransactionEndedOnRawPdoDoesNotRefuseTheNextCommit(): void
+    {
+        $this->db->beginTransaction();
+        try {
+            $this->db->insert('no_such_table_' . self::TABLE, ['id' => 1]);
+        } catch (QueryException) {
+            // swallowed
+        }
+        $this->pdo->rollBack();
+
+        $this->pdo->beginTransaction();
+        $this->db->insert(self::TABLE, ['id' => 1, 'name' => 'next transaction']);
+        $this->db->commit();
+
+        $this->assertVisible([1]);
+    }
+
     public function testLostWhenTheConnectionStateCannotBeRead(): void
     {
         $cause = new RuntimeException('statement failed');
@@ -630,6 +732,39 @@ abstract class AbstractTransactionEndScenarios extends TestCase
         $this->db->rollback();
         $this->assertSame(['end', 'rollback'], $this->events, 'no second end');
         $this->assertVisible([]);
+    }
+
+    /**
+     * The check for a chained transaction (MySQL completion_type=CHAIN) right after COMMIT and
+     * ROLLBACK reads the connection state. A state that cannot be read is not taken for a chained
+     * transaction: after a rollback nothing is reported, after a commit the commit listeners'
+     * own state check reports it as before.
+     */
+    public function testAnUnreadableStateRightAfterCommitOrRollbackIsNotTakenForAChainedTransaction(): void
+    {
+        $this->db->beginTransaction();
+        $this->db->insert(self::TABLE, ['id' => 1, 'name' => 'rolled back']);
+        $this->pdo->stateUnreadable = true;
+        $this->db->rollback();
+        $this->pdo->stateUnreadable = false;
+
+        $this->assertSame(['rollback', 'end'], $this->events);
+        $this->assertFalse($this->pdo->reallyInTransaction());
+
+        $this->db->beginTransaction();
+        $this->db->insert(self::TABLE, ['id' => 2, 'name' => 'committed']);
+        $this->pdo->stateUnreadable = true;
+        try {
+            $this->db->commit();
+            $this->fail('Expected CommitHookException');
+        } catch (CommitHookException $e) {
+            $this->assertSame('connection state unknown after listener', $e->failures[0]->getMessage());
+        } finally {
+            $this->pdo->stateUnreadable = false;
+        }
+
+        $this->assertSame(self::COMMITTED, $this->ends[1]['outcome']);
+        $this->assertVisible([2]);
     }
 
     /**

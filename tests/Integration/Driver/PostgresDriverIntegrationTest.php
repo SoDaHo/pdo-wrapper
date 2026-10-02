@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Sodaho\PdoWrapper\Tests\Integration\Driver;
 
 use PDO;
+use PDOException;
 use PDOStatement;
 use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\TestCase;
@@ -12,6 +13,7 @@ use Sodaho\PdoWrapper\DatabaseInterface;
 use Sodaho\PdoWrapper\Driver\PostgresDriver;
 use Sodaho\PdoWrapper\Exception\ConnectionException;
 use Sodaho\PdoWrapper\Exception\QueryException;
+use Sodaho\PdoWrapper\Exception\TransactionException;
 
 #[Group('postgres')]
 class PostgresDriverIntegrationTest extends TestCase
@@ -178,16 +180,29 @@ class PostgresDriverIntegrationTest extends TestCase
     }
 
     /**
-     * The savepoint itself can fail: a 'query' hook that breaks the transaction right after the
-     * INSERT (a failing statement in silent mode aborts it) makes SAVEPOINT return false, and the
-     * insert is reported as failed with the savepoint's reason.
+     * The savepoint itself can fail (here: PDO reports it as false in silent mode); the insert is
+     * then reported as failed with the savepoint's reason. The 'query' hook has fired before: the
+     * INSERT ran.
      */
     public function testFailingSavepointAroundTheInsertIdProbeIsReported(): void
     {
-        $driver = new PostgresDriver(self::getConfig() + ['options' => [PDO::ATTR_ERRMODE => PDO::ERRMODE_SILENT]]);
+        $c = self::getConfig();
+        $pdo = new class (sprintf('pgsql:host=%s;port=%d;dbname=%s', $c['host'], $c['port'], $c['database']), $c['username'], $c['password'], [PDO::ATTR_ERRMODE => PDO::ERRMODE_SILENT]) extends PDO {
+            public function exec(string $statement): int|false
+            {
+                return str_starts_with($statement, 'SAVEPOINT') ? false : parent::exec($statement);
+            }
+        };
+        $driver = new class ($pdo) extends PostgresDriver {
+            public function __construct(PDO $pdo)
+            {
+                $this->pdo = $pdo;
+            }
+        };
         $driver->execute('CREATE TEMPORARY TABLE test_savepoint_users (id SERIAL PRIMARY KEY, name TEXT)');
-        $driver->on('query', static function () use ($driver): void {
-            $driver->getPdo()->exec('SELECT 1/0'); // silent mode: returns false, the transaction is aborted
+        $seen = [];
+        $driver->on('query', static function (array $data) use (&$seen): void {
+            $seen[] = $data['sql'];
         });
 
         $driver->beginTransaction();
@@ -201,7 +216,549 @@ class PostgresDriverIntegrationTest extends TestCase
             $driver->rollback();
         }
 
+        $this->assertSame(['INSERT INTO "test_savepoint_users" ("name") VALUES (?)'], $seen);
         $this->assertFalse($driver->getPdo()->inTransaction());
+    }
+
+    /**
+     * The id is read before the 'query' hook runs: a listener that breaks the transaction (a
+     * failing statement in silent mode aborts it) no longer takes the id with it.
+     */
+    public function testInsertIdIsReadBeforeAQueryListenerCanBreakTheTransaction(): void
+    {
+        $driver = new PostgresDriver(self::getConfig() + ['options' => [PDO::ATTR_ERRMODE => PDO::ERRMODE_SILENT]]);
+        $driver->execute('CREATE TEMPORARY TABLE test_hook_users (id SERIAL PRIMARY KEY, name TEXT)');
+        $driver->on('query', static function () use ($driver): void {
+            $driver->getPdo()->exec('SELECT 1/0'); // silent mode: returns false, the transaction is aborted
+        });
+
+        $driver->beginTransaction();
+        try {
+            $this->assertSame(1, $driver->insert('test_hook_users', ['name' => 'x']));
+        } finally {
+            $driver->rollback();
+        }
+    }
+
+    /**
+     * The sequence is looked up in the table's own schema, quoted like the table: a table of the
+     * same name on the search_path must not answer, and a mixed-case name is not folded.
+     */
+    public function testInsertReadsTheSequenceOfTheSchemaQualifiedTable(): void
+    {
+        $this->driver->execute('DROP SCHEMA IF EXISTS pdo_wrapper_other CASCADE');
+        $this->driver->execute('CREATE SCHEMA pdo_wrapper_other');
+        try {
+            $this->driver->execute('CREATE TEMPORARY TABLE seq_users (id SERIAL PRIMARY KEY, name TEXT)');
+            $this->driver->execute('CREATE TABLE pdo_wrapper_other.seq_users (id SERIAL PRIMARY KEY, name TEXT)');
+            $this->driver->execute("SELECT setval('pdo_wrapper_other.seq_users_id_seq', 500)");
+            $this->driver->execute('CREATE TABLE pdo_wrapper_other."MixedCase" (id SERIAL PRIMARY KEY, name TEXT)');
+            $this->driver->execute('CREATE TABLE pdo_wrapper_other."we""ird" (id SERIAL PRIMARY KEY, name TEXT)');
+
+            // The temporary table comes first on the search_path: its sequence is seq_users_id_seq too
+            $this->assertSame(1, $this->driver->insert('seq_users', ['name' => 'temp']));
+            $this->assertSame(501, $this->driver->insert('pdo_wrapper_other.seq_users', ['name' => 'other']));
+            $this->assertSame(2, $this->driver->insert('seq_users', ['name' => 'temp']));
+            $this->assertSame(502, $this->driver->table('pdo_wrapper_other.seq_users')->insert(['name' => 'other']));
+
+            $this->assertSame(1, $this->driver->insert('pdo_wrapper_other.MixedCase', ['name' => 'm']));
+            $this->assertSame(1, $this->driver->insert('pdo_wrapper_other.we"ird', ['name' => 'w']));
+        } finally {
+            $this->driver->execute('DROP SCHEMA IF EXISTS pdo_wrapper_other CASCADE');
+        }
+    }
+
+    public function testInsertReadsTheIdItselfWhenAnOverriddenQueryBypassesTheDriver(): void
+    {
+        $driver = new class (self::getConfig()) extends PostgresDriver {
+            public function query(string $sql, array $params = []): \PDOStatement
+            {
+                $stmt = $this->pdo->prepare($sql);
+                $stmt->execute(array_values($params));
+
+                return $stmt;
+            }
+        };
+        $driver->execute('CREATE TEMPORARY TABLE test_bypass_users (id SERIAL PRIMARY KEY, name TEXT)');
+
+        $this->assertSame(1, $driver->insert('test_bypass_users', ['name' => 'A']));
+        $this->assertSame(2, $driver->insert('test_bypass_users', ['name' => 'B']));
+    }
+
+    /**
+     * A failed statement aborts the transaction; PostgreSQL answers the COMMIT with a ROLLBACK and
+     * PDO reports success. commit() asks first and refuses - every time, until rollback().
+     */
+    public function testCommitOfAnAbortedTransactionIsRefused(): void
+    {
+        $this->driver->execute('CREATE TEMPORARY TABLE test_aborted (id INT PRIMARY KEY)');
+        $ends = [];
+        $this->driver->on('transaction.end', static function (array $data) use (&$ends): void {
+            $ends[] = $data;
+        });
+        $queries = [];
+        $this->driver->on('query', static function (array $data) use (&$queries): void {
+            $queries[] = $data['sql'];
+        });
+
+        $this->driver->beginTransaction();
+        $this->driver->insert('test_aborted', ['id' => 1]);
+        $failure = null;
+        try {
+            $this->driver->insert('test_aborted', ['id' => 1]);
+        } catch (QueryException $e) {
+            $failure = $e->getPrevious();
+        }
+        $this->assertInstanceOf(PDOException::class, $failure);
+
+        for ($attempt = 1; $attempt <= 2; $attempt++) {
+            try {
+                $this->driver->commit();
+                $this->fail('Expected TransactionException');
+            } catch (TransactionException $e) {
+                $this->assertSame('Failed to commit transaction', $e->getMessage());
+                $this->assertSame($failure, $e->getPrevious());
+                $this->assertStringContainsString('The transaction is aborted', (string) $e->getDebugMessage());
+            }
+            $this->assertTrue($this->driver->inTransaction(), 'still the caller\'s to end');
+            $this->assertSame([], $ends, 'a refused commit tells no end');
+        }
+
+        $this->driver->rollback();
+        $this->assertSame([['outcome' => 'rolled_back', 'error' => null]], $ends);
+        $this->assertSame(0, $this->driver->table('test_aborted')->count());
+        $this->assertNotContains('SELECT 1', $queries, 'the probe is not a statement of the caller');
+
+        // The next transaction starts clean
+        $this->driver->transaction(static fn (DatabaseInterface $db): int|string => $db->insert('test_aborted', ['id' => 2]));
+        $this->assertSame(1, $this->driver->table('test_aborted')->count());
+    }
+
+    /**
+     * The probe before COMMIT can fail for another reason than an aborted transaction: the
+     * connection is gone. The commit is refused as well, and the message says which of the two it was.
+     */
+    public function testCommitAfterAFailedStatementOnALostConnectionIsRefused(): void
+    {
+        $db = new PostgresDriver(self::getConfig());
+        $killer = new PostgresDriver(self::getConfig());
+        $pid = (int) $db->query('SELECT pg_backend_pid()')->fetchColumn();
+
+        $db->beginTransaction();
+        $killer->query('SELECT pg_terminate_backend(?)', [$pid])->fetchColumn();
+        $gone = false;
+        for ($i = 0; $i < 100 && !$gone; $i++) {
+            $gone = (int) $killer->query('SELECT COUNT(*) FROM pg_stat_activity WHERE pid = ?', [$pid])->fetchColumn() === 0;
+            if (!$gone) {
+                usleep(50_000);
+            }
+        }
+        $this->assertTrue($gone, 'the terminated backend did not disappear within 5 s');
+        try {
+            $db->execute('SELECT 1');
+            $this->fail('Expected QueryException: the connection is gone');
+        } catch (QueryException) {
+            // swallowed
+        }
+
+        try {
+            $db->commit();
+            $this->fail('Expected TransactionException');
+        } catch (TransactionException $e) {
+            $this->assertSame('Failed to commit transaction', $e->getMessage());
+            $this->assertStringContainsString('the connection no longer answers (SQLSTATE ', (string) $e->getDebugMessage());
+            $this->assertStringNotContainsString('is aborted', (string) $e->getDebugMessage());
+        }
+    }
+
+    /**
+     * A failing lastInsertId() aborts the transaction like any failed statement, although it is
+     * not a query(): the commit is refused as well - in exception mode and when PDO only returns false.
+     */
+    public function testAFailedLastInsertIdInsideATransactionRefusesTheCommit(): void
+    {
+        foreach ([PDO::ERRMODE_EXCEPTION, PDO::ERRMODE_SILENT] as $mode) {
+            $driver = new PostgresDriver(self::getConfig() + ['options' => [PDO::ATTR_ERRMODE => $mode]]);
+            $driver->execute('CREATE TEMPORARY TABLE test_last_id (id INT PRIMARY KEY)');
+
+            $driver->beginTransaction();
+            $driver->insert('test_last_id', ['id' => 1]);
+            try {
+                $this->assertFalse($driver->lastInsertId('no_such_sequence_xyz'), 'silent mode reports the failure as false');
+            } catch (QueryException $e) {
+                $this->assertSame('Failed to get last insert ID', $e->getMessage());
+            }
+
+            try {
+                $driver->commit();
+                $this->fail('Expected TransactionException: the failed lookup aborted the transaction');
+            } catch (TransactionException $e) {
+                $this->assertStringContainsString('The transaction is aborted', (string) $e->getDebugMessage());
+            }
+            $driver->rollback();
+            $this->assertSame(0, $driver->table('test_last_id')->count());
+        }
+    }
+
+    /**
+     * The refusal names the failure that aborted the transaction: not one a savepoint caught
+     * earlier, and not the "transaction is aborted" answers that followed it.
+     */
+    public function testTheRefusalNamesTheFailureThatAbortedTheTransaction(): void
+    {
+        $this->driver->execute('CREATE TEMPORARY TABLE test_cause (id INT PRIMARY KEY)');
+        $failures = [];
+        $fail = function (string $sql) use (&$failures): void {
+            try {
+                $this->driver->execute($sql);
+            } catch (QueryException $e) {
+                $failures[] = $e->getPrevious();
+            }
+        };
+
+        $this->driver->beginTransaction();
+        $this->driver->getPdo()->exec('SAVEPOINT attempt');
+        $fail('SELECT 1/0');                          // caught by the savepoint
+        $this->driver->getPdo()->exec('ROLLBACK TO SAVEPOINT attempt');
+        $fail('SELECT * FROM no_such_table_cause');   // aborts the transaction
+        $fail('SELECT 1');                            // 25P02: a consequence
+        $this->assertCount(3, $failures);
+        $this->assertSame('25P02', $failures[2]?->getCode());
+
+        try {
+            $this->driver->commit();
+            $this->fail('Expected TransactionException');
+        } catch (TransactionException $e) {
+            $this->assertSame($failures[1], $e->getPrevious());
+        } finally {
+            $this->driver->rollback();
+        }
+    }
+
+    /**
+     * PDO::ERRMODE_WARNING with an error handler that turns warnings into exceptions (as frameworks
+     * install it): the failed statement still counts as a failed query, and the probe before
+     * COMMIT still ends in a TransactionException.
+     */
+    public function testWarningModeWithAThrowingErrorHandlerStillRefusesTheCommit(): void
+    {
+        $driver = new PostgresDriver(self::getConfig() + ['options' => [PDO::ATTR_ERRMODE => PDO::ERRMODE_WARNING]]);
+        $driver->execute('CREATE TEMPORARY TABLE test_warning_mode (id INT PRIMARY KEY)');
+        $errors = [];
+        $driver->on('error', static function (array $data) use (&$errors): void {
+            $errors[] = $data['error'];
+        });
+
+        set_error_handler(static function (int $severity, string $message, string $file, int $line): never {
+            throw new \ErrorException($message, 0, $severity, $file, $line);
+        });
+        try {
+            $driver->beginTransaction();
+            $driver->insert('test_warning_mode', ['id' => 1]);
+            try {
+                $driver->execute('SELECT 1/0');
+                $this->fail('Expected QueryException');
+            } catch (QueryException $e) {
+                $this->assertSame('Query failed', $e->getMessage());
+                $this->assertStringContainsString('division by zero', (string) $e->getDebugMessage());
+            }
+            $this->assertCount(1, $errors);
+
+            try {
+                $driver->commit();
+                $this->fail('Expected TransactionException');
+            } catch (TransactionException $e) {
+                $this->assertStringContainsString('The transaction is aborted', (string) $e->getDebugMessage());
+            }
+            $driver->rollback();
+        } finally {
+            restore_error_handler();
+        }
+
+        $this->assertSame(0, $driver->table('test_warning_mode')->count());
+    }
+
+    /**
+     * A driver whose query() sends a session setting ahead of every statement (row-level security,
+     * a tenant) keeps getting the id of the INSERT: the id is read after the statement it belongs to.
+     */
+    public function testInsertReturnsItsIdWhenAnOverriddenQuerySendsAStatementAhead(): void
+    {
+        $driver = new class (self::getConfig()) extends PostgresDriver {
+            public function query(string $sql, array $params = []): \PDOStatement
+            {
+                parent::query("SELECT set_config('app.tenant', ?, false)", ['42']);
+
+                return parent::query($sql, $params);
+            }
+        };
+        $driver->execute('CREATE TEMPORARY TABLE test_ahead_users (id SERIAL PRIMARY KEY, name TEXT)');
+
+        $this->assertSame(1, $driver->insert('test_ahead_users', ['name' => 'A']));
+        $this->assertSame(2, $driver->insert('test_ahead_users', ['name' => 'B']));
+        $this->assertSame(3, $driver->transaction(static fn (DatabaseInterface $db): int|string => $db->insert('test_ahead_users', ['name' => 'C'])));
+    }
+
+    /**
+     * A failure on raw PDO is not seen - but its consequence is: the next statement through the
+     * library fails with SQLSTATE 25P02, and with nothing else remembered that is reason enough
+     * to ask the server before the COMMIT.
+     */
+    public function testAnAbortThatOnlyShowsAsItsConsequenceStillRefusesTheCommit(): void
+    {
+        $this->driver->execute('CREATE TEMPORARY TABLE test_raw_abort (id INT PRIMARY KEY)');
+
+        $this->driver->beginTransaction();
+        $this->driver->insert('test_raw_abort', ['id' => 1]);
+        try {
+            $this->driver->getPdo()->exec('SELECT * FROM no_such_table_raw_abort');
+        } catch (PDOException) {
+            // raw PDO: the library does not see this failure
+        }
+        $consequence = null;
+        try {
+            $this->driver->execute('SELECT 1');
+        } catch (QueryException $e) {
+            $consequence = $e->getPrevious();
+        }
+        $this->assertSame('25P02', $consequence?->getCode());
+
+        try {
+            $this->driver->commit();
+            $this->fail('Expected TransactionException');
+        } catch (TransactionException $e) {
+            $this->assertSame($consequence, $e->getPrevious());
+            $this->assertStringContainsString('The transaction is aborted', (string) $e->getDebugMessage());
+        } finally {
+            $this->driver->rollback();
+        }
+        $this->assertSame(0, $this->driver->table('test_raw_abort')->count());
+    }
+
+    /**
+     * The error handler may throw any exception, not only ErrorException, and the failure may come
+     * from lastInsertId() or from the savepoint around the id probe: each still counts as the
+     * database failure it is, and the commit is refused.
+     */
+    public function testWarningModeWithAnyThrowingErrorHandlerIsStillADatabaseFailure(): void
+    {
+        $driver = new PostgresDriver(self::getConfig() + ['options' => [PDO::ATTR_ERRMODE => PDO::ERRMODE_WARNING]]);
+        $driver->execute('CREATE TEMPORARY TABLE test_any_handler (id SERIAL PRIMARY KEY, name TEXT)');
+
+        // also a PDOException of the handler's own making: it carries no errorInfo, PDO's record does
+        foreach ([\RuntimeException::class, PDOException::class] as $thrown) {
+            set_error_handler(static function (int $severity, string $message) use ($thrown): never {
+                throw new $thrown('handler: ' . $message);
+            });
+            try {
+                $driver->beginTransaction();
+                try {
+                    $driver->execute('SELECT 1/0');
+                    $this->fail('Expected QueryException');
+                } catch (QueryException $e) {
+                    $this->assertStringContainsString('division by zero', (string) $e->getDebugMessage());
+                    $this->assertSame('22012', $e->getPrevious()?->errorInfo[0] ?? null, 'the failure PDO recorded');
+                    $this->assertInstanceOf($thrown, $e->getPrevious()?->getPrevious(), 'the handler\'s exception is kept');
+                }
+                $driver->rollback();
+            } finally {
+                restore_error_handler();
+            }
+        }
+
+        set_error_handler(static function (int $severity, string $message): never {
+            throw new \RuntimeException('handler: ' . $message);
+        });
+        try {
+            // a failed statement
+            $driver->beginTransaction();
+            try {
+                $driver->execute('SELECT 1/0');
+                $this->fail('Expected QueryException');
+            } catch (QueryException $e) {
+                $this->assertStringContainsString('division by zero', (string) $e->getDebugMessage());
+            }
+            try {
+                $driver->commit();
+                $this->fail('Expected TransactionException');
+            } catch (TransactionException $e) {
+                $this->assertStringContainsString('The transaction is aborted', (string) $e->getDebugMessage());
+            }
+            $driver->rollback();
+
+            // a failed lastInsertId()
+            $driver->beginTransaction();
+            $driver->insert('test_any_handler', ['name' => 'a']);
+            try {
+                $driver->lastInsertId('no_such_sequence_any_handler');
+                $this->fail('Expected QueryException');
+            } catch (QueryException $e) {
+                $this->assertSame('Failed to get last insert ID', $e->getMessage());
+            }
+            try {
+                $driver->commit();
+                $this->fail('Expected TransactionException');
+            } catch (TransactionException $e) {
+                $this->assertStringContainsString('The transaction is aborted', (string) $e->getDebugMessage());
+            }
+            $driver->rollback();
+        } finally {
+            restore_error_handler();
+        }
+
+        $this->assertSame(0, $driver->table('test_any_handler')->count());
+    }
+
+    public function testAnErrorHandlerExceptionThatIsNotAboutPdoPassesThroughLastInsertId(): void
+    {
+        $driver = new class (self::getConfig()) extends PostgresDriver {
+            public function replacePdo(PDO $pdo): void
+            {
+                $this->pdo = $pdo;
+            }
+        };
+        $c = self::getConfig();
+        $driver->replacePdo(new class (sprintf('pgsql:host=%s;port=%d;dbname=%s', $c['host'], $c['port'], $c['database']), $c['username'], $c['password']) extends PDO {
+            public function lastInsertId(?string $name = null): string|false
+            {
+                throw new \LogicException('not a database failure');
+            }
+        });
+
+        // An earlier failure left its mark on the connection: outside of warning mode that says
+        // nothing about an exception thrown later
+        try {
+            $driver->getPdo()->exec('SELECT 1/0');
+            $this->fail('Expected PDOException');
+        } catch (PDOException) {
+            $this->assertSame('22012', $driver->getPdo()->errorCode());
+        }
+
+        $this->expectException(\LogicException::class);
+        $this->expectExceptionMessage('not a database failure');
+        $driver->lastInsertId();
+    }
+
+    /**
+     * The savepoint statements around the id probe run on raw PDO. In warning mode with a throwing
+     * handler their failure arrives as the handler's exception: it is the same 'Insert failed'.
+     */
+    public function testAFailingSavepointInWarningModeWithAThrowingHandlerIsReported(): void
+    {
+        $c = self::getConfig();
+        $pdo = new class (sprintf('pgsql:host=%s;port=%d;dbname=%s', $c['host'], $c['port'], $c['database']), $c['username'], $c['password'], [PDO::ATTR_ERRMODE => PDO::ERRMODE_WARNING]) extends PDO {
+            public bool $breakSavepoints = false;
+
+            public function exec(string $statement): int|false
+            {
+                if ($this->breakSavepoints && str_starts_with($statement, 'SAVEPOINT')) {
+                    return parent::exec('SAVEPOINT'); // a syntax error: PDO warns, the handler throws
+                }
+
+                return parent::exec($statement);
+            }
+        };
+        $driver = new class ($pdo) extends PostgresDriver {
+            public function __construct(PDO $pdo)
+            {
+                $this->pdo = $pdo;
+            }
+        };
+        $driver->execute('CREATE TEMPORARY TABLE test_savepoint_warning (id SERIAL PRIMARY KEY, name TEXT)');
+
+        set_error_handler(static function (int $severity, string $message): never {
+            throw new \RuntimeException('handler: ' . $message);
+        });
+        try {
+            $driver->beginTransaction();
+            $pdo->breakSavepoints = true;
+            try {
+                $driver->insert('test_savepoint_warning', ['name' => 'x']);
+                $this->fail('Expected QueryException');
+            } catch (QueryException $e) {
+                $this->assertSame('Insert failed', $e->getMessage());
+                $this->assertStringContainsString('Savepoint around the insert ID probe failed: PDO reported a warning: ', (string) $e->getDebugMessage());
+            }
+            $pdo->breakSavepoints = false;
+            try {
+                $driver->commit();
+                $this->fail('Expected TransactionException: the failed savepoint statement aborted the transaction');
+            } catch (TransactionException $e) {
+                $this->assertStringContainsString('The transaction is aborted', (string) $e->getDebugMessage());
+            }
+            $driver->rollback();
+        } finally {
+            restore_error_handler();
+        }
+    }
+
+    public function testCommitAfterASavepointCaughtTheFailureGoesThrough(): void
+    {
+        $this->driver->execute('CREATE TEMPORARY TABLE test_savepoint_caught (id INT PRIMARY KEY)');
+
+        $this->driver->transaction(static function (DatabaseInterface $db): void {
+            $db->insert('test_savepoint_caught', ['id' => 1]);
+            $db->getPdo()->exec('SAVEPOINT attempt');
+            try {
+                $db->insert('test_savepoint_caught', ['id' => 1]);
+            } catch (QueryException) {
+                $db->getPdo()->exec('ROLLBACK TO SAVEPOINT attempt');
+            }
+            $db->insert('test_savepoint_caught', ['id' => 2]);
+        });
+
+        $this->assertSame(2, $this->driver->table('test_savepoint_caught')->count());
+    }
+
+    public function testCommitOfAnAbortedTransactionIsRefusedInSilentErrorMode(): void
+    {
+        $driver = new PostgresDriver(self::getConfig() + ['options' => [PDO::ATTR_ERRMODE => PDO::ERRMODE_SILENT]]);
+        $driver->execute('CREATE TEMPORARY TABLE test_aborted_silent (id INT PRIMARY KEY)');
+
+        try {
+            $driver->transaction(static function (DatabaseInterface $db): void {
+                $db->insert('test_aborted_silent', ['id' => 1]);
+                try {
+                    $db->execute('SELECT 1/0');
+                } catch (QueryException) {
+                    // swallowed
+                }
+            });
+            $this->fail('Expected TransactionException');
+        } catch (TransactionException $e) {
+            $this->assertStringContainsString('The transaction is aborted', (string) $e->getDebugMessage());
+        }
+
+        $this->assertFalse($driver->inTransaction());
+        $this->assertSame(0, $driver->table('test_aborted_silent')->count());
+    }
+
+    /**
+     * A statement that failed outside a transaction, or in one that was rolled back, says nothing
+     * about the next transaction - also when that one was begun on raw PDO.
+     */
+    public function testAFailureOutsideTheTransactionDoesNotConcernTheNextCommit(): void
+    {
+        $this->driver->execute('CREATE TEMPORARY TABLE test_unrelated (id INT PRIMARY KEY)');
+
+        try {
+            $this->driver->execute('SELECT 1/0');
+        } catch (QueryException) {
+            // autocommit: nothing to abort
+        }
+        $this->driver->beginTransaction();
+        try {
+            $this->driver->execute('SELECT 1/0');
+        } catch (QueryException) {
+            // aborted, then rolled back
+        }
+        $this->driver->rollback();
+
+        $this->driver->getPdo()->beginTransaction();
+        $this->driver->insert('test_unrelated', ['id' => 1]);
+        $this->driver->commit();
+
+        $this->assertSame(1, $this->driver->table('test_unrelated')->count());
     }
 
     public function testNowAndUtcNowAreUsableAsValues(): void

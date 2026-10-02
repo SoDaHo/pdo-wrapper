@@ -198,4 +198,15 @@ class MySqlWorkflowTest extends AbstractWorkflowTest
         // Clean up
         $this->db->delete('users', ['id' => $id]);
     }
+
+    /**
+     * Under NO_BACKSLASH_ESCAPES the backslash is no escape character for MySQL unless the
+     * statement says so: the join condition says so, with a bound value.
+     */
+    public function testLikeInAJoinConditionHoldsUnderNoBackslashEscapes(): void
+    {
+        $this->db->execute("SET SESSION sql_mode = CONCAT(@@sql_mode, ',NO_BACKSLASH_ESCAPES')");
+
+        $this->assertJoinLikeMatchesTheEscapedPatternOnly();
+    }
 }
