@@ -1034,6 +1034,49 @@ class TransactionTest extends TestCase
     }
 
     /**
+     * A driver whose beginTransaction() does not go through the one of AbstractDriver has no
+     * numbered transactions: transaction() and updateMultiple() commit and roll back what is
+     * open, as they always did.
+     */
+    public function testATransactionBegunByAnOverrideThatBypassesTheBaseClassIsStillEnded(): void
+    {
+        $db = new class () extends SqliteDriver {
+            public function beginTransaction(): void
+            {
+                $this->getPdo()->beginTransaction();
+            }
+        };
+        $db->execute('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)');
+
+        $db->transaction(static fn (DatabaseInterface $db) => $db->insert('users', ['name' => 'Max']));
+        $this->assertFalse($db->getPdo()->inTransaction(), 'committed');
+        $this->assertSame(1, $this->userCount($db));
+
+        try {
+            $db->transaction(static function (DatabaseInterface $db): void {
+                $db->insert('users', ['name' => 'Moritz']);
+                throw new RuntimeException('callback failed');
+            });
+            $this->fail('Expected the callback exception');
+        } catch (RuntimeException $e) {
+            $this->assertSame('callback failed', $e->getMessage());
+        }
+        $this->assertFalse($db->getPdo()->inTransaction(), 'rolled back');
+        $this->assertSame(1, $this->userCount($db));
+
+        $this->assertSame(1, $db->updateMultiple('users', [['id' => 1, 'name' => 'Max Updated']]));
+        $this->assertFalse($db->getPdo()->inTransaction());
+
+        try {
+            $db->updateMultiple('users', [['id' => 1, 'name' => 'x'], ['name' => 'no key']]);
+            $this->fail('Expected QueryException');
+        } catch (QueryException) {
+            $this->assertFalse($db->getPdo()->inTransaction(), 'rolled back');
+        }
+        $this->assertSame('Max Updated', $db->findOne('users', ['id' => 1])['name'] ?? null);
+    }
+
+    /**
      * SQLite driver counting rollback() calls: after a successful commit there must be none.
      */
     private function rollbackCountingDriver(): SqliteDriver

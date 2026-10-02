@@ -516,7 +516,7 @@ class MySqlDriverIntegrationTest extends TestCase
             }
         );
 
-        $this->assertStringContainsString('no active transaction', strtolower((string) $e->getDebugMessage()), 'the callback ended the transaction itself');
+        $this->assertStringStartsWith('Not committed: the transaction this call began has already been ended through this driver', (string) $e->getDebugMessage(), 'the callback ended the transaction itself');
         $this->assertSame([['outcome' => 'rolled_back', 'error' => null]], $measured['ends'], "the callback's own rollback() told the end");
         $this->assertSame(1, $listenerRuns);
         $this->assertSame('after rollback()', $measured['user2Name']);

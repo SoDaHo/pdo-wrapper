@@ -152,7 +152,7 @@ interface DatabaseInterface
      * Execute a callback within a transaction.
      * Auto-commits on success, auto-rollback on exception.
      *
-     * Four outcomes on failure:
+     * What can go wrong:
      * - the transaction could not be started (BEGIN failed, or a transaction.begin listener threw):
      *   the callback did not run; after a throwing listener a rollback is attempted (best effort);
      *   the exception is re-thrown, a PDOException from the listener as TransactionException;
@@ -181,9 +181,13 @@ interface DatabaseInterface
      *   PostgreSQL leaves behind when COMMIT fails on a deferred constraint (the server rolled back),
      *   but also what a callback leaves behind that committed itself with a raw COMMIT or a MySQL DDL
      *   statement (the data is committed, PDO::commit() then fails with "no active transaction").
-     *   In both commit cases the exception's $outcome is the outcome transaction.end reported, and
-     *   'lost' when nothing was left to end because the callback had ended the transaction itself
-     *   through this library: only 'rolled_back' says that nothing is committed;
+     *   In both commit cases the exception's $outcome is the outcome transaction.end reported:
+     *   only 'rolled_back' says that nothing is committed;
+     * - the callback ended the transaction itself through this library (commit() or rollback()), or a
+     *   listener did: this method ends only the transaction it began. Whatever is open afterwards -
+     *   begun by the callback or by a listener, through this library or on raw PDO - is neither
+     *   committed nor rolled back here. A callback that returns gets a CommitFailedException with
+     *   outcome 'lost' and no COMMIT is sent; one that throws gets its exception re-thrown;
      * - a transaction.commit or transaction.end listener failed, or the connection state after a
      *   commit listener could not be verified or cleaned up: committed, the committed transaction is
      *   not rolled back, CommitHookException (getPrevious() is the first failure, which need not be
@@ -372,7 +376,7 @@ interface DatabaseInterface
      * @param string $keyColumn Column to match rows (default: 'id')
      *
      * @throws Exception\QueryException
-     * @throws Exception\TransactionException When the own transaction's commit failed
+     * @throws Exception\TransactionException When the own transaction's commit failed, or a listener ended the own transaction while the batch ran (a CommitFailedException with outcome 'lost'; what is open then is left alone)
      * @throws Exception\CommitHookException When committed, but a transaction.commit or transaction.end listener failed or the connection state after a commit listener could not be verified
      *
      * @return int Number of affected rows

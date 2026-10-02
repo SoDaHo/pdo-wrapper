@@ -74,7 +74,16 @@ namespace Sodaho\PdoWrapper\Traits;
  *   the first one's end (not supported);
  * - inside a 'transaction.end' listener: it ends inside that listener, before the remaining outer
  *   'transaction.end' listeners run;
- * - one a rollback or end listener leaves open is not checked and stays open.
+ * - one a rollback or end listener leaves open is not checked and stays open: it is that
+ *   listener's to end.
+ *
+ * transaction() and updateMultiple() end only the transaction they began. Once that one has been
+ * ended through this library inside the callback or a listener - a commit() or rollback() of
+ * theirs -, whatever is open afterwards was begun later (by the callback, by an end listener;
+ * through this library or on raw PDO) and is neither committed nor rolled back in its name: a
+ * callback that returns gets a CommitFailedException with outcome 'lost' and no COMMIT is sent,
+ * one that throws gets its exception back, and the open transaction is left to whoever began it.
+ * A transaction ended and begun again on raw PDO alone is not told apart from the first.
  *
  * Not paired and other caveats: a failing explicit commit() or rollback() fires nothing (the
  * transaction is still the caller's to end; the one exception is the failed or refused commit of
@@ -127,8 +136,9 @@ namespace Sodaho\PdoWrapper\Traits;
  * CommitFailedException::$outcome is set in two places only. transaction()/updateMultiple() set
  * it for the commit they run themselves: the outcome they tell with it as error, before the end
  * listeners run - 'rolled_back' (the rollback is confirmed, nothing is committed) or 'lost' -
- * and 'lost' where no end was told with it (the callback had ended the transaction itself, or
- * a 'lost' was told before); never null. And commit() sets 'lost' when it tells the end itself,
+ * and 'lost' where no end was told with it (the callback had ended the transaction itself: no
+ * COMMIT is sent then; in a custom driver also a rollback that told no end); never null. And
+ * commit() sets 'lost' when it tells the end itself,
  * as just described. Every other commit() a caller issues - directly, inside a callback, inside
  * a listener - keeps null, whoever ends the transaction afterwards: thrown out of a
  * transaction() callback, such an exception is the error of that transaction's end like any
@@ -140,7 +150,9 @@ namespace Sodaho\PdoWrapper\Traits;
  * an implicit commit, by the server, or on raw PDO) is told as 'lost' by that beginTransaction(),
  * before the new transaction's 'transaction.begin' - except after a deadlock, where
  * beginTransaction() refuses (see above) and rollback() tells the end. A transaction that an end
- * listener of that 'lost' begins and loses in the same way is not looked for a second time.
+ * listener of that 'lost' begins and loses in the same way is told next, before the new one
+ * begins; when the listeners leave a third one behind, beginTransaction() throws a
+ * TransactionException and begins nothing (the next call tells the end that is still owed).
  * All of this is described for autocommit, the default. With autocommit switched off
  * (PDO::ATTR_AUTOCOMMIT, SET autocommit = 0) a statement after the transaction's end is not
  * committed on its own but opens the next transaction: after a deadlock the refusals above hold
