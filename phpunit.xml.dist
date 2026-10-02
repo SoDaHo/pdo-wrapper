@@ -44,12 +44,7 @@
         <env name="MYSQL_USERNAME" value="root"/>
         <env name="MYSQL_PASSWORD" value="root"/>
 
-        <!-- MariaDB Configuration -->
-        <env name="MARIADB_HOST" value="127.0.0.1"/>
-        <env name="MARIADB_PORT" value="3307"/>
-        <env name="MARIADB_DATABASE" value="pdo_wrapper_test"/>
-        <env name="MARIADB_USERNAME" value="root"/>
-        <env name="MARIADB_PASSWORD" value="root"/>
+        <!-- MariaDB runs the same tests as MySQL (group "mysql"): point MYSQL_PORT at it, 3307 with docker-compose -->
 
         <!-- PostgreSQL Configuration -->
         <env name="POSTGRES_HOST" value="127.0.0.1"/>
