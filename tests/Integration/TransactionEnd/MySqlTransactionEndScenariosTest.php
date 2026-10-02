@@ -131,6 +131,317 @@ class MySqlTransactionEndScenariosTest extends AbstractTransactionEndScenarios
     }
 
     /**
+     * A DDL statement commits the open transaction even when it fails itself, and the server's
+     * error does not tell the client: PDO keeps reporting the transaction. The rollback that
+     * follows asks the server first. The end is told as 'lost', not as 'rolled_back': the rows
+     * written before the statement are committed.
+     */
+    public function testAFailingDdlStatementThatLeavesTheCallbackIsToldAsLost(): void
+    {
+        $thrown = null;
+        try {
+            $this->db->transaction(static function (DatabaseInterface $db): void {
+                $db->insert(self::TABLE, ['id' => 1, 'name' => 'before the DDL']);
+                $db->execute('CREATE TABLE ' . self::TABLE . ' (id INT PRIMARY KEY)'); // exists: fails, and commits
+            });
+            $this->fail('Expected QueryException');
+        } catch (QueryException $e) {
+            $thrown = $e;
+        }
+
+        $this->assertSame(['end'], $this->events, 'no ROLLBACK was confirmed: no rollback listener');
+        $this->assertSame([['outcome' => DatabaseInterface::TRANSACTION_LOST, 'error' => $thrown]], $this->ends);
+        $this->assertVisible([1], 'the row before the failing DDL statement is committed');
+    }
+
+    /**
+     * The same on the manual path: the failure is swallowed, rollback() is called. The end is told
+     * as 'lost' with the remembered failure, rollback() does not throw, and the next transaction
+     * begins normally.
+     */
+    public function testAManualRollbackAfterAFailingDdlStatementTellsLost(): void
+    {
+        $this->db->beginTransaction();
+        $this->db->insert(self::TABLE, ['id' => 1, 'name' => 'before the DDL']);
+        try {
+            $this->db->execute('CREATE TABLE ' . self::TABLE . ' (id INT PRIMARY KEY)');
+            $this->fail('Expected QueryException');
+        } catch (QueryException $e) {
+            $failure = $e->getPrevious();
+        }
+        $this->db->rollback();
+
+        $this->assertSame(['end'], $this->events);
+        $this->assertSame(DatabaseInterface::TRANSACTION_LOST, $this->ends[0]['outcome']);
+        $this->assertSame($failure, $this->ends[0]['error'], 'the statement failure that was remembered');
+        $this->assertVisible([1]);
+
+        $this->db->transaction(static fn (DatabaseInterface $db) => $db->insert(self::TABLE, ['id' => 2, 'name' => 'next']));
+        $this->assertSame(['end', 'commit', 'end'], $this->events, 'no end is owed twice');
+        $this->assertVisible([1, 2]);
+    }
+
+    /**
+     * A failed statement that cost only itself leaves the transaction alive: the server says so,
+     * the ROLLBACK is sent and the end is 'rolled_back' as before. The question to the server is
+     * no statement of the caller: no 'query' and no further 'error' listener sees it.
+     */
+    public function testAFailedStatementThatLeftTheTransactionAliveIsStillRolledBack(): void
+    {
+        $seen = [];
+        $this->db->on('query', static function (array $data) use (&$seen): void {
+            $seen[] = $data['sql'];
+        });
+
+        try {
+            $this->db->transaction(static function (DatabaseInterface $db): void {
+                $db->insert(self::TABLE, ['id' => 1, 'name' => 'a']);
+                $db->insert(self::TABLE, ['id' => 2, 'no_such_column' => 'x']);
+            });
+            $this->fail('Expected QueryException');
+        } catch (QueryException $e) {
+            $this->assertSame([['outcome' => DatabaseInterface::TRANSACTION_ROLLED_BACK, 'error' => $e]], $this->ends);
+        }
+
+        $this->assertSame(['rollback', 'end'], $this->events);
+        $this->assertCount(1, $seen, 'the first insert; nothing else was reported');
+        $this->assertCount(1, $this->errors, 'the failed insert; nothing else was reported');
+        $this->assertVisible([]);
+    }
+
+    /**
+     * After a failed statement commit() asks the server whether the transaction still exists. When
+     * the answer cannot be read, nothing is known: the commit is refused, nothing is told, and the
+     * transaction stays the caller's to roll back.
+     */
+    public function testACommitWhoseQuestionToTheServerCannotBeReadIsRefused(): void
+    {
+        $this->db->beginTransaction();
+        $this->db->insert(self::TABLE, ['id' => 1, 'name' => 'a']);
+        try {
+            $this->db->insert(self::TABLE, ['id' => 2, 'no_such_column' => 'x']);
+            $this->fail('Expected QueryException');
+        } catch (QueryException) {
+            // swallowed
+        }
+
+        $this->pdo->stateUnreadable = true;
+        try {
+            $this->db->commit();
+            $this->fail('Expected CommitFailedException');
+        } catch (CommitFailedException $e) {
+            $this->assertStringContainsString('could not be asked whether it still exists', (string) $e->getDebugMessage());
+            $this->assertNull($e->outcome);
+        } finally {
+            $this->pdo->stateUnreadable = false;
+        }
+        $this->assertSame([], $this->events, 'nothing was sent, nothing is told');
+
+        $this->db->rollback();
+        $this->assertSame(['rollback', 'end'], $this->events);
+        $this->assertVisible([]);
+    }
+
+    /**
+     * When the question before the ROLLBACK fails while the connection goes on working (a proxy
+     * that rejects the statement), nothing is known. The ROLLBACK is sent to clean up - and here
+     * it goes through over nothing: the failing DDL statement committed. No rollback is confirmed:
+     * the end is 'lost', never 'rolled_back'.
+     */
+    public function testAFailingDdlStatementWhoseQuestionToTheServerFailsIsStillToldAsLost(): void
+    {
+        $thrown = null;
+        try {
+            $this->db->transaction(function (DatabaseInterface $db): void {
+                $db->insert(self::TABLE, ['id' => 1, 'name' => 'before the DDL']);
+                $this->pdo->failExec = true;
+                $db->execute('CREATE TABLE ' . self::TABLE . ' (id INT PRIMARY KEY)');
+            });
+            $this->fail('Expected QueryException');
+        } catch (QueryException $e) {
+            $thrown = $e;
+        } finally {
+            $this->pdo->failExec = false;
+        }
+
+        $this->assertSame(['end'], $this->events, 'no rollback listener: the ROLLBACK that went through confirms nothing');
+        $this->assertSame([['outcome' => DatabaseInterface::TRANSACTION_LOST, 'error' => $thrown]], $this->ends);
+        $this->assertVisible([1], 'the row before the failing DDL statement is committed');
+    }
+
+    /**
+     * The same question failing after a statement that cost only itself: the ROLLBACK does undo
+     * the transaction - and still nobody can say so. 'lost' is the cautious answer; the next
+     * transaction begins normally.
+     */
+    public function testARollbackWhoseQuestionToTheServerFailsConfirmsNothing(): void
+    {
+        $this->db->beginTransaction();
+        $this->db->insert(self::TABLE, ['id' => 1, 'name' => 'a']);
+        try {
+            $this->db->insert(self::TABLE, ['id' => 2, 'no_such_column' => 'x']);
+            $this->fail('Expected QueryException');
+        } catch (QueryException $e) {
+            $failure = $e->getPrevious();
+        }
+
+        $this->pdo->failExec = true;
+        try {
+            $this->db->rollback();
+        } finally {
+            $this->pdo->failExec = false;
+        }
+
+        $this->assertSame(['end'], $this->events);
+        $this->assertSame([['outcome' => DatabaseInterface::TRANSACTION_LOST, 'error' => $failure]], $this->ends);
+        $this->assertVisible([], 'the ROLLBACK was sent');
+
+        // Ended for certain: no mark of a transaction that "may still be open" stays behind, and the
+        // failure is forgotten. A transaction begun on raw PDO is committed through the library without
+        // a question to the server - one would fail here and refuse the commit - and tells its end.
+        $this->pdo->beginTransaction();
+        $this->db->insert(self::TABLE, ['id' => 3, 'name' => 'next']);
+        $this->pdo->failExec = true;
+        try {
+            $this->db->commit();
+        } finally {
+            $this->pdo->failExec = false;
+        }
+        $this->assertSame(['end', 'commit', 'end'], $this->events);
+        $this->assertVisible([3]);
+    }
+
+    /**
+     * A session that chains transactions gets the next one from the ROLLBACK that was sent to
+     * clean up. It is reported as after every other ROLLBACK: thrown on a manual rollback(), told
+     * to the 'error' hook when the callback's exception reaches the caller.
+     */
+    public function testAChainedTransactionAfterARollbackThatConfirmsNothingIsReported(): void
+    {
+        $this->db->execute('SET SESSION completion_type = CHAIN');
+        try {
+            $this->db->beginTransaction();
+            $this->db->insert(self::TABLE, ['id' => 1, 'name' => 'a']);
+            try {
+                $this->db->insert(self::TABLE, ['id' => 2, 'no_such_column' => 'x']);
+                $this->fail('Expected QueryException');
+            } catch (QueryException) {
+                // swallowed
+            }
+            $this->pdo->failExec = true;
+            try {
+                $this->db->rollback();
+                $this->fail('Expected TransactionException: the connection is in a chained transaction');
+            } catch (TransactionException $e) {
+                $this->assertSame('Connection is in a new transaction', $e->getMessage());
+                $this->assertNull($e->getPrevious(), 'thrown as it is');
+            }
+            $this->assertSame(['end'], $this->events);
+            $this->assertSame(DatabaseInterface::TRANSACTION_LOST, $this->ends[0]['outcome']);
+            $this->assertSame([], $this->chainedReports(), 'thrown, not told to the error hook as well');
+            $this->assertTrue($this->pdo->reallyInTransaction(), 'the chained one');
+            $this->pdo->failExec = false;
+            $this->db->execute('SET SESSION completion_type = NO_CHAIN');
+            $this->pdo->rollBack();
+
+            $this->db->execute('SET SESSION completion_type = CHAIN');
+            $this->events = [];
+            $this->errors = [];
+            $thrown = null;
+            try {
+                $this->db->transaction(function (DatabaseInterface $db): void {
+                    $db->insert(self::TABLE, ['id' => 1, 'name' => 'a']);
+                    $this->pdo->failExec = true;
+                    $db->insert(self::TABLE, ['id' => 2, 'no_such_column' => 'x']);
+                });
+                $this->fail('Expected QueryException');
+            } catch (QueryException $e) {
+                $thrown = $e;
+            }
+            $this->assertSame(['end'], $this->events);
+            $this->assertSame([DatabaseInterface::TRANSACTION_LOST], $this->chainedReports(), 'told once, with the outcome that was told');
+            $this->assertSame($thrown, $this->ends[array_key_last($this->ends)]['error']);
+            $this->pdo->failExec = false;
+            $this->db->execute('SET SESSION completion_type = NO_CHAIN');
+            $this->pdo->rollBack();
+
+            // the commit transaction() runs itself is refused (the question fails), the cleanup ROLLBACK chains
+            $this->db->execute('SET SESSION completion_type = CHAIN');
+            $this->events = [];
+            $this->ends = [];
+            $this->errors = [];
+            try {
+                $this->db->transaction(function (DatabaseInterface $db): void {
+                    $db->insert(self::TABLE, ['id' => 1, 'name' => 'a']);
+                    try {
+                        $db->insert(self::TABLE, ['id' => 2, 'no_such_column' => 'x']);
+                    } catch (QueryException) {
+                        // swallowed
+                    }
+                    $this->pdo->failExec = true;
+                });
+                $this->fail('Expected CommitFailedException');
+            } catch (CommitFailedException $refusal) {
+                $this->assertSame(DatabaseInterface::TRANSACTION_LOST, $refusal->outcome);
+                $this->assertSame([['outcome' => DatabaseInterface::TRANSACTION_LOST, 'error' => $refusal]], $this->ends);
+            }
+            $this->assertSame(['end'], $this->events);
+            $this->assertSame([DatabaseInterface::TRANSACTION_LOST], $this->chainedReports());
+        } finally {
+            $this->pdo->failExec = false;
+            $this->db->execute('SET SESSION completion_type = NO_CHAIN');
+            if ($this->pdo->reallyInTransaction()) {
+                $this->pdo->rollBack();
+            }
+        }
+        $this->assertVisible([]);
+    }
+
+    /**
+     * CREATE TEMPORARY TABLE is the DDL statement that commits nothing: the transaction lives on,
+     * the question says so, and the rollback is a rollback.
+     */
+    public function testADdlStatementWithoutAnImplicitCommitIsStillRolledBack(): void
+    {
+        try {
+            $this->db->transaction(static function (DatabaseInterface $db): void {
+                $db->insert(self::TABLE, ['id' => 1, 'name' => 'a']);
+                $db->execute('CREATE TEMPORARY TABLE end_scenarios_tmp (id INT)');
+                $db->execute('CREATE TEMPORARY TABLE end_scenarios_tmp (id INT)'); // exists: fails, commits nothing
+            });
+            $this->fail('Expected QueryException');
+        } catch (QueryException $e) {
+            $this->assertSame([['outcome' => DatabaseInterface::TRANSACTION_ROLLED_BACK, 'error' => $e]], $this->ends);
+        } finally {
+            $this->db->getPdo()->exec('DROP TEMPORARY TABLE IF EXISTS end_scenarios_tmp');
+        }
+
+        $this->assertSame(['rollback', 'end'], $this->events);
+        $this->assertVisible([]);
+    }
+
+    /**
+     * A transaction begun on raw PDO whose rollback() through the library would tell an end: the
+     * failing DDL statement committed it, and that end is 'lost' as well.
+     */
+    public function testARawBegunTransactionCommittedByAFailingDdlStatementIsToldAsLost(): void
+    {
+        $this->pdo->beginTransaction();
+        $this->db->insert(self::TABLE, ['id' => 1, 'name' => 'before the DDL']);
+        try {
+            $this->db->execute('CREATE TABLE ' . self::TABLE . ' (id INT PRIMARY KEY)');
+            $this->fail('Expected QueryException');
+        } catch (QueryException) {
+            // swallowed
+        }
+        $this->db->rollback();
+
+        $this->assertSame(['end'], $this->events);
+        $this->assertSame(DatabaseInterface::TRANSACTION_LOST, $this->ends[0]['outcome']);
+        $this->assertVisible([1]);
+    }
+
+    /**
      * The DDL statement ended the callback's transaction behind the library's back. A further
      * transaction begun inside the callback (updateMultiple() opens its own when PDO reports none)
      * must not take the owed end's place: the first one is told as 'lost' before the next begins,
@@ -200,6 +511,60 @@ class MySqlTransactionEndScenariosTest extends AbstractTransactionEndScenarios
         }
 
         $this->assertSame(['end'], $this->events, 'no commit, no rollback listener');
+    }
+
+    /**
+     * The same timeout leaving the callback right away: the rollback asks the server before it is
+     * sent, as the commit does. With innodb_rollback_on_timeout the transaction is gone (simulated
+     * as above: the question finds none), and the end is 'lost' - no rollback listener, because no
+     * ROLLBACK of this library is confirmed. Without that option the transaction lives on and is
+     * rolled back as before (testLockWaitTimeoutLeavesTheTransactionOpenAndTheRollbackListenersRun).
+     */
+    public function testALockWaitTimeoutThatEndedTheTransactionAndLeavesTheCallbackIsToldAsLost(): void
+    {
+        $this->assertNotNull($this->observer);
+        $this->db->insert(self::TABLE, ['id' => 1, 'name' => 'locked by the observer']);
+        $this->db->execute('SET SESSION innodb_lock_wait_timeout = 1');
+        $this->events = [];
+        $thrown = null;
+
+        $this->observer->beginTransaction();
+        try {
+            $this->observer->update(self::TABLE, ['name' => 'held'], ['id' => 1]);
+            $this->pdo->vanishOnExec = true;
+            $this->db->transaction(static function (DatabaseInterface $db): void {
+                $db->insert(self::TABLE, ['id' => 2, 'name' => 'before the timeout']);
+                $db->update(self::TABLE, ['name' => 'waits'], ['id' => 1]);
+            });
+            $this->fail('Expected QueryException');
+        } catch (QueryException $e) {
+            $thrown = $e;
+            $this->assertTrue($this->pdo->reallyInTransaction(), 'no ROLLBACK was sent: what the simulation hides is still there');
+        } finally {
+            $this->pdo->hideTransaction = false;
+            $this->pdo->vanishOnExec = false;
+            if ($this->pdo->reallyInTransaction()) {
+                $this->pdo->rollBack();
+            }
+            $this->observer->rollback();
+        }
+
+        $this->assertSame(1205, $thrown->getPrevious()?->errorInfo[1] ?? null);
+        $this->assertSame(['end'], $this->events, 'no rollback listener');
+        $this->assertSame([['outcome' => DatabaseInterface::TRANSACTION_LOST, 'error' => $thrown]], $this->ends);
+    }
+
+    /**
+     * The outcomes the 'error' hook was told a chained transaction with.
+     *
+     * @return list<mixed>
+     */
+    private function chainedReports(): array
+    {
+        return array_values(array_map(
+            static fn (array $error): mixed => $error['outcome'] ?? null,
+            array_filter($this->errors, static fn (array $error): bool => $error['error'] === 'Connection is in a new transaction')
+        ));
     }
 
     /**

@@ -151,7 +151,7 @@ class MySqlDriver extends AbstractDriver
         }
 
         try {
-            if ($this->pdo->exec('DO 1') !== false) {
+            if ($this->askForTheTransactionStatus()) {
                 return $this->pdo->inTransaction()
                     ? null
                     : 'The server reports no transaction any more: a statement failed inside it (the previous exception), and since then the transaction was ended - '
@@ -163,6 +163,33 @@ class MySqlDriver extends AbstractDriver
 
         return 'The transaction cannot be committed: a statement failed inside it (the previous exception) and the server could not be asked whether it still exists. '
             . 'Roll back, or discard the connection.';
+    }
+
+    /**
+     * The server's answer to a failed statement carries no transaction status, so PDO keeps
+     * reporting a transaction the server has ended: rolled back (a lock wait timeout under
+     * innodb_rollback_on_timeout), or committed - a statement with an implicit commit commits the
+     * open transaction even when it fails itself, `CREATE TABLE` for a table that exists
+     * (measured on MySQL 8.0, MariaDB 10.11 and 11.4). The question makes PDO know. When it
+     * fails while the connection goes on working (a proxy that rejects the statement), PDO
+     * reports what it reported before, and that is not to be relied on: false.
+     */
+    protected function refreshTransactionState(): bool
+    {
+        return $this->askForTheTransactionStatus();
+    }
+
+    /**
+     * One no-op statement on raw PDO (no hook sees it) makes mysqlnd read the server's current
+     * transaction status. False when the question fails: nothing is known then.
+     */
+    private function askForTheTransactionStatus(): bool
+    {
+        try {
+            return $this->pdo->exec('DO 1') !== false;
+        } catch (Throwable) {
+            return false;
+        }
     }
 
     /**

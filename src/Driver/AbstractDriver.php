@@ -438,6 +438,23 @@ abstract class AbstractDriver implements DatabaseInterface
     }
 
     /**
+     * Called by rollback() before the ROLLBACK is sent, when a statement failed inside the
+     * transaction PDO reports - one whose end this driver would tell: begun through it, or begun
+     * on raw PDO while no 'lost' is pending - and that failure does not settle the matter by
+     * itself (transactionIsOver()): make PDO know whether the transaction still exists, and say whether
+     * its report can be relied on now. For a driver whose client learns nothing about the
+     * transaction from a failed statement (MySQL/MariaDB: a statement with an implicit commit
+     * commits the open transaction even when it fails, and the server's error carries no status)
+     * - on raw PDO, so that no hook sees it. rollback() reads PDO afterwards: no transaction any
+     * more means 'lost'. False - the driver could not find out - means 'lost' as well: the
+     * ROLLBACK is still sent, but it confirms nothing. True by default: PDO knows.
+     */
+    protected function refreshTransactionState(): bool
+    {
+        return true;
+    }
+
+    /**
      * Asked by commit() about the failure failureToRemember() kept: why the transaction cannot be
      * committed any more, or null when it still can (a savepoint caught the failure, the server
      * only undid the statement). Where the failure itself does not settle it, ask the server.
@@ -1172,7 +1189,12 @@ abstract class AbstractDriver implements DatabaseInterface
      * transaction this library began that the server rolled back for certain (transactionIsOver())
      * and that PDO no longer reports is ended without a ROLLBACK and without rollback listeners:
      * 'transaction.end' reports 'lost' with the remembered failure as error, and its listeners'
-     * failures reach only the 'error' hook (as on every 'lost'). An
+     * failures reach only the 'error' hook (as on every 'lost'). The same holds after any other
+     * failed statement when the driver, asked before the ROLLBACK (refreshTransactionState()),
+     * finds the transaction gone: on MySQL/MariaDB a statement with an implicit commit that failed
+     * has committed it, and the rows written before it are in the database. When the driver
+     * cannot find out, the ROLLBACK is sent all the same, but 'lost' is told and no rollback
+     * listener runs: it confirms nothing. An
      * override that does not call this method dispatches no event. A transaction PDO reports right
      * after the ROLLBACK is a chained one (see chainedTransaction()): thrown after the listeners
      * ran, or told to the 'error' hook when a rollback listener threw.
@@ -1197,6 +1219,28 @@ abstract class AbstractDriver implements DatabaseInterface
             return;
         }
 
+        // A statement failed inside the transaction PDO reports, and the server may have ended it
+        // without the client knowing: a ROLLBACK that "succeeds" then would be taken for the
+        // confirmation that nothing is committed. The driver gets to ask (refreshTransactionState());
+        // when PDO reports no transaction afterwards, the end is told as 'lost' - no rollback is
+        // confirmed, and on MySQL/MariaDB what a statement with an implicit commit committed on its
+        // way to failing is in the database. When PDO reports none already, nothing is asked: the
+        // ROLLBACK fails as before.
+        $unconfirmed = null;
+        if ($this->suspectFailure !== null && $this->reportsATransactionThatOwesItsEnd() && !$this->transactionIsOver($this->suspectFailure)) {
+            $failure = $this->suspectFailure;
+            $known = $this->refreshTransactionState();
+            if ($this->reportsNoTransaction()) {
+                $this->endLostTransaction($cause ?? $failure, mayStillBeOpen: false);
+
+                return;
+            }
+            if (!$known) {
+                // The driver could not find out: what PDO reports is as stale as before
+                $unconfirmed = $failure;
+            }
+        }
+
         try {
             $rolledBack = $this->pdo->rollBack();
         } catch (PDOException $e) {
@@ -1214,6 +1258,22 @@ abstract class AbstractDriver implements DatabaseInterface
                 message: 'Failed to rollback transaction',
                 debugMessage: 'PDO::rollBack() returned false'
             );
+        }
+
+        if ($unconfirmed !== null) {
+            // Sent, to clean up whatever was there. Whether the transaction still existed is not known:
+            // no rollback is confirmed, no rollback listener runs, and the end is 'lost'. A chained
+            // transaction is told as after every other ROLLBACK: thrown, or to the 'error' hook when
+            // another exception reaches the caller.
+            $chained = $this->chainedTransaction('ROLLBACK'); // read before a listener can begin a transaction of its own
+            $this->endLostTransaction($cause ?? $unconfirmed, mayStillBeOpen: false);
+            if ($chained !== null && $cause !== null) {
+                $this->reportQuietly($chained, ['outcome' => self::TRANSACTION_LOST]);
+            } elseif ($chained !== null) {
+                throw $chained;
+            }
+
+            return;
         }
 
         // Rolled back from here on. A PDOException from a hook keeps arriving as TransactionException (unchanged contract).
@@ -1277,6 +1337,21 @@ abstract class AbstractDriver implements DatabaseInterface
                 previous: $failures[0],
                 debugMessage: $failures[0]->getMessage()
             );
+        }
+    }
+
+    /**
+     * Whether PDO reports a transaction whose end this driver would tell: one begun through this
+     * driver, or one begun on raw PDO (its rollback() or commit() through this driver tells an
+     * end as well) - not while a 'lost' told for a transaction that may still be open is pending.
+     * An unreadable state is no "yes".
+     */
+    private function reportsATransactionThatOwesItsEnd(): bool
+    {
+        try {
+            return $this->pdo->inTransaction() && ($this->transactionBegun || !$this->lostReported);
+        } catch (Throwable) {
+            return false;
         }
     }
 

@@ -22,7 +22,24 @@ namespace Sodaho\PdoWrapper\Traits;
  * MySQL 8.0 and MariaDB 11.4 with mysqlnd: after a deadlock (transaction rolled back by the server)
  * and after a lock wait timeout (only the statement rolled back) PDO still reports the transaction,
  * the library's ROLLBACK succeeds and the listeners run; after a lost connection the rollback fails,
- * no 'transaction.rollback' listener runs, and 'transaction.end' reports 'lost'.
+ * no 'transaction.rollback' listener runs, and 'transaction.end' reports 'lost'. Before a ROLLBACK
+ * that follows a failed statement, a driver may be asked whether the transaction still exists
+ * (AbstractDriver::refreshTransactionState()). MySQL/MariaDB are: a statement with an implicit
+ * commit (most DDL: CREATE TABLE, ALTER TABLE - not CREATE TEMPORARY TABLE) commits the open
+ * transaction even when it fails itself (CREATE TABLE for a table that exists), and does not
+ * tell the client - PDO keeps reporting the transaction, and the ROLLBACK would go through over
+ * committed rows (measured on MySQL 8.0, MariaDB 10.11 and 11.4). One no-op statement on raw PDO
+ * makes the server say; when the transaction is gone, nothing is sent, no rollback listener runs
+ * and 'transaction.end' reports 'lost' (error: the exception that ended the transaction, on a
+ * manual rollback() the remembered statement failure). A lock wait timeout under
+ * innodb_rollback_on_timeout, which ends the whole transaction, is found gone the same way.
+ * When the question itself fails while the connection goes on working, nothing is known: the
+ * ROLLBACK is sent to clean up, but it confirms nothing - 'lost' as well, without rollback
+ * listeners. Asked only while PDO reports the transaction: once a later statement has told PDO
+ * that it is gone, a manual rollback() fails as before, and the next beginTransaction() tells
+ * the end. Not asked after a deadlock, which settles the matter - also when an earlier failure
+ * of the same transaction was swallowed: a statement with an implicit commit that failed,
+ * followed by a statement that runs into a deadlock, is still told as 'rolled_back'.
  *
  * 'transaction.end' fires exactly once for every transaction this library ends, after the
  * 'transaction.commit' or 'transaction.rollback' listeners, with
@@ -56,7 +73,7 @@ namespace Sodaho\PdoWrapper\Traits;
  *   ends of transactions commit listeners left open first, then the committed transaction's end;
  * - after an explicit rollback(): as TransactionException (the first failure; all of them also reach
  *   the 'error' hook); a rollback listener's exception takes precedence, the end failures then reach
- *   only the 'error' hook;
+ *   only the 'error' hook - and so they do when that rollback() tells the end as 'lost';
  * - on the automatic rollback in transaction()/updateMultiple() and on a 'lost' reported there (not
  *   the buffered ends of transactions commit listeners left open: those join the CommitHookException):
  *   only via the 'error' hook (sql '', params [], error, code, plus hook 'transaction.end', outcome
@@ -176,6 +193,10 @@ namespace Sodaho\PdoWrapper\Traits;
  * apart from the one that ended - also not after a 'transaction.begin' listener whose DDL
  * statement committed the transaction just begun and whose next statement opened another: the
  * caller goes on in that one, and its rollback is told as the end of the first.
+ * The question before a ROLLBACK after a failed statement holds there too (the no-op statement
+ * opens no transaction, measured) - but not once a later statement of the caller has opened the
+ * next transaction: that one is found in its place, and its rollback is told as 'rolled_back'
+ * although a failing DDL statement committed what came before it.
  * So a callback that swallows such an error and returns no longer gets a 'committed'. Not seen:
  * statements that failed on raw PDO (getPdo()) - on PostgreSQL the next statement through this
  * library fails as a consequence and is remembered in their place - and rows that fail while a
@@ -198,7 +219,9 @@ namespace Sodaho\PdoWrapper\Traits;
  * rollback and end listeners run, then that TransactionException reaches the caller. Where another
  * exception reaches the caller instead - a rollback listener's, or on the automatic rollback the
  * one that ended the transaction - the 'error' hook is told about the chained transaction (sql '',
- * params [], error, code, outcome 'rolled_back', exception). The end, rollback and error listeners
+ * params [], error, code, outcome 'rolled_back', exception). After a ROLLBACK that confirmed
+ * nothing (see above: the driver could not find out whether the transaction still existed) only
+ * the end listeners run, and the outcome told to them and to the 'error' hook is 'lost'. The end, rollback and error listeners
  * of such a commit or rollback already run inside the chained transaction: what they write there
  * is not committed, and a beginTransaction() of theirs fails.
  *
