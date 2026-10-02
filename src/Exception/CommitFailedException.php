@@ -14,8 +14,9 @@ namespace Sodaho\PdoWrapper\Exception;
  * callers set it, and nothing else does:
  * - transaction() and updateMultiple(), for the commit they run themselves: the outcome they told
  *   their 'transaction.end' listeners with this exception as error, set before those listeners
- *   run - or 'lost' when no end was told with it, because the callback had ended the transaction
- *   itself or a 'lost' was told before. Never null.
+ *   run - or 'lost' when no end was told with it: the callback had ended the transaction itself
+ *   (no COMMIT is sent then; whatever is open afterwards is not theirs and is left alone). Never
+ *   null.
  * - commit() itself, when the failed commit left no transaction behind and it therefore told
  *   the end right there: 'lost'.
  * Every other commit() a caller issues - directly, inside a transaction() callback, inside a
@@ -26,8 +27,7 @@ namespace Sodaho\PdoWrapper\Exception;
  *
  * The values:
  * - DatabaseInterface::TRANSACTION_ROLLED_BACK: the rollback after the failed commit is confirmed.
- *   Nothing of the transaction whose commit failed is committed. (A callback that ended the
- *   transaction itself with commit() and began another one has committed the first.)
+ *   Nothing of the transaction whose commit failed is committed.
  * - DatabaseInterface::TRANSACTION_LOST: no rollback could be confirmed. The commit may or may not
  *   have taken effect; after a refused commit, what ran after the transaction's end on the server
  *   is committed on its own.
