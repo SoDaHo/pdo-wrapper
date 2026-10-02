@@ -296,6 +296,7 @@ class MySqlDriverTest extends TestCase
             $this->fail('Expected ConnectionException: nothing listens there');
         } catch (ConnectionException $e) {
             $this->assertStringContainsString(':59997', (string) $e->getDebugMessage());
+            $this->assertSame(['HY000', 2002, 0], [$e->sqlState, $e->driverCode, $e->getCode()], 'a failed connection has the codes PDO reported');
         }
     }
 

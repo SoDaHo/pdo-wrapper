@@ -89,6 +89,11 @@ class SqliteWorkflowTest extends AbstractWorkflowTest
         )';
     }
 
+    protected function failureCodes(): array
+    {
+        return ['unknownTable' => ['HY000', 1], 'duplicate' => ['23000', 19]];
+    }
+
     protected function uniqueConstraintNames(): array
     {
         return ['email' => null, 'primary' => null];

@@ -214,7 +214,7 @@ class TransactionEndHookTest extends TestCase
             $this->assertSame('Transaction rolled back, but a transaction.end listener failed', $e->getMessage());
             $this->assertSame($boom, $e->getPrevious());
             $this->assertSame('end listener failed', $e->getDebugMessage());
-            $this->assertSame(3, $e->getCode());
+            $this->assertSame(0, $e->getCode(), 'the listener\'s own code is not passed on');
         }
 
         $this->assertSame(['rollback', 'end'], $this->events);

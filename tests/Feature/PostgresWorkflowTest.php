@@ -89,6 +89,11 @@ class PostgresWorkflowTest extends AbstractWorkflowTest
         )';
     }
 
+    protected function failureCodes(): array
+    {
+        return ['unknownTable' => ['42P01', 7], 'duplicate' => ['23505', 7]];
+    }
+
     protected function uniqueConstraintNames(): array
     {
         return ['email' => 'users_email_key', 'primary' => 'users_pkey'];

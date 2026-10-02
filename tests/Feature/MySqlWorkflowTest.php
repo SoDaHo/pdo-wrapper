@@ -96,6 +96,11 @@ class MySqlWorkflowTest extends AbstractWorkflowTest
         return null;
     }
 
+    protected function failureCodes(): array
+    {
+        return ['unknownTable' => ['42S02', 1146], 'duplicate' => ['23000', 1062]];
+    }
+
     protected function uniqueConstraintNames(): array
     {
         return ['email' => 'email', 'primary' => 'PRIMARY'];

@@ -59,7 +59,6 @@ class SqliteDriver extends AbstractDriver
         } catch (PDOException $e) {
             throw new ConnectionException(
                 message: 'Database connection failed',
-                code: (int)$e->getCode(),
                 previous: $e,
                 debugMessage: sprintf('SQLite connection failed: %s', $e->getMessage())
             );

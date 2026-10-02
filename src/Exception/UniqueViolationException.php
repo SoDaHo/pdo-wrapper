@@ -35,11 +35,10 @@ class UniqueViolationException extends QueryException
      */
     public function __construct(
         string $message = 'Query failed',
-        int $code = 0,
         ?Throwable $previous = null,
         ?string $debugMessage = null,
         public readonly ?string $constraint = null
     ) {
-        parent::__construct($message, $code, $previous, $debugMessage);
+        parent::__construct($message, $previous, $debugMessage);
     }
 }

@@ -47,6 +47,14 @@ abstract class AbstractWorkflowTest extends TestCase
     abstract protected function uniqueConstraintNames(): array;
 
     /**
+     * SQLSTATE and driver code this database reports for a table that does not exist and for a
+     * duplicate key.
+     *
+     * @return array{unknownTable: array{string, int}, duplicate: array{string, int}}
+     */
+    abstract protected function failureCodes(): array;
+
+    /**
      * Whether a later assignment of an UPDATE sees the value an earlier one of the same statement
      * set (MySQL/MariaDB: SET is evaluated left to right) or the row as it was (standard SQL:
      * PostgreSQL, SQLite).
@@ -276,6 +284,61 @@ abstract class AbstractWorkflowTest extends TestCase
         $this->assertSame(2, $this->db->table('posts as P')->where('P.user_id', $bob)->count());
         $this->assertSame(2, $this->db->table('posts')->select(['user_id as AuthorId'])->groupBy('AuthorId')->count(), 'a grouped count keeps the alias');
         $this->assertSame(2, $this->db->table('posts')->select(['user_id as AuthorId'])->distinct()->count());
+    }
+
+    /**
+     * A failure carries what the database said, unmangled: $sqlState as a string, $driverCode as
+     * the driver's number. getCode() is 0 on every database.
+     */
+    public function testAFailureCarriesTheSqlStateAndTheDriversCode(): void
+    {
+        $expected = $this->failureCodes();
+
+        try {
+            $this->db->query('SELECT * FROM no_such_table_codes');
+            $this->fail('Expected QueryException');
+        } catch (QueryException $e) {
+            $this->assertSame($expected['unknownTable'], [$e->sqlState, $e->driverCode]);
+            $this->assertSame(0, $e->getCode());
+        }
+
+        $this->db->insert('users', ['email' => 'codes@example.com', 'name' => 'First']);
+        try {
+            $this->db->insert('users', ['email' => 'codes@example.com', 'name' => 'Second']);
+            $this->fail('Expected UniqueViolationException');
+        } catch (UniqueViolationException $e) {
+            $this->assertSame($expected['duplicate'], [$e->sqlState, $e->driverCode]);
+            $this->assertSame(0, $e->getCode());
+        }
+
+        // a failure that never reached the database has no codes
+        try {
+            $this->db->table('users')->where('email', null)->get();
+            $this->fail('Expected QueryException');
+        } catch (QueryException $e) {
+            $this->assertSame([null, null, 0], [$e->sqlState, $e->driverCode, $e->getCode()]);
+        }
+
+        // the codes travel with the exception that wraps the failure: here the one a rollback
+        // listener threw, which arrives as TransactionException
+        $thrown = null;
+        $this->db->on('transaction.rollback', function () use (&$thrown): void {
+            try {
+                $this->db->getPdo()->query('SELECT * FROM no_such_table_codes');
+            } catch (\PDOException $e) {
+                $thrown = $e;
+                throw $e;
+            }
+        });
+        $this->db->beginTransaction();
+        try {
+            $this->db->rollback();
+            $this->fail('Expected TransactionException');
+        } catch (TransactionException $e) {
+            $this->assertSame($thrown, $e->getPrevious());
+            $this->assertSame($expected['unknownTable'], [$e->sqlState, $e->driverCode]);
+            $this->assertSame(0, $e->getCode());
+        }
     }
 
     // =========================================================================

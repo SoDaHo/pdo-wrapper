@@ -42,7 +42,6 @@ class CommitHookException extends DatabaseException
     {
         parent::__construct(
             message: 'Transaction committed, but a transaction.commit or transaction.end hook failed, the connection state after the commit could not be verified, or the connection is in a new chained transaction',
-            code: (int)$first->getCode(),
             previous: $first,
             debugMessage: sprintf(
                 '%d failure(s), first: %s: %s',

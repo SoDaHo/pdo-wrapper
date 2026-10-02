@@ -103,7 +103,6 @@ class MySqlDriver extends AbstractDriver
         } catch (PDOException $e) {
             throw new ConnectionException(
                 message: 'Database connection failed',
-                code: (int)$e->getCode(),
                 previous: $e,
                 debugMessage: sprintf('MySQL connection to %s:%d failed: %s', $host, $port, $e->getMessage())
             );

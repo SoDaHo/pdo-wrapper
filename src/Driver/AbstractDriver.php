@@ -154,7 +154,6 @@ abstract class AbstractDriver implements DatabaseInterface
         if ($this->suspectFailure !== null && $this->deadTransactionPending()) {
             throw new QueryException(
                 message: 'Query failed',
-                code: (int)$this->suspectFailure->getCode(),
                 previous: $this->suspectFailure,
                 debugMessage: sprintf(
                     'Not sent: the server rolled the open transaction back when an earlier statement failed (the previous exception). '
@@ -225,7 +224,6 @@ abstract class AbstractDriver implements DatabaseInterface
         } catch (PDOException $e) {
             throw new QueryException(
                 message: 'Query hook failed',
-                code: (int)$e->getCode(),
                 previous: $e,
                 debugMessage: sprintf('%s | SQL: %s | Params: %s', $e->getMessage(), $sql, $this->encodeParams($params))
             );
@@ -259,7 +257,6 @@ abstract class AbstractDriver implements DatabaseInterface
         if ($this->isUniqueViolation($e)) {
             return new UniqueViolationException(
                 message: 'Query failed',
-                code: (int)$e->getCode(),
                 previous: $e,
                 debugMessage: $debugMessage,
                 constraint: $this->violatedConstraint($e)
@@ -268,7 +265,6 @@ abstract class AbstractDriver implements DatabaseInterface
 
         return new QueryException(
             message: 'Query failed',
-            code: (int)$e->getCode(),
             previous: $e,
             debugMessage: $debugMessage
         );
@@ -631,7 +627,6 @@ abstract class AbstractDriver implements DatabaseInterface
 
             throw new QueryException(
                 message: 'Failed to get last insert ID',
-                code: (int)$failure->getCode(),
                 previous: $failure,
                 debugMessage: $failure->getMessage()
             );
@@ -687,7 +682,6 @@ abstract class AbstractDriver implements DatabaseInterface
             if ($this->suspectFailure !== null && $this->transactionBegun && $this->deadTransactionPending()) {
                 throw new TransactionException(
                     message: 'Failed to begin transaction',
-                    code: (int)$this->suspectFailure->getCode(),
                     previous: $this->suspectFailure,
                     debugMessage: 'The transaction this library began was rolled back by the server when a statement failed (the previous exception) and has not been ended yet. Call rollback() first.'
                 );
@@ -722,7 +716,6 @@ abstract class AbstractDriver implements DatabaseInterface
         } catch (PDOException $e) {
             throw new TransactionException(
                 message: 'Failed to begin transaction',
-                code: (int)$e->getCode(),
                 previous: $e,
                 debugMessage: $e->getMessage()
             );
@@ -752,7 +745,6 @@ abstract class AbstractDriver implements DatabaseInterface
         } catch (PDOException $e) {
             $failure = new TransactionException(
                 message: 'Failed to begin transaction',
-                code: (int)$e->getCode(),
                 previous: $e,
                 debugMessage: $e->getMessage()
             );
@@ -875,7 +867,6 @@ abstract class AbstractDriver implements DatabaseInterface
                 // The failure is kept: a second commit() must be refused as well; rollback() and beginTransaction() clear it
                 $refusal = new CommitFailedException(
                     message: 'Failed to commit transaction',
-                    code: (int)$this->suspectFailure->getCode(),
                     previous: $this->suspectFailure,
                     debugMessage: $reason
                 );
@@ -899,7 +890,6 @@ abstract class AbstractDriver implements DatabaseInterface
         } catch (PDOException $e) {
             $failure = new CommitFailedException(
                 message: 'Failed to commit transaction',
-                code: (int)$e->getCode(),
                 previous: $e,
                 debugMessage: $e->getMessage()
             );
@@ -1246,7 +1236,6 @@ abstract class AbstractDriver implements DatabaseInterface
         } catch (PDOException $e) {
             throw new TransactionException(
                 message: 'Failed to rollback transaction',
-                code: (int)$e->getCode(),
                 previous: $e,
                 debugMessage: $e->getMessage()
             );
@@ -1295,7 +1284,6 @@ abstract class AbstractDriver implements DatabaseInterface
         } catch (PDOException $e) {
             $pending = new TransactionException(
                 message: 'Failed to rollback transaction',
-                code: (int)$e->getCode(),
                 previous: $e,
                 debugMessage: $e->getMessage()
             );
@@ -1333,7 +1321,6 @@ abstract class AbstractDriver implements DatabaseInterface
             $this->reportTransactionEndFailures(self::TRANSACTION_ROLLED_BACK, $failures);
             throw new TransactionException(
                 message: 'Transaction rolled back, but a transaction.end listener failed',
-                code: (int)$failures[0]->getCode(),
                 previous: $failures[0],
                 debugMessage: $failures[0]->getMessage()
             );

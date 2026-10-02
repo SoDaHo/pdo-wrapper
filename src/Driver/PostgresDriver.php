@@ -83,7 +83,6 @@ class PostgresDriver extends AbstractDriver
         } catch (PDOException $e) {
             throw new ConnectionException(
                 message: 'Database connection failed',
-                code: (int)$e->getCode(),
                 previous: $e,
                 debugMessage: sprintf('PostgreSQL connection to %s:%d failed: %s', $host, $port, $e->getMessage())
             );
@@ -258,7 +257,6 @@ class PostgresDriver extends AbstractDriver
 
             throw new QueryException(
                 message: 'Insert failed',
-                code: (int)$e->getCode(),
                 previous: $e,
                 debugMessage: 'Savepoint around the insert ID probe failed: ' . $e->getMessage()
             );
