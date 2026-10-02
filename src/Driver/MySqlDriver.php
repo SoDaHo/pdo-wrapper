@@ -35,14 +35,17 @@ class MySqlDriver extends AbstractDriver
      * - charset: Connection charset (default: utf8mb4)
      * - options: Additional PDO options; they replace the defaults below, the security-relevant
      *   ones included (native prepares, exceptions, no multi-statements)
+     * - pdoClass: Name of a class that extends PDO (default: PDO). The connection is created as
+     *   an object of that class, with the arguments PDO's constructor takes; getPdo() returns it.
+     *   For a test that needs a COMMIT to fail, or for the driver's own class (Pdo\Mysql).
      *
      * Multi-statements are switched off: no statement this library sends needs them, and with them
      * a string that reaches raw PDO (getPdo()->exec()) or an emulated prepare could carry a second
      * statement. Pass the driver's ATTR_MULTI_STATEMENTS option as true to get them back.
      *
-     * @param array{host?: string|null, database?: string|null, username?: string|null, password?: string|null, port?: int|string, charset?: string, options?: array<int, mixed>} $config
+     * @param array{host?: string|null, database?: string|null, username?: string|null, password?: string|null, port?: int|string, charset?: string, options?: array<int, mixed>, pdoClass?: class-string<PDO>|null} $config
      *
-     * @throws ConnectionException When required config is missing or connection fails
+     * @throws ConnectionException When required config is missing, 'pdoClass' names no class that extends PDO, or connection fails
      */
     public function __construct(#[\SensitiveParameter] array $config)
     {
@@ -51,6 +54,7 @@ class MySqlDriver extends AbstractDriver
         $username = $config['username'] ?? null;
         $password = $config['password'] ?? null;
         $port = self::validPort($config['port'] ?? 3306);
+        $pdoClass = self::validPdoClass($config['pdoClass'] ?? PDO::class);
         $charset = $config['charset'] ?? 'utf8mb4';
 
         if ($host === null || $database === null || $username === null) {
@@ -99,7 +103,7 @@ class MySqlDriver extends AbstractDriver
         }
 
         try {
-            $this->pdo = new PDO($dsn, $username, $password, $options);
+            $this->pdo = new $pdoClass($dsn, $username, $password, $options);
         } catch (PDOException $e) {
             throw new ConnectionException(
                 message: 'Database connection failed',

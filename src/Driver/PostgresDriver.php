@@ -31,10 +31,13 @@ class PostgresDriver extends AbstractDriver
      * - port: Server port, a whole number or a string of digits (default: 5432)
      * - options: Additional PDO options; they replace the defaults, the security-relevant ones
      *   included (native prepares, exceptions)
+     * - pdoClass: Name of a class that extends PDO (default: PDO). The connection is created as
+     *   an object of that class, with the arguments PDO's constructor takes; getPdo() returns it.
+     *   For a test that needs a COMMIT to fail, or for the driver's own class (Pdo\Pgsql).
      *
-     * @param array{host?: string|null, database?: string|null, username?: string|null, password?: string|null, port?: int|string, options?: array<int, mixed>} $config
+     * @param array{host?: string|null, database?: string|null, username?: string|null, password?: string|null, port?: int|string, options?: array<int, mixed>, pdoClass?: class-string<PDO>|null} $config
      *
-     * @throws ConnectionException When required config is missing or connection fails
+     * @throws ConnectionException When required config is missing, 'pdoClass' names no class that extends PDO, or connection fails
      */
     public function __construct(#[\SensitiveParameter] array $config)
     {
@@ -43,6 +46,7 @@ class PostgresDriver extends AbstractDriver
         $username = $config['username'] ?? null;
         $password = $config['password'] ?? null;
         $port = self::validPort($config['port'] ?? 5432);
+        $pdoClass = self::validPdoClass($config['pdoClass'] ?? PDO::class);
 
         if ($host === null || $database === null || $username === null) {
             throw new ConnectionException(
@@ -79,7 +83,7 @@ class PostgresDriver extends AbstractDriver
         $options = array_replace($defaultOptions, $config['options'] ?? []);
 
         try {
-            $this->pdo = new PDO($dsn, $username, $password, $options);
+            $this->pdo = new $pdoClass($dsn, $username, $password, $options);
         } catch (PDOException $e) {
             throw new ConnectionException(
                 message: 'Database connection failed',

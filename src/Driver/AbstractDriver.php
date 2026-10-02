@@ -9,6 +9,7 @@ use LogicException;
 use PDO;
 use PDOException;
 use PDOStatement;
+use ReflectionClass;
 use Sodaho\PdoWrapper\DatabaseInterface;
 use Sodaho\PdoWrapper\Exception\CommitFailedException;
 use Sodaho\PdoWrapper\Exception\CommitHookException;
@@ -116,6 +117,27 @@ abstract class AbstractDriver implements DatabaseInterface
         }
 
         return $port;
+    }
+
+    /**
+     * The configured class of the PDO object the driver creates, or a ConnectionException: the
+     * name is used with new, where anything but a class that can stand in for PDO would end in an
+     * Error - or in an object the driver cannot use. The message names the key, never the value.
+     *
+     * @throws ConnectionException When the value is not the name of a class that is PDO or extends it and can be instantiated
+     *
+     * @return class-string<PDO>
+     */
+    protected static function validPdoClass(mixed $class): string
+    {
+        if (!is_string($class) || !is_a($class, PDO::class, true) || !(new ReflectionClass($class))->isInstantiable()) {
+            throw new ConnectionException(
+                message: 'Database connection failed',
+                debugMessage: 'Invalid config value "pdoClass": expected the name of a class that extends PDO and can be instantiated'
+            );
+        }
+
+        return $class;
     }
 
     // =========================================================================

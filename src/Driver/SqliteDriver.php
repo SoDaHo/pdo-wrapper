@@ -15,8 +15,8 @@ use Sodaho\PdoWrapper\Query\RawExpression;
  * SQLite database driver.
  *
  * Connects to SQLite databases using PDO.
- * Database::sqlite($path, $options) does the same; Database::fromEnv() reads the path from
- * DB_SQLITE_PATH.
+ * Database::sqlite($path, $options, $pdoClass) does the same; Database::fromEnv() reads the path
+ * from DB_SQLITE_PATH.
  */
 class SqliteDriver extends AbstractDriver
 {
@@ -32,10 +32,15 @@ class SqliteDriver extends AbstractDriver
      *                                   native prepared statements). For SQLite: PDO::ATTR_TIMEOUT
      *                                   (seconds to wait for a lock held by another connection),
      *                                   Pdo\Sqlite::ATTR_OPEN_FLAGS (Pdo\Sqlite::OPEN_READONLY).
+     * @param class-string<PDO> $pdoClass Name of a class that extends PDO. The connection is
+     *                                    created as an object of that class, with the arguments
+     *                                    PDO's constructor takes; getPdo() returns it. For a test
+     *                                    that needs a COMMIT to fail, or for the driver's own
+     *                                    class (Pdo\Sqlite, with createFunction() and the like).
      *
-     * @throws ConnectionException When the path is empty or contains a NUL byte, or the connection fails
+     * @throws ConnectionException When the path is empty or contains a NUL byte, $pdoClass names no class that extends PDO, or the connection fails
      */
-    public function __construct(string $path, array $options = [])
+    public function __construct(string $path, array $options = [], string $pdoClass = PDO::class)
     {
         // SQLite opens a private temporary database for an empty path and deletes it when the
         // connection closes: a missing setting would look like a working database that forgets everything
@@ -54,6 +59,7 @@ class SqliteDriver extends AbstractDriver
             );
         }
 
+        $pdoClass = self::validPdoClass($pdoClass);
         $dsn = sprintf('sqlite:%s', $path);
 
         $defaultOptions = [
@@ -63,7 +69,7 @@ class SqliteDriver extends AbstractDriver
         ];
 
         try {
-            $this->pdo = new PDO($dsn, null, null, array_replace($defaultOptions, $options));
+            $this->pdo = new $pdoClass($dsn, null, null, array_replace($defaultOptions, $options));
             $this->pdo->exec('PRAGMA foreign_keys = ON');
         } catch (PDOException $e) {
             throw new ConnectionException(

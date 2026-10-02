@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Sodaho\PdoWrapper;
 
+use PDO;
 use Sodaho\PdoWrapper\Driver\MySqlDriver;
 use Sodaho\PdoWrapper\Driver\PostgresDriver;
 use Sodaho\PdoWrapper\Driver\SqliteDriver;
@@ -23,6 +24,10 @@ use Sodaho\PdoWrapper\Query\RawExpression;
  * - Database::sqlite('/path/to/database.db') or Database::sqlite(':memory:') for an in-memory database
  * - Database::connect(['driver' => 'mysql', 'host' => '...', ...])
  * - Database::fromEnv() or Database::fromEnv(['password' => $secret])
+ *
+ * Every factory creates the PDO object itself, with the library's defaults. Its class can be
+ * chosen ('pdoClass', for SQLite the third argument): a class that extends PDO - for a test that
+ * needs a COMMIT to fail, or the driver's own class. It is never read from the environment.
  */
 class Database
 {
@@ -30,7 +35,7 @@ class Database
      * Create a MySQL/MariaDB connection from the given config (see MySqlDriver for the keys).
      * Nothing is read from the environment: use fromEnv() for that.
      *
-     * @param array{host?: string|null, database?: string|null, username?: string|null, password?: string|null, port?: int|string, charset?: string, options?: array<int, mixed>} $config
+     * @param array{host?: string|null, database?: string|null, username?: string|null, password?: string|null, port?: int|string, charset?: string, options?: array<int, mixed>, pdoClass?: class-string<PDO>|null} $config
      *
      * @throws Exception\ConnectionException When a required value is missing or the connection fails
      */
@@ -43,7 +48,7 @@ class Database
      * Create a PostgreSQL connection from the given config (see PostgresDriver for the keys).
      * Nothing is read from the environment: use fromEnv() for that.
      *
-     * @param array{host?: string|null, database?: string|null, username?: string|null, password?: string|null, port?: int|string, options?: array<int, mixed>} $config
+     * @param array{host?: string|null, database?: string|null, username?: string|null, password?: string|null, port?: int|string, options?: array<int, mixed>, pdoClass?: class-string<PDO>|null} $config
      *
      * @throws Exception\ConnectionException When a required value is missing or the connection fails
      */
@@ -61,12 +66,15 @@ class Database
      * @param array<int, mixed> $options Additional PDO options (they replace the defaults), as the
      *                                   'options' of mysql() and postgres(): PDO::ATTR_TIMEOUT,
      *                                   Pdo\Sqlite::ATTR_OPEN_FLAGS, ...
+     * @param class-string<PDO> $pdoClass Name of a class that extends PDO: the connection is
+     *                                    created as an object of that class, as with the
+     *                                    'pdoClass' of mysql() and postgres()
      *
-     * @throws Exception\ConnectionException When the path is an empty string or the connection fails
+     * @throws Exception\ConnectionException When the path is an empty string, $pdoClass names no class that extends PDO, or the connection fails
      */
-    public static function sqlite(string $path, array $options = []): SqliteDriver
+    public static function sqlite(string $path, array $options = [], string $pdoClass = PDO::class): SqliteDriver
     {
-        return new SqliteDriver($path, $options);
+        return new SqliteDriver($path, $options, $pdoClass);
     }
 
     /**
@@ -75,12 +83,12 @@ class Database
      * 'mysql' (also 'mariadb'), 'pgsql' (also 'postgres', 'postgresql') and 'sqlite' delegate to
      * mysql(), postgres() and sqlite() with the same config keys; the SQLite path comes from
      * 'path', else 'database' - one of them is required (':memory:' for an in-memory database) -,
-     * its PDO options from 'options'.
+     * its PDO options from 'options', the class of its PDO object from 'pdoClass'.
      * One config array for every environment:
      * the driver decides which of the keys are used. Nothing is read from the environment: use
      * fromEnv() for that.
      *
-     * @param array{driver?: string|null, path?: string|null, host?: string|null, database?: string|null, username?: string|null, password?: string|null, port?: int|string, charset?: string, options?: array<int, mixed>} $config
+     * @param array{driver?: string|null, path?: string|null, host?: string|null, database?: string|null, username?: string|null, password?: string|null, port?: int|string, charset?: string, options?: array<int, mixed>, pdoClass?: class-string<PDO>|null} $config
      *
      * @throws ConnectionException When no or an unknown driver is named, a required value is missing, or the connection fails
      */
@@ -94,7 +102,7 @@ class Database
             'sqlite' => self::sqlite($config['path'] ?? $config['database'] ?? throw new ConnectionException(
                 message: 'Database connection failed',
                 debugMessage: 'Missing required config: path (":memory:" for an in-memory database, or the path of a file)'
-            ), $config['options'] ?? []),
+            ), $config['options'] ?? [], $config['pdoClass'] ?? PDO::class),
             default => throw new ConnectionException(
                 message: 'Database connection failed',
                 debugMessage: $driver === ''
@@ -117,9 +125,10 @@ class Database
      *
      * What is passed in $overrides counts instead of the environment - also null and an empty
      * string: fromEnv(['password' => null]) connects without a password whatever DB_PASSWORD
-     * says. The keys are those of connect(), 'charset' and 'options' included.
+     * says. The keys are those of connect(), 'charset', 'options' and 'pdoClass' included: these
+     * three have no variable. A class name from the environment would be handed the credentials.
      *
-     * @param array{driver?: string|null, path?: string|null, host?: string|null, database?: string|null, username?: string|null, password?: string|null, port?: int|string, charset?: string, options?: array<int, mixed>} $overrides
+     * @param array{driver?: string|null, path?: string|null, host?: string|null, database?: string|null, username?: string|null, password?: string|null, port?: int|string, charset?: string, options?: array<int, mixed>, pdoClass?: class-string<PDO>|null} $overrides
      *
      * @throws ConnectionException When no or an unknown driver is named, a required value is missing (for SQLite: DB_SQLITE_PATH, or a 'path'/'database' that is passed), or the connection fails
      */
@@ -154,7 +163,7 @@ class Database
                 );
             }
 
-            return self::sqlite($path, $config['options'] ?? []);
+            return self::sqlite($path, $config['options'] ?? [], $config['pdoClass'] ?? PDO::class);
         }
 
         return self::connect($config);

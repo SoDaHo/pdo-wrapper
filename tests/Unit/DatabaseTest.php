@@ -12,7 +12,10 @@ use Sodaho\PdoWrapper\Driver\MySqlDriver;
 use Sodaho\PdoWrapper\Driver\PostgresDriver;
 use Sodaho\PdoWrapper\Driver\SqliteDriver;
 use Sodaho\PdoWrapper\Exception\ConnectionException;
+use Sodaho\PdoWrapper\Tests\Integration\TransactionEnd\ScenarioPdo;
+use Sodaho\PdoWrapper\Tests\Support\AbstractPdo;
 use Sodaho\PdoWrapper\Tests\Support\TestEnvironment;
+use Sodaho\PdoWrapper\Tests\Support\Untyped;
 
 class DatabaseTest extends TestCase
 {
@@ -491,6 +494,131 @@ class DatabaseTest extends TestCase
             $this->fail('Expected ConnectionException');
         } catch (ConnectionException $e) {
             $this->assertStringNotContainsString('secret', var_export($e->getTrace(), true));
+        }
+    }
+
+    /**
+     * 'pdoClass' is used with new: it is checked first, in every factory. What is no class that
+     * extends PDO and can be created is a ConnectionException that names the key - never the
+     * value - instead of an Error from new, or an object the driver cannot use.
+     */
+    public function testAPdoClassThatCannotStandInForPdoIsRejectedByEveryFactory(): void
+    {
+        $server = ['host' => '127.0.0.1', 'database' => 'app', 'username' => 'root'];
+        $invalid = [
+            'a class that is no PDO' => \stdClass::class,
+            'a name without a class' => 'No\\Such\\PdoClass',
+            'an empty name' => '',
+            'another class of PDO' => \PDOStatement::class,
+            'a class that cannot be created' => AbstractPdo::class,
+        ];
+
+        foreach ($invalid as $what => $class) {
+            $_ENV['DB_DRIVER'] = 'sqlite';
+            $_ENV['DB_SQLITE_PATH'] = ':memory:';
+            $calls = [
+                'sqlite()' => static fn (): mixed => Untyped::call(Database::sqlite(...), ':memory:', [], $class),
+                'new SqliteDriver()' => static fn (): mixed => Untyped::create(SqliteDriver::class, ':memory:', [], $class),
+                'connect(), sqlite' => static fn (): mixed => Untyped::call(Database::connect(...), ['driver' => 'sqlite', 'path' => ':memory:', 'pdoClass' => $class]),
+                'fromEnv(), sqlite with a path that is passed' => static fn (): mixed => Untyped::call(Database::fromEnv(...), ['path' => ':memory:', 'pdoClass' => $class]),
+                'fromEnv(), sqlite with DB_SQLITE_PATH' => static fn (): mixed => Untyped::call(Database::fromEnv(...), ['pdoClass' => $class]),
+                'mysql()' => static fn (): mixed => Untyped::call(Database::mysql(...), $server + ['pdoClass' => $class]),
+                'new MySqlDriver()' => static fn (): mixed => Untyped::create(MySqlDriver::class, $server + ['pdoClass' => $class]),
+                'postgres()' => static fn (): mixed => Untyped::call(Database::postgres(...), $server + ['pdoClass' => $class]),
+                'new PostgresDriver()' => static fn (): mixed => Untyped::create(PostgresDriver::class, $server + ['pdoClass' => $class]),
+                'connect(), mysql' => static fn (): mixed => Untyped::call(Database::connect(...), ['driver' => 'mysql'] + $server + ['pdoClass' => $class]),
+                'connect(), pgsql' => static fn (): mixed => Untyped::call(Database::connect(...), ['driver' => 'pgsql'] + $server + ['pdoClass' => $class]),
+                'fromEnv(), mysql' => static fn (): mixed => Untyped::call(Database::fromEnv(...), ['driver' => 'mysql'] + $server + ['pdoClass' => $class]),
+                'fromEnv(), pgsql' => static fn (): mixed => Untyped::call(Database::fromEnv(...), ['driver' => 'pgsql'] + $server + ['pdoClass' => $class]),
+            ];
+
+            foreach ($calls as $how => $call) {
+                try {
+                    $call();
+                    $this->fail("Expected ConnectionException for {$what} in {$how}");
+                } catch (ConnectionException $e) {
+                    $this->assertSame('Database connection failed', $e->getMessage(), "{$what} in {$how}");
+                    $this->assertSame(
+                        'Invalid config value "pdoClass": expected the name of a class that extends PDO and can be instantiated',
+                        $e->getDebugMessage(),
+                        "{$what} in {$how}: the key, not the value"
+                    );
+                    $this->assertNull($e->getPrevious(), "{$what} in {$how}: refused before anything was tried");
+                }
+            }
+        }
+    }
+
+    /**
+     * In a config array the value can be anything: what is no string is refused the same way -
+     * also a PDO object. The class is named; a connection that exists is not taken over.
+     */
+    public function testAPdoClassThatIsNoStringIsRejected(): void
+    {
+        $server = ['host' => '127.0.0.1', 'database' => 'app', 'username' => 'root'];
+
+        foreach ([123, true, 1.5, ['PDO'], new \stdClass(), new PDO('sqlite::memory:')] as $class) {
+            foreach ([MySqlDriver::class, PostgresDriver::class] as $driver) {
+                try {
+                    Untyped::create($driver, $server + ['pdoClass' => $class]);
+                    $this->fail('Expected ConnectionException for ' . get_debug_type($class));
+                } catch (ConnectionException $e) {
+                    $this->assertSame(
+                        'Invalid config value "pdoClass": expected the name of a class that extends PDO and can be instantiated',
+                        $e->getDebugMessage(),
+                        $driver . ', ' . get_debug_type($class)
+                    );
+                }
+            }
+        }
+    }
+
+    /**
+     * The check lets through what it should: a class that extends PDO reaches the connection
+     * attempt, and so does PDO itself by name.
+     */
+    public function testAValidPdoClassReachesTheConnectionAttempt(): void
+    {
+        $nothingListens = ['host' => '127.0.0.1', 'port' => 59996, 'database' => 'app', 'username' => 'root', 'password' => 'x'];
+
+        foreach ([ScenarioPdo::class, PDO::class] as $class) {
+            foreach (['MySQL' => MySqlDriver::class, 'PostgreSQL' => PostgresDriver::class] as $name => $driver) {
+                try {
+                    new $driver($nothingListens + ['pdoClass' => $class]);
+                    $this->fail('Expected ConnectionException: nothing listens there');
+                } catch (ConnectionException $e) {
+                    $this->assertStringStartsWith("{$name} connection to 127.0.0.1:59996 failed", (string) $e->getDebugMessage());
+                    $this->assertInstanceOf(\PDOException::class, $e->getPrevious());
+                }
+            }
+        }
+
+        $this->assertSame(PDO::class, Database::sqlite(':memory:', [], PDO::class)->getPdo()::class);
+        $this->assertSame(PDO::class, Database::sqlite(':memory:', [], '\\PDO')->getPdo()::class, 'a leading backslash is still the class');
+    }
+
+    /**
+     * The class has no variable: a name from the environment would be handed the credentials.
+     */
+    public function testThePdoClassIsNeverReadFromTheEnvironment(): void
+    {
+        $names = ['DB_PDO_CLASS', 'DB_PDOCLASS', 'DB_CLASS', 'PDO_CLASS', 'pdoClass'];
+        $_ENV['DB_DRIVER'] = 'sqlite';
+        $_ENV['DB_SQLITE_PATH'] = ':memory:';
+
+        try {
+            foreach ($names as $name) {
+                $_ENV[$name] = ScenarioPdo::class;
+                putenv($name . '=' . ScenarioPdo::class);
+            }
+
+            $this->assertSame(PDO::class, Database::fromEnv()->getPdo()::class);
+            $this->assertSame(ScenarioPdo::class, Database::fromEnv(['pdoClass' => ScenarioPdo::class])->getPdo()::class, 'only what is passed');
+        } finally {
+            foreach ($names as $name) {
+                unset($_ENV[$name]);
+                putenv($name);
+            }
         }
     }
 }

@@ -140,7 +140,9 @@ use Sodaho\PdoWrapper\Exception\DatabaseException;
  * beginTransaction(), commit() and rollback() are final in
  * AbstractDriver: what is told here is decided in them. A custom driver extends them through
  * listeners and through the protected hooks (failureToRemember(), transactionEndedBy(),
- * transactionIsOver(), refreshTransactionState()), not by overriding them.
+ * transactionIsOver(), refreshTransactionState()), not by overriding them. A test that needs a
+ * COMMIT to fail names a PDO class whose commit() fails ('pdoClass'): the methods here then take
+ * the path they take for a real failure.
  *
  * A transaction the server has ended although PDO still reports it: on PostgreSQL every statement
  * error aborts the transaction unless a savepoint catches it; on MySQL/MariaDB a deadlock rolls
