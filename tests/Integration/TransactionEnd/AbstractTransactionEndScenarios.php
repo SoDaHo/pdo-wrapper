@@ -2527,7 +2527,9 @@ abstract class AbstractTransactionEndScenarios extends TestCase
 
     /**
      * And with a handler whose own commit() fails and finds the transaction gone: that commit
-     * told the end as 'lost'. The COMMIT of transaction() tells no second one.
+     * told the end as 'lost' - and an end listener answers that 'lost' with a transaction of its
+     * own. The transaction counts as ended before its end listeners run: the COMMIT of
+     * transaction() tells no second 'lost'.
      */
     public function testAFailedCommitAfterAHandlersOwnCommitToldTheEndAsLostTellsNoSecondEnd(): void
     {
@@ -2535,18 +2537,23 @@ abstract class AbstractTransactionEndScenarios extends TestCase
         $pdo = $this->pdo;
         $seen = new class () {
             public ?CommitFailedException $inner = null;
+
+            public bool $answered = false;
         };
+        $this->db->on('transaction.end', static function (array $data) use ($db, $seen): void {
+            if ($data['outcome'] === DatabaseInterface::TRANSACTION_LOST && !$seen->answered) {
+                $seen->answered = true;
+                $db->transaction(static fn (DatabaseInterface $db) => $db->insert(self::TABLE, ['id' => 2, 'name' => 'by the end listener']));
+            }
+        });
         $this->pdo->duringCommit = static function () use ($db, $pdo, $seen): void {
+            $pdo->rollBack(); // the server has thrown the transaction away
             $pdo->failCommit = true;
-            $pdo->vanishOnFailedCommit = true;
             try {
                 $db->commit();
             } catch (CommitFailedException $e) {
                 $seen->inner = $e;
             }
-            $pdo->hideTransaction = false;
-            $pdo->vanishOnFailedCommit = false;
-            $pdo->rollBack(); // what the server did when it rejected that COMMIT
         };
 
         try {
@@ -2559,8 +2566,12 @@ abstract class AbstractTransactionEndScenarios extends TestCase
 
         $this->assertNotNull($seen->inner);
         $this->assertSame(self::LOST, $seen->inner->outcome, 'the handler\'s commit told the end itself');
-        $this->assertSame([['outcome' => self::LOST, 'error' => $seen->inner]], $this->ends, 'told once');
-        $this->assertVisible([]);
+        $this->assertSame(
+            [['outcome' => self::LOST, 'error' => $seen->inner], ['outcome' => self::COMMITTED, 'error' => null]],
+            $this->ends,
+            'lost once, then the end listener\'s own transaction - and no second "lost"'
+        );
+        $this->assertVisible([2]);
     }
 
     /**
