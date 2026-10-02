@@ -85,18 +85,17 @@ class MySqlDriver extends AbstractDriver
             PDO::ATTR_EMULATE_PREPARES => false,
         ];
 
-        // By name: Pdo\Mysql exists since PHP 8.4, and PDO::MYSQL_ATTR_MULTI_STATEMENTS is deprecated
-        // since 8.5 (a deprecation notice on every connection). Without pdo_mysql the connection
-        // fails below with PDO's own "could not find driver".
+        // Without pdo_mysql the class Pdo\Mysql does not exist; the connection then fails below
+        // with PDO's own "could not find driver".
         if (extension_loaded('pdo_mysql')) {
-            $defaultOptions[constant(PHP_VERSION_ID >= 80400 ? 'Pdo\Mysql::ATTR_MULTI_STATEMENTS' : 'PDO::MYSQL_ATTR_MULTI_STATEMENTS')] = false;
+            $defaultOptions[\Pdo\Mysql::ATTR_MULTI_STATEMENTS] = false;
         }
 
         $options = array_replace($defaultOptions, $config['options'] ?? []);
 
         // Remembered here: PDO does not let the option be read back from the connection
         if (extension_loaded('pdo_mysql')) {
-            $this->countsFoundRows = (bool) ($options[constant(PHP_VERSION_ID >= 80400 ? 'Pdo\Mysql::ATTR_FOUND_ROWS' : 'PDO::MYSQL_ATTR_FOUND_ROWS')] ?? false);
+            $this->countsFoundRows = (bool) ($options[\Pdo\Mysql::ATTR_FOUND_ROWS] ?? false);
         }
 
         try {

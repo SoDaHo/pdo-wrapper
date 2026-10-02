@@ -108,7 +108,7 @@ class MySqlWorkflowTest extends AbstractWorkflowTest
      */
     public function testInsertIgnoreRefusesAConnectionThatCountsFoundRows(): void
     {
-        $option = constant(PHP_VERSION_ID >= 80400 ? 'Pdo\Mysql::ATTR_FOUND_ROWS' : 'PDO::MYSQL_ATTR_FOUND_ROWS');
+        $option = \Pdo\Mysql::ATTR_FOUND_ROWS;
         $config = [
             'host' => $_ENV['MYSQL_HOST'] ?? '127.0.0.1',
             'port' => (int) ($_ENV['MYSQL_PORT'] ?? 3306),

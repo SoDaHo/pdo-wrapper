@@ -352,8 +352,7 @@ class MySqlDriverIntegrationTest extends TestCase
             $this->assertSame(1064, $e->getPrevious()?->errorInfo[1] ?? null);
         }
 
-        $attribute = constant(PHP_VERSION_ID >= 80400 ? 'Pdo\\Mysql::ATTR_MULTI_STATEMENTS' : 'PDO::MYSQL_ATTR_MULTI_STATEMENTS');
-        $optedIn = new MySqlDriver(self::getConfig() + ['options' => [$attribute => true]]);
+        $optedIn = new MySqlDriver(self::getConfig() + ['options' => [\Pdo\Mysql::ATTR_MULTI_STATEMENTS => true]]);
         $this->assertSame(0, $optedIn->getPdo()->exec($two));
     }
 
