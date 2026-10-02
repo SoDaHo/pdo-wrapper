@@ -25,7 +25,7 @@ class QueryOutcomeTest extends TestCase
 
     protected function setUp(): void
     {
-        $this->db = Database::sqlite();
+        $this->db = Database::sqlite(':memory:');
         $this->db->execute('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)');
         $this->db->on('error', function (array $data): void {
             $this->errors[] = (string) $data['sql'];

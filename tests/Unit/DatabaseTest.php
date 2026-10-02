@@ -43,7 +43,6 @@ class DatabaseTest extends TestCase
 
     public function testConnectPicksTheDriverFromTheConfig(): void
     {
-        $this->assertInstanceOf(SqliteDriver::class, Database::connect(['driver' => 'sqlite']));
         $this->assertInstanceOf(SqliteDriver::class, Database::connect(['driver' => ' SQLite ', 'path' => ':memory:']));
         $this->assertInstanceOf(SqliteDriver::class, Database::connect(['driver' => 'sqlite', 'database' => ':memory:']));
 
@@ -76,14 +75,56 @@ class DatabaseTest extends TestCase
             @unlink($file);
         }
 
-        // without DB_SQLITE_PATH: in memory
-        unset($_ENV['DB_SQLITE_PATH']);
+        // in memory: by name
+        $_ENV['DB_SQLITE_PATH'] = ':memory:';
         $this->assertSame(1, (int) Database::fromEnv()->query('SELECT 1')->fetchColumn());
 
         // getenv() is the second channel
         unset($_ENV['DB_DRIVER']);
         putenv('DB_DRIVER=sqlite');
         $this->assertInstanceOf(SqliteDriver::class, Database::fromEnv());
+    }
+
+    /**
+     * SQLite has no default path: a call that names none must not end in a database that forgets
+     * everything. sqlite() requires the argument, connect() and fromEnv() report what is missing.
+     */
+    public function testASqlitePathIsRequired(): void
+    {
+        $this->assertSame(1, (new \ReflectionMethod(Database::class, 'sqlite'))->getNumberOfRequiredParameters());
+
+        foreach ([['driver' => 'sqlite'], ['driver' => 'sqlite', 'path' => null], ['driver' => 'sqlite', 'database' => null]] as $config) {
+            try {
+                Database::connect($config);
+                $this->fail('Expected ConnectionException: no path');
+            } catch (ConnectionException $e) {
+                $this->assertSame('Database connection failed', $e->getMessage());
+                $this->assertSame('Missing required config: path (":memory:" for an in-memory database, or the path of a file)', $e->getDebugMessage());
+            }
+        }
+
+        $_ENV['DB_DRIVER'] = 'sqlite';
+        try {
+            Database::fromEnv();
+            $this->fail('Expected ConnectionException: DB_SQLITE_PATH is not set');
+        } catch (ConnectionException $e) {
+            $this->assertSame('DB_SQLITE_PATH is not set: set it to ":memory:" for an in-memory database, or to the path of a file', $e->getDebugMessage());
+        }
+
+        // a path that is passed as null is no path - and not a reason to ask the environment
+        $file = sys_get_temp_dir() . '/pdo-wrapper-required-' . bin2hex(random_bytes(4)) . '.db';
+        $_ENV['DB_SQLITE_PATH'] = $file;
+        $_ENV['DB_DATABASE'] = $file . '.server';
+        foreach ([['path' => null], ['database' => null]] as $overrides) {
+            try {
+                Database::fromEnv($overrides);
+                $this->fail('Expected ConnectionException: the path was passed as null');
+            } catch (ConnectionException $e) {
+                $this->assertStringStartsWith('Missing required config: path', (string) $e->getDebugMessage());
+            }
+        }
+        $this->assertFileDoesNotExist($file);
+        $this->assertFileDoesNotExist($file . '.server');
     }
 
     /**
@@ -109,9 +150,14 @@ class DatabaseTest extends TestCase
         $this->assertMissingConfig(static fn (): PostgresDriver => Database::postgres([]));
         $this->assertMissingConfig(static fn (): \Sodaho\PdoWrapper\DatabaseInterface => Database::connect(['driver' => 'mysql']));
 
-        Database::sqlite()->execute('CREATE TABLE t (id INTEGER)');
-        Database::connect(['driver' => 'sqlite'])->execute('CREATE TABLE t (id INTEGER)');
-        $this->assertFileDoesNotExist($file, 'in memory: DB_SQLITE_PATH was not read');
+        try {
+            Database::connect(['driver' => 'sqlite']);
+            $this->fail('Expected ConnectionException: no path was passed');
+        } catch (ConnectionException $e) {
+            $this->assertStringStartsWith('Missing required config: path', (string) $e->getDebugMessage());
+        }
+        Database::sqlite(':memory:')->execute('CREATE TABLE t (id INTEGER)');
+        $this->assertFileDoesNotExist($file, 'DB_SQLITE_PATH was not read');
     }
 
     /**
@@ -126,7 +172,12 @@ class DatabaseTest extends TestCase
         $_ENV['DB_DATABASE'] = $serverDatabase;
 
         try {
-            Database::fromEnv()->execute('CREATE TABLE t (id INTEGER)');
+            try {
+                Database::fromEnv();
+                $this->fail('Expected ConnectionException: DB_SQLITE_PATH is not set');
+            } catch (ConnectionException $e) {
+                $this->assertStringStartsWith('DB_SQLITE_PATH is not set', (string) $e->getDebugMessage());
+            }
             $this->assertFileDoesNotExist($serverDatabase, 'DB_DATABASE is not the SQLite path');
 
             // 'database' passed by the application is one, as in connect()
@@ -139,16 +190,7 @@ class DatabaseTest extends TestCase
             $this->assertFileExists($file, "'path' beats DB_SQLITE_PATH");
             $this->assertFileDoesNotExist($serverDatabase);
 
-            // a path passed as null is "no path" (in memory), not "ask the environment"
             @unlink($file);
-            $_ENV['DB_SQLITE_PATH'] = $file;
-            Database::fromEnv(['path' => null])->execute('CREATE TABLE t (id INTEGER)');
-            $this->assertFileDoesNotExist($file);
-            $this->assertFileDoesNotExist($serverDatabase, 'and DB_DATABASE does not step in for it');
-            Database::fromEnv(['database' => null])->execute('CREATE TABLE t (id INTEGER)');
-            $this->assertFileDoesNotExist($file);
-            $this->assertFileDoesNotExist($serverDatabase);
-            $_ENV['DB_SQLITE_PATH'] = $serverDatabase;
 
             // an empty path that was passed is an empty path, not "ask the environment"
             try {
@@ -292,7 +334,7 @@ class DatabaseTest extends TestCase
 
     public function testSqliteReturnsDriver(): void
     {
-        $driver = Database::sqlite();
+        $driver = Database::sqlite(':memory:');
 
         $this->assertInstanceOf(SqliteDriver::class, $driver);
     }
@@ -371,13 +413,11 @@ class DatabaseTest extends TestCase
     }
 
     /**
-     * An unset DB_SQLITE_PATH means the in-memory default. One that is set but empty is a broken
-     * setting: the default would be a database that forgets everything, without a word.
+     * A DB_SQLITE_PATH that is set but empty is a broken setting, told apart from one that is
+     * not set at all.
      */
     public function testAnEmptySqlitePathFromTheEnvironmentIsRejected(): void
     {
-        $this->assertSame(1, (int) Database::fromEnv(['driver' => 'sqlite'])->query('SELECT 1')->fetchColumn(), 'not set: :memory:');
-
         $attempts = [
             'in $_ENV' => static function (): void {
                 $_ENV['DB_SQLITE_PATH'] = '';

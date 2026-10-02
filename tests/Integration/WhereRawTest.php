@@ -19,7 +19,7 @@ class WhereRawTest extends TestCase
 
     protected function setUp(): void
     {
-        $this->db = Database::sqlite();
+        $this->db = Database::sqlite(':memory:');
         $this->db->execute('CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT, status TEXT, score INTEGER)');
         foreach ([['Max@Example.com', 'active', 10], ['anna@example.com', 'active', 20], ['tom@example.com', 'inactive', 30]] as [$email, $status, $score]) {
             $this->db->insert('users', ['email' => $email, 'status' => $status, 'score' => $score]);

@@ -16,7 +16,7 @@ class WrapperTest extends TestCase
 
     protected function setUp(): void
     {
-        $this->db = Database::sqlite();
+        $this->db = Database::sqlite(':memory:');
 
         // Create test table
         $this->db->execute('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT)');

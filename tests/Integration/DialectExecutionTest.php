@@ -18,7 +18,7 @@ class DialectExecutionTest extends TestCase
 
     protected function setUp(): void
     {
-        $this->db = Database::sqlite();
+        $this->db = Database::sqlite(':memory:');
         $this->db->execute('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, nick TEXT)');
         $this->db->insert('users', ['name' => 'Max', 'nick' => null]);
         $this->db->insert('users', ['name' => 'Anna', 'nick' => 'anna']);

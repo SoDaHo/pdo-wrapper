@@ -15,7 +15,7 @@ use Sodaho\PdoWrapper\Query\RawExpression;
  * SQLite database driver.
  *
  * Connects to SQLite databases using PDO.
- * Database::sqlite() does the same; Database::fromEnv() reads the path from DB_SQLITE_PATH.
+ * Database::sqlite($path) does the same; Database::fromEnv() reads the path from DB_SQLITE_PATH.
  */
 class SqliteDriver extends AbstractDriver
 {

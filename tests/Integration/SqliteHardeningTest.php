@@ -21,7 +21,7 @@ class SqliteHardeningTest extends TestCase
 
     protected function setUp(): void
     {
-        $this->db = Database::sqlite();
+        $this->db = Database::sqlite(':memory:');
         $this->db->execute('CREATE TABLE users (id INTEGER PRIMARY KEY, country TEXT, score INTEGER)');
         foreach ([['DE', 10], ['DE', 20], ['AT', 30]] as [$country, $score]) {
             $this->db->insert('users', ['country' => $country, 'score' => $score]);

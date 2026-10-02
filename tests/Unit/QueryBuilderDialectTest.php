@@ -19,7 +19,7 @@ class QueryBuilderDialectTest extends TestCase
 {
     private function builder(string $dialect, string $quoteChar = '"'): QueryBuilder
     {
-        return new QueryBuilder(Database::sqlite(), 'users', $quoteChar, $dialect);
+        return new QueryBuilder(Database::sqlite(':memory:'), 'users', $quoteChar, $dialect);
     }
 
     /**
@@ -69,7 +69,7 @@ class QueryBuilderDialectTest extends TestCase
             [QueryBuilder::DIALECT_PGSQL, '"'],
             [QueryBuilder::DIALECT_ANSI, '"'],
         ] as [$dialect, $q]) {
-            $builder = new QueryBuilder(Database::sqlite(), 'users as U', $q, $dialect);
+            $builder = new QueryBuilder(Database::sqlite(':memory:'), 'users as U', $q, $dialect);
             [$sql] = $builder
                 ->select(['U.name as UserName', 'id  AS  order'])
                 ->join('posts as P', 'P.user_id', '=', 'U.id')
@@ -91,7 +91,7 @@ class QueryBuilderDialectTest extends TestCase
      */
     public function testAliasesThatDifferInCaseAreOneNameOnlyWhereTheDatabaseFoldsThem(): void
     {
-        $db = Database::sqlite();
+        $db = Database::sqlite(':memory:');
         $db->execute('CREATE TABLE users (a INTEGER, b INTEGER)');
         $db->insert('users', ['a' => 1, 'b' => 2]);
         $count = static fn (string $dialect, string $q, array $columns): int => (new QueryBuilder($db, 'users', $q, $dialect))->select($columns)->distinct()->count();
@@ -127,7 +127,7 @@ class QueryBuilderDialectTest extends TestCase
      */
     public function testAGroupedCountKeepsOneEntryPerAlias(): void
     {
-        $db = Database::sqlite();
+        $db = Database::sqlite(':memory:');
         $db->execute('CREATE TABLE users (a INTEGER, b INTEGER)');
         $rendered = [];
         $db->on('query', static function (array $context) use (&$rendered): void {
@@ -155,7 +155,7 @@ class QueryBuilderDialectTest extends TestCase
      */
     public function testDeleteWithLimitRendersOnMysqlAndThrowsElsewhere(): void
     {
-        $db = Database::sqlite();
+        $db = Database::sqlite(':memory:');
         $db->execute('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)');
         $rendered = [];
         $db->on('query', static function (array $context) use (&$rendered): void {
@@ -361,7 +361,7 @@ class QueryBuilderDialectTest extends TestCase
      */
     public function testExistsKeepsTheLockAndLocksRejectGrouping(): void
     {
-        $db = Database::sqlite();
+        $db = Database::sqlite(':memory:');
         $db->execute('CREATE TABLE users (id INTEGER PRIMARY KEY)');
         $seen = [];
         $db->on('error', function (array $data) use (&$seen): void {
@@ -409,7 +409,7 @@ class QueryBuilderDialectTest extends TestCase
      */
     public function testExistsRejectsALockedHavingInsteadOfDroppingTheLock(): void
     {
-        $db = Database::sqlite();
+        $db = Database::sqlite(':memory:');
         $db->execute('CREATE TABLE users (id INTEGER PRIMARY KEY)');
         $executed = [];
         $db->on('query', function (array $data) use (&$executed): void {
@@ -487,7 +487,7 @@ class QueryBuilderDialectTest extends TestCase
      */
     public function testAggregatesDropTheLock(): void
     {
-        $db = Database::sqlite();
+        $db = Database::sqlite(':memory:');
         $db->execute('CREATE TABLE users (id INTEGER PRIMARY KEY)');
         $seen = [];
         $db->on('query', function (array $data) use (&$seen): void {
@@ -504,14 +504,14 @@ class QueryBuilderDialectTest extends TestCase
 
     public function testDialectDefaultsFromTheQuoteCharacterAndRejectsUnknownOnes(): void
     {
-        [$sql] = (new QueryBuilder(Database::sqlite(), 'users', '`'))->sharedLock()->toSql();
+        [$sql] = (new QueryBuilder(Database::sqlite(':memory:'), 'users', '`'))->sharedLock()->toSql();
         $this->assertSame('SELECT * FROM `users` LOCK IN SHARE MODE', $sql);
 
-        [$sql] = (new QueryBuilder(Database::sqlite(), 'users'))->sharedLock()->toSql();
+        [$sql] = (new QueryBuilder(Database::sqlite(':memory:'), 'users'))->sharedLock()->toSql();
         $this->assertSame('SELECT * FROM "users" FOR SHARE', $sql);
 
         try {
-            new QueryBuilder(Database::sqlite(), 'users', '"', 'oracle');
+            new QueryBuilder(Database::sqlite(':memory:'), 'users', '"', 'oracle');
             $this->fail('Expected QueryException');
         } catch (QueryException $e) {
             $this->assertSame('Query failed', $e->getMessage(), 'no value in the message');

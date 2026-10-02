@@ -21,7 +21,7 @@ class InsertWhenTest extends TestCase
 
     protected function setUp(): void
     {
-        $this->db = Database::sqlite();
+        $this->db = Database::sqlite(':memory:');
         $this->db->execute('CREATE TABLE codes (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, code TEXT NOT NULL, used_at TEXT NULL, created_at TEXT NULL)');
         $this->db->on('query', function (array $context): void {
             $this->queries[] = ['sql' => (string) $context['sql'], 'params' => (array) $context['params']];

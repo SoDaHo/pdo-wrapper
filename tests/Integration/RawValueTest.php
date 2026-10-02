@@ -20,7 +20,7 @@ class RawValueTest extends TestCase
 
     protected function setUp(): void
     {
-        $this->db = Database::sqlite();
+        $this->db = Database::sqlite(':memory:');
         $this->db->execute('CREATE TABLE counters (id INTEGER PRIMARY KEY, name TEXT, hits INTEGER NOT NULL DEFAULT 0, seen_at TEXT)');
         $this->db->insert('counters', ['name' => 'a', 'hits' => 1]);
         $this->db->insert('counters', ['name' => 'b', 'hits' => 5]);

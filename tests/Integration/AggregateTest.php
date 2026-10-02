@@ -19,7 +19,7 @@ class AggregateTest extends TestCase
 
     protected function setUp(): void
     {
-        $this->db = Database::sqlite();
+        $this->db = Database::sqlite(':memory:');
         $this->db->execute('CREATE TABLE users (id INTEGER PRIMARY KEY, country TEXT, status TEXT, score INTEGER)');
         // scores 10, 20, 20, 30, 10: sum 90 vs. SUM(DISTINCT) 60, avg 18 vs. AVG(DISTINCT) 20
         foreach ([['IS', 'active', 10], ['DE', 'active', 20], ['DE', 'inactive', 20], ['AT', 'active', 30], ['AT', 'active', 10]] as [$country, $status, $score]) {

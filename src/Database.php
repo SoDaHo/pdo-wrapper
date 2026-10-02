@@ -20,7 +20,7 @@ use Sodaho\PdoWrapper\Query\RawExpression;
  * Usage:
  * - Database::mysql(['host' => '...', 'database' => '...', 'username' => '...', ...])
  * - Database::postgres(['host' => '...', 'database' => '...', 'username' => '...', ...])
- * - Database::sqlite('/path/to/database.db') or Database::sqlite() for an in-memory database
+ * - Database::sqlite('/path/to/database.db') or Database::sqlite(':memory:') for an in-memory database
  * - Database::connect(['driver' => 'mysql', 'host' => '...', ...])
  * - Database::fromEnv() or Database::fromEnv(['password' => $secret])
  */
@@ -54,12 +54,14 @@ class Database
 
     /**
      * Create a SQLite connection. Nothing is read from the environment: use fromEnv() for that.
+     * The path has no default: an in-memory database is asked for by name, so that a call
+     * without a path cannot end in a database that forgets everything.
      *
-     * @param string $path Path to the SQLite file, or ':memory:' (the default) for an in-memory database
+     * @param string $path Path to the SQLite file, or ':memory:' for an in-memory database
      *
      * @throws Exception\ConnectionException When the path is an empty string or the connection fails
      */
-    public static function sqlite(string $path = ':memory:'): SqliteDriver
+    public static function sqlite(string $path): SqliteDriver
     {
         return new SqliteDriver($path);
     }
@@ -69,7 +71,8 @@ class Database
      *
      * 'mysql' (also 'mariadb'), 'pgsql' (also 'postgres', 'postgresql') and 'sqlite' delegate to
      * mysql(), postgres() and sqlite() with the same config keys; the SQLite path comes from
-     * 'path', else 'database', else it is ':memory:'. One config array for every environment:
+     * 'path', else 'database' - one of them is required (':memory:' for an in-memory database).
+     * One config array for every environment:
      * the driver decides which of the keys are used. Nothing is read from the environment: use
      * fromEnv() for that.
      *
@@ -84,7 +87,10 @@ class Database
         return match ($driver) {
             'mysql', 'mariadb' => self::mysql($config),
             'pgsql', 'postgres', 'postgresql' => self::postgres($config),
-            'sqlite' => self::sqlite($config['path'] ?? $config['database'] ?? ':memory:'),
+            'sqlite' => self::sqlite($config['path'] ?? $config['database'] ?? throw new ConnectionException(
+                message: 'Database connection failed',
+                debugMessage: 'Missing required config: path (":memory:" for an in-memory database, or the path of a file)'
+            )),
             default => throw new ConnectionException(
                 message: 'Database connection failed',
                 debugMessage: $driver === ''
@@ -100,9 +106,9 @@ class Database
      * Variables, $_ENV first, then getenv(): DB_DRIVER (mysql, pgsql or sqlite), DB_HOST, DB_PORT,
      * DB_DATABASE, DB_USERNAME, DB_PASSWORD, and for SQLite DB_SQLITE_PATH. A variable that is
      * set but empty counts as not set (`DB_HOST=` in a dotenv template): a required value is
-     * then reported as missing, DB_PORT takes the driver's default. An empty DB_SQLITE_PATH
-     * throws; without the variable the SQLite database is ':memory:'. The SQLite file never
-     * comes from DB_DATABASE, the name of a server database.
+     * then reported as missing, DB_PORT takes the driver's default. For SQLite DB_SQLITE_PATH
+     * is required (":memory:" for an in-memory database): not set or empty, it throws. The SQLite
+     * file never comes from DB_DATABASE, the name of a server database.
      *
      * What is passed in $overrides counts instead of the environment - also null and an empty
      * string: fromEnv(['password' => null]) connects without a password whatever DB_PASSWORD
@@ -110,7 +116,7 @@ class Database
      *
      * @param array{driver?: string|null, path?: string|null, host?: string|null, database?: string|null, username?: string|null, password?: string|null, port?: int|string, charset?: string, options?: array<int, mixed>} $overrides
      *
-     * @throws ConnectionException When no or an unknown driver is named, a required value is missing, DB_SQLITE_PATH is set but empty, or the connection fails
+     * @throws ConnectionException When no or an unknown driver is named, a required value is missing (for SQLite: DB_SQLITE_PATH, or a 'path'/'database' that is passed), or the connection fails
      */
     public static function fromEnv(#[\SensitiveParameter] array $overrides = []): DatabaseInterface
     {
@@ -134,14 +140,16 @@ class Database
             }
 
             $path = self::env('DB_SQLITE_PATH', keepEmpty: true);
-            if ($path === '') {
+            if ($path === null || $path === '') {
                 throw new ConnectionException(
                     message: 'Database connection failed',
-                    debugMessage: 'DB_SQLITE_PATH is set but empty or not a scalar: unset it for an in-memory database, or set it to ":memory:" or the path of a file'
+                    debugMessage: $path === null
+                        ? 'DB_SQLITE_PATH is not set: set it to ":memory:" for an in-memory database, or to the path of a file'
+                        : 'DB_SQLITE_PATH is set but empty or not a scalar: set it to ":memory:" for an in-memory database, or to the path of a file'
                 );
             }
 
-            return self::sqlite($path ?? ':memory:');
+            return self::sqlite($path);
         }
 
         return self::connect($config);
