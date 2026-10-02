@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Sodaho\PdoWrapper;
 
 use PDO;
+use Sodaho\PdoWrapper\Driver\AbstractDriver;
 use Sodaho\PdoWrapper\Driver\MySqlDriver;
 use Sodaho\PdoWrapper\Driver\PostgresDriver;
 use Sodaho\PdoWrapper\Driver\SqliteDriver;
@@ -83,7 +84,9 @@ class Database
      * 'mysql' (also 'mariadb'), 'pgsql' (also 'postgres', 'postgresql') and 'sqlite' delegate to
      * mysql(), postgres() and sqlite() with the same config keys; the SQLite path comes from
      * 'path', else 'database' - one of them is required (':memory:' for an in-memory database) -,
-     * its PDO options from 'options', the class of its PDO object from 'pdoClass'.
+     * its PDO options from 'options', the class of its PDO object from 'pdoClass' (checked here:
+     * in a config array the value can be anything, and what is no class name is refused as the
+     * other drivers refuse it, before it meets the typed argument of sqlite()).
      * One config array for every environment:
      * the driver decides which of the keys are used. Nothing is read from the environment: use
      * fromEnv() for that.
@@ -102,7 +105,7 @@ class Database
             'sqlite' => self::sqlite($config['path'] ?? $config['database'] ?? throw new ConnectionException(
                 message: 'Database connection failed',
                 debugMessage: 'Missing required config: path (":memory:" for an in-memory database, or the path of a file)'
-            ), $config['options'] ?? [], $config['pdoClass'] ?? PDO::class),
+            ), $config['options'] ?? [], AbstractDriver::validPdoClass($config['pdoClass'] ?? PDO::class)),
             default => throw new ConnectionException(
                 message: 'Database connection failed',
                 debugMessage: $driver === ''
@@ -163,7 +166,7 @@ class Database
                 );
             }
 
-            return self::sqlite($path, $config['options'] ?? [], $config['pdoClass'] ?? PDO::class);
+            return self::sqlite($path, $config['options'] ?? [], AbstractDriver::validPdoClass($config['pdoClass'] ?? PDO::class));
         }
 
         return self::connect($config);

@@ -8,6 +8,7 @@ use Pdo\Pgsql;
 use Pdo\Sqlite;
 use PDOException;
 use PHPUnit\Framework\Attributes\Group;
+use PHPUnit\Framework\Attributes\RequiresPhpExtension;
 use Sodaho\PdoWrapper\Database;
 use Sodaho\PdoWrapper\DatabaseInterface;
 use Sodaho\PdoWrapper\Driver\PostgresDriver;
@@ -54,8 +55,9 @@ class PostgresPdoClassTest extends AbstractPdoClassScenarios
 
     /**
      * A class of another driver passes the check - it extends PDO - and fails where PDO refuses
-     * it: as the failed connection it is.
+     * it: as the failed connection it is. The other driver has to be loaded for its class to exist.
      */
+    #[RequiresPhpExtension('pdo_sqlite')]
     public function testAnotherDriversClassFailsAsAFailedConnection(): void
     {
         try {

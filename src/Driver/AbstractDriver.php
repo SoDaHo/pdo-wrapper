@@ -123,12 +123,15 @@ abstract class AbstractDriver implements DatabaseInterface
      * The configured class of the PDO object the driver creates, or a ConnectionException: the
      * name is used with new, where anything but a class that can stand in for PDO would end in an
      * Error - or in an object the driver cannot use. The message names the key, never the value.
+     * Public for Database::connect() and fromEnv(), which check the key of a SQLite config with it.
+     *
+     * @internal
      *
      * @throws ConnectionException When the value is not the name of a class that is PDO or extends it and can be instantiated
      *
      * @return class-string<PDO>
      */
-    protected static function validPdoClass(mixed $class): string
+    public static function validPdoClass(mixed $class): string
     {
         if (!is_string($class) || !is_a($class, PDO::class, true) || !(new ReflectionClass($class))->isInstantiable()) {
             throw new ConnectionException(
@@ -755,7 +758,8 @@ abstract class AbstractDriver implements DatabaseInterface
             );
         }
 
-        // Only reachable with a non-exception error mode (allowed via 'options').
+        // Only reachable with a non-exception error mode (allowed via 'options') or a PDO class
+        // of the caller's ('pdoClass') that returns false.
         if ($begun === false) {
             throw new TransactionException(
                 message: 'Failed to begin transaction',
@@ -1022,7 +1026,8 @@ abstract class AbstractDriver implements DatabaseInterface
             throw $failure;
         }
 
-        // Only reachable with a non-exception error mode (allowed via 'options').
+        // Only reachable with a non-exception error mode (allowed via 'options') or a PDO class
+        // of the caller's ('pdoClass') that returns false.
         if ($committed === false) {
             $failure = new CommitFailedException(
                 message: 'Failed to commit transaction',
@@ -1394,7 +1399,8 @@ abstract class AbstractDriver implements DatabaseInterface
             );
         }
 
-        // Only reachable with a non-exception error mode (allowed via 'options').
+        // Only reachable with a non-exception error mode (allowed via 'options') or a PDO class
+        // of the caller's ('pdoClass') that returns false.
         if ($rolledBack === false) {
             throw new TransactionException(
                 message: 'Failed to rollback transaction',
@@ -1636,7 +1642,13 @@ abstract class AbstractDriver implements DatabaseInterface
         try {
             $this->commit();
         } catch (CommitHookException $e) {
-            // Committed: nothing to roll back. commit() already rolled back (best effort) what a listener left open.
+            // One that commit() built says: committed. The transaction then no longer owes its end
+            // (commit() already rolled back, best effort, what a listener left open), and
+            // rollbackQuietly() does nothing. One that came through commit() from elsewhere - thrown
+            // by the commit() of a caller's PDO class, or by an error handler - says nothing about
+            // this transaction: it is ended like after any other failure.
+            $this->rollbackQuietly($own, $e);
+
             throw $e;
         } catch (Throwable $e) {
             // The commit itself failed; some drivers (e.g. SQLite) keep the transaction open. While

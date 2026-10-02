@@ -570,6 +570,27 @@ class DatabaseTest extends TestCase
                     );
                 }
             }
+
+            // SQLite takes the class as a typed argument; as a key of a config array it is refused the same way
+            $_ENV['DB_DRIVER'] = 'sqlite';
+            $_ENV['DB_SQLITE_PATH'] = ':memory:';
+            $calls = [
+                'connect()' => static fn (): mixed => Untyped::call(Database::connect(...), ['driver' => 'sqlite', 'path' => ':memory:', 'pdoClass' => $class]),
+                'fromEnv() with a path that is passed' => static fn (): mixed => Untyped::call(Database::fromEnv(...), ['path' => ':memory:', 'pdoClass' => $class]),
+                'fromEnv() with DB_SQLITE_PATH' => static fn (): mixed => Untyped::call(Database::fromEnv(...), ['pdoClass' => $class]),
+            ];
+            foreach ($calls as $how => $call) {
+                try {
+                    $call();
+                    $this->fail("Expected ConnectionException for {$how}, " . get_debug_type($class));
+                } catch (ConnectionException $e) {
+                    $this->assertSame(
+                        'Invalid config value "pdoClass": expected the name of a class that extends PDO and can be instantiated',
+                        $e->getDebugMessage(),
+                        $how . ', ' . get_debug_type($class)
+                    );
+                }
+            }
         }
     }
 

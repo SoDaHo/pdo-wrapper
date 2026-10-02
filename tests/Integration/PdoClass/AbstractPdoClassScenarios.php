@@ -12,6 +12,7 @@ use PHPUnit\Framework\TestCase;
 use RuntimeException;
 use Sodaho\PdoWrapper\DatabaseInterface;
 use Sodaho\PdoWrapper\Exception\CommitFailedException;
+use Sodaho\PdoWrapper\Exception\CommitHookException;
 use Sodaho\PdoWrapper\Exception\TransactionException;
 use Sodaho\PdoWrapper\Tests\Integration\TransactionEnd\ScenarioPdo;
 use Throwable;
@@ -90,6 +91,7 @@ abstract class AbstractPdoClassScenarios extends TestCase
     protected function tearDown(): void
     {
         $this->pdo->failRollBackAlways = false;
+        $this->pdo->rollBackReturnsFalse = false;
         try {
             if ($this->pdo->reallyInTransaction()) {
                 $this->pdo->rollBack();
@@ -232,26 +234,86 @@ abstract class AbstractPdoClassScenarios extends TestCase
      */
     public function testAFailedCommitWhoseRollbackFailsTooIsLost(): void
     {
-        $this->pdo->failCommit = true;
-        $this->pdo->failRollBackAlways = true;
+        $commits = [
+            'commit() throws a PDOException' => function (): void {
+                $this->pdo->failCommit = true;
+            },
+            'commit() returns false' => function (): void {
+                $this->pdo->commitReturnsFalse = true;
+            },
+        ];
 
-        try {
-            $this->db->transaction(function (DatabaseInterface $db): void {
-                $db->insert(self::TABLE, ['id' => 1, 'name' => 'never committed']);
-                $this->events[] = 'callback returned';
-            });
-            $this->fail('Expected CommitFailedException');
-        } catch (CommitFailedException $e) {
-            $this->assertSame(self::LOST, $e->outcome);
-            $this->assertSame([['outcome' => self::LOST, 'error' => $e]], $this->ends);
+        foreach ($commits as $commit => $arm) {
+            foreach ($this->failingRollBacks() as $rollBack => [$fail, $letThrough]) {
+                $what = "{$commit}, {$rollBack}";
+                $this->events = [];
+                $this->ends = [];
+                $arm();
+                $fail();
+
+                try {
+                    $this->db->transaction(function (DatabaseInterface $db): void {
+                        $db->insert(self::TABLE, ['id' => 1, 'name' => 'never committed']);
+                        $this->events[] = 'callback returned';
+                    });
+                    $this->fail("Expected CommitFailedException: {$what}");
+                } catch (CommitFailedException $e) {
+                    $this->assertSame(self::LOST, $e->outcome, $what);
+                    $this->assertSame([['outcome' => self::LOST, 'error' => $e]], $this->ends, $what);
+                }
+
+                $this->assertSame(['callback returned', 'end'], $this->events, "{$what}: neither a commit nor a rollback listener ran");
+                $this->assertTrue($this->pdo->reallyInTransaction(), "{$what}: nothing was sent, still open");
+
+                $letThrough();
+                $this->assertTrue($this->pdo->rollBack());
+                $this->assertSame(0, $this->rows(), $what);
+                $this->assertTheNextTransactionCommits();
+                $this->db->execute('DELETE FROM ' . self::TABLE);
+            }
+        }
+    }
+
+    /**
+     * An exception of the library's own classes that the PDO class throws is not the library's
+     * word about this transaction. A CommitHookException means "committed" only when commit()
+     * built it: thrown by the class, the transaction is rolled back like after anything else. A
+     * CommitFailedException the class built is not the failed commit of this call: it passes
+     * unchanged, and no outcome is written into it.
+     */
+    public function testAnExceptionOfTheLibraryThrownByTheClassIsNotTakenForTheLibrarysOwn(): void
+    {
+        $first = new RuntimeException('a listener failed (fixture)');
+        $thrownByTheClass = [
+            'a CommitHookException' => new CommitHookException($first, [$first]),
+            'a CommitFailedException' => new CommitFailedException(message: 'Failed to commit transaction (fixture)'),
+        ];
+
+        foreach ($thrownByTheClass as $what => $thrown) {
+            $this->events = [];
+            $this->ends = [];
+            $this->pdo->throwFromCommit = $thrown;
+
+            $caught = null;
+            try {
+                $this->db->transaction(function (DatabaseInterface $db): void {
+                    $db->insert(self::TABLE, ['id' => 1, 'name' => 'never committed']);
+                    $this->events[] = 'callback returned';
+                });
+            } catch (Throwable $e) {
+                $caught = $e;
+            }
+
+            $this->assertSame($thrown, $caught, $what);
+            $this->assertSame(['callback returned', 'rollback', 'end'], $this->events, "{$what}: rolled back, nothing committed");
+            $this->assertSame([['outcome' => self::ROLLED_BACK, 'error' => $thrown]], $this->ends, $what);
+            $this->assertFalse($this->pdo->reallyInTransaction(), "{$what}: nothing is left open");
+            $this->assertSame(0, $this->rows(), $what);
+            if ($thrown instanceof CommitFailedException) {
+                $this->assertNull($thrown->outcome, 'not the commit this call failed with: nothing is written into it');
+            }
         }
 
-        $this->assertSame(['callback returned', 'end'], $this->events, 'neither a commit nor a rollback listener ran');
-        $this->assertTrue($this->pdo->reallyInTransaction(), 'nothing was sent: still open');
-
-        $this->pdo->failRollBackAlways = false;
-        $this->assertTrue($this->pdo->rollBack());
-        $this->assertSame(0, $this->rows());
         $this->assertTheNextTransactionCommits();
     }
 
@@ -260,26 +322,44 @@ abstract class AbstractPdoClassScenarios extends TestCase
      */
     public function testWhatCommitThrowsIsLostWhenTheRollbackFailsToo(): void
     {
-        $thrown = new TransactionException('commit failed (fixture)');
-        $this->pdo->throwFromCommit = $thrown;
-        $this->pdo->failRollBackAlways = true;
+        $first = new RuntimeException('a listener failed (fixture)');
+        $thrownByTheClass = [
+            'no exception of the library' => static fn (): Throwable => new TransactionException('commit failed (fixture)'),
+            'a CommitHookException' => static fn (): Throwable => new CommitHookException($first, [$first]),
+            'a CommitFailedException' => static fn (): Throwable => new CommitFailedException(message: 'Failed to commit transaction (fixture)'),
+        ];
 
-        $caught = null;
-        try {
-            $this->db->transaction(function (DatabaseInterface $db): void {
-                $db->insert(self::TABLE, ['id' => 1, 'name' => 'never committed']);
-            });
-        } catch (Throwable $e) {
-            $caught = $e;
+        foreach ($thrownByTheClass as $object => $make) {
+            foreach ($this->failingRollBacks() as $rollBack => [$fail, $letThrough]) {
+                $what = "{$object}, {$rollBack}";
+                $this->events = [];
+                $this->ends = [];
+                $thrown = $make();
+                $this->pdo->throwFromCommit = $thrown;
+                $fail();
+
+                $caught = null;
+                try {
+                    $this->db->transaction(function (DatabaseInterface $db): void {
+                        $db->insert(self::TABLE, ['id' => 1, 'name' => 'never committed']);
+                    });
+                } catch (Throwable $e) {
+                    $caught = $e;
+                }
+
+                $this->assertSame($thrown, $caught, $what);
+                $this->assertSame(['end'], $this->events, $what);
+                $this->assertSame([['outcome' => self::LOST, 'error' => $thrown]], $this->ends, $what);
+                if ($thrown instanceof CommitFailedException) {
+                    $this->assertNull($thrown->outcome, "{$what}: not the commit this call failed with");
+                }
+
+                $letThrough();
+                $this->assertTrue($this->pdo->rollBack());
+                $this->assertTheNextTransactionCommits();
+                $this->db->execute('DELETE FROM ' . self::TABLE);
+            }
         }
-
-        $this->assertSame($thrown, $caught);
-        $this->assertSame(['end'], $this->events);
-        $this->assertSame([['outcome' => self::LOST, 'error' => $thrown]], $this->ends);
-
-        $this->pdo->failRollBackAlways = false;
-        $this->assertTrue($this->pdo->rollBack());
-        $this->assertTheNextTransactionCommits();
     }
 
     /**
@@ -322,6 +402,9 @@ abstract class AbstractPdoClassScenarios extends TestCase
             'a PDOException' => function (): void {
                 $this->pdo->failCommit = true;
             },
+            'false' => function (): void {
+                $this->pdo->commitReturnsFalse = true;
+            },
         ];
 
         foreach ($failures as $what => $arm) {
@@ -338,11 +421,11 @@ abstract class AbstractPdoClassScenarios extends TestCase
                 $caught = $e;
             }
 
-            if ($what === 'a PDOException') {
-                $this->assertInstanceOf(CommitFailedException::class, $caught);
-                $this->assertNull($caught->outcome, 'not told yet: the transaction is still the caller\'s');
-            } else {
+            if ($what === 'no PDOException') {
                 $this->assertSame($thrown, $caught);
+            } else {
+                $this->assertInstanceOf(CommitFailedException::class, $caught, $what);
+                $this->assertNull($caught->outcome, "{$what}: not told yet, the transaction is still the caller's");
             }
             $this->assertSame([], $this->events, "{$what}: nothing has ended");
             $this->assertTrue($this->pdo->reallyInTransaction(), $what);
@@ -352,6 +435,33 @@ abstract class AbstractPdoClassScenarios extends TestCase
             $this->assertSame(self::ROLLED_BACK, $this->ends[0]['outcome'], $what);
             $this->assertSame(0, $this->rows(), $what);
         }
+    }
+
+    /**
+     * The two ways a rollBack() of the class fails: how to switch each on, and off again.
+     *
+     * @return array<string, array{Closure(): void, Closure(): void}>
+     */
+    private function failingRollBacks(): array
+    {
+        return [
+            'rollBack() throws' => [
+                function (): void {
+                    $this->pdo->failRollBackAlways = true;
+                },
+                function (): void {
+                    $this->pdo->failRollBackAlways = false;
+                },
+            ],
+            'rollBack() returns false' => [
+                function (): void {
+                    $this->pdo->rollBackReturnsFalse = true;
+                },
+                function (): void {
+                    $this->pdo->rollBackReturnsFalse = false;
+                },
+            ],
+        ];
     }
 
     private function assertTheNextTransactionCommits(): void
