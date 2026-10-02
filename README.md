@@ -80,7 +80,13 @@ $db = Database::sqlite(':memory:');
 
 // File-based database
 $db = Database::sqlite('/path/to/database.db');
+
+// With PDO options: wait up to 5 seconds for a lock another connection holds; open read-only
+$db = Database::sqlite('/path/to/database.db', [PDO::ATTR_TIMEOUT => 5]);
+$db = Database::sqlite('/path/to/database.db', [Pdo\Sqlite::ATTR_OPEN_FLAGS => Pdo\Sqlite::OPEN_READONLY]);
 ```
+
+The options replace the library's PDO defaults like the `options` of the other drivers (see above); in `connect()` and `fromEnv()` they are the `options` key.
 
 An empty path throws a `ConnectionException`: SQLite would open a private temporary database for it and delete it when the connection closes, so a missing setting would look like a working database that forgets everything.
 
@@ -104,7 +110,7 @@ $db = Database::connect(['driver' => 'mysql', 'host' => 'localhost', 'database' 
 $db = Database::connect(['driver' => 'sqlite', 'path' => ':memory:']);
 ```
 
-Accepted driver names: `mysql` (also `mariadb`), `pgsql` (also `postgres`, `postgresql`), `sqlite`. A missing or unknown driver throws a `ConnectionException`. For SQLite the file is `path`, else `database`; one of them is required (`:memory:` for an in-memory database).
+Accepted driver names: `mysql` (also `mariadb`), `pgsql` (also `postgres`, `postgresql`), `sqlite`. A missing or unknown driver throws a `ConnectionException`. For SQLite the file is `path`, else `database`; one of them is required (`:memory:` for an in-memory database), and `options` are its PDO options.
 
 `mysql()`, `postgres()`, `sqlite()` and `connect()` use what they are given and nothing else. They never read the environment: a required value that was not passed throws a `ConnectionException`, whatever `DB_HOST` says.
 
@@ -130,7 +136,7 @@ The list is complete: no other variable is read, and none of these anywhere else
 
 **Priority:** `$overrides` > `$_ENV` > `getenv()`. A key that is passed counts instead of its variable, also with `null` or an empty value: `fromEnv(['password' => null])` connects without a password whatever `DB_PASSWORD` says. The keys are those of `connect()`; `charset` and `options` have no variable and can only be passed. `$_ENV` is checked first (thread-safe), then `getenv()`.
 
-A variable that is set but empty counts as not set (`DB_HOST=` in a dotenv template): a required value is then reported as missing instead of connecting with an empty one. SQLite has no default path anywhere - `Database::sqlite($path)`, `connect()` and `fromEnv()` throw without one, and so does an empty `DB_SQLITE_PATH`: a missing setting must not end in an in-memory database that forgets everything. The SQLite file comes from `DB_SQLITE_PATH` or from a `path`/`database` that is passed, never from `DB_DATABASE`: that is the name of a server database. Use a library like [sodaho/env-loader](https://github.com/sodaho/env-loader) to load `.env` files.
+A variable that is set but empty counts as not set (`DB_HOST=` in a dotenv template): a required value is then reported as missing instead of connecting with an empty one. SQLite has no default path anywhere - `Database::sqlite($path)`, `new SqliteDriver($path)`, `connect()` and `fromEnv()` throw without one, and so does an empty `DB_SQLITE_PATH`: a missing setting must not end in an in-memory database that forgets everything. The SQLite file comes from `DB_SQLITE_PATH` or from a `path`/`database` that is passed, never from `DB_DATABASE`: that is the name of a server database. Use a library like [sodaho/env-loader](https://github.com/sodaho/env-loader) to load `.env` files.
 
 ## Raw Queries
 
