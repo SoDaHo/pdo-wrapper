@@ -131,9 +131,13 @@ interface DatabaseInterface
     /**
      * Roll back the current transaction.
      *
-     * After a successful rollback the 'transaction.rollback' listeners run, then 'transaction.end'
+     * After a confirmed rollback the 'transaction.rollback' listeners run, then 'transaction.end'
      * with outcome 'rolled_back' (error null; not when a 'lost' was already reported for this
-     * transaction). A rollback listener's exception takes precedence and passes through unchanged
+     * transaction). Not confirmed, and told as 'lost' without rollback listeners: after a statement
+     * failed inside the transaction, MySQL/MariaDB are asked whether it still exists before the
+     * ROLLBACK is sent (a statement with an implicit commit commits it even when it fails) - when
+     * it is gone, nothing is sent; when the question fails, the ROLLBACK is sent all the same but
+     * proves nothing (the end listeners' failures on such a 'lost' reach only the 'error' hook). A rollback listener's exception takes precedence and passes through unchanged
      * (a PDOException as TransactionException); the end listeners' failures then reach only the
      * 'error' hook. A failed rollback fires nothing. After a MySQL/MariaDB deadlock rollback() also
      * ends a transaction begun through this library that PDO no longer reports (a statement on raw
@@ -143,7 +147,7 @@ interface DatabaseInterface
      * after the ROLLBACK (MySQL/MariaDB completion_type=CHAIN, not supported), that is reported as
      * TransactionException after the listeners ran, unless a rollback listener threw.
      *
-     * @throws Exception\TransactionException On failure, when the connection is in a new, chained transaction afterwards, or when a transaction.end listener failed and no rollback listener did (the first failure; all of them reach the 'error' hook)
+     * @throws Exception\TransactionException On failure, when the connection is in a new, chained transaction afterwards, or when a transaction.end listener failed after a confirmed rollback and no rollback listener did (the first failure; all of them reach the 'error' hook)
      * @throws \Throwable Re-throws a rollback listener's exception
      */
     public function rollback(): void;

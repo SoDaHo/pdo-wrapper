@@ -103,6 +103,8 @@ abstract class AbstractTransactionEndScenarios extends TestCase
         $this->pdo->vanishOnFailedCommit = false;
         $this->pdo->hideTransaction = false;
         $this->pdo->stateUnreadable = false;
+        $this->pdo->failExec = false;
+        $this->pdo->vanishOnExec = false;
         try {
             if ($this->pdo->reallyInTransaction()) {
                 $this->pdo->rollBack();

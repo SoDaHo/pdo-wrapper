@@ -561,6 +561,425 @@ class SqliteTransactionEndScenariosTest extends AbstractTransactionEndScenarios
     }
 
     /**
+     * Before a ROLLBACK after a failed statement, a driver may be asked to make PDO know whether
+     * the transaction still exists (refreshTransactionState()). Gone: the end is 'lost', nothing
+     * is sent. Still there: the ROLLBACK is sent as before. The driver could not find out: the
+     * ROLLBACK is sent, but the end is 'lost' and no rollback listener runs. Not asked at all:
+     * without a failed statement, after a failure that settles the matter by itself, and when PDO
+     * reports no transaction anyway.
+     */
+    public function testRollbackAsksTheDriverAfterAFailedStatementBeforeItTrustsTheRollback(): void
+    {
+        $db = new class ($this->pdo) extends SqliteDriver {
+            public int $asked = 0;
+
+            /** What asking finds: 'gone' hides the transaction, 'alive' leaves it, 'unknown' could not find out */
+            public string $answer = 'alive';
+
+            public function __construct(PDO $pdo)
+            {
+                $this->pdo = $pdo;
+            }
+
+            protected function failureToRemember(?PDOException $remembered, PDOException $failure): PDOException
+            {
+                return $failure;
+            }
+
+            protected function transactionIsOver(PDOException $failure): bool
+            {
+                return str_contains($failure->getMessage(), 'fatal_table');
+            }
+
+            protected function refreshTransactionState(): bool
+            {
+                $this->asked++;
+                if ($this->answer === 'gone' && $this->pdo instanceof ScenarioPdo) {
+                    $this->pdo->hideTransaction = true;
+                }
+
+                return $this->answer !== 'unknown';
+            }
+        };
+        $fail = $this->failingQuery($db);
+        $ends = [];
+        $db->on('transaction.end', static function (array $data) use (&$ends): void {
+            $ends[] = [$data['outcome'], $data['error']];
+        });
+        $rollbacks = 0;
+        $db->on('transaction.rollback', static function () use (&$rollbacks): void {
+            $rollbacks++;
+        });
+
+        // no statement failed: nothing is asked
+        $db->beginTransaction();
+        $db->rollback();
+        $this->assertSame(0, $db->asked);
+        $this->assertSame([DatabaseInterface::TRANSACTION_ROLLED_BACK, null], array_pop($ends));
+
+        // a statement failed and the transaction is still there: asked, then rolled back
+        $db->beginTransaction();
+        $fail('harmless_table');
+        $db->rollback();
+        $this->assertSame(1, $db->asked);
+        $this->assertSame(2, $rollbacks);
+        $this->assertSame([DatabaseInterface::TRANSACTION_ROLLED_BACK, null], array_pop($ends));
+        $this->assertFalse($this->pdo->reallyInTransaction());
+
+        // asked, and the transaction is gone: 'lost' with the remembered failure, no ROLLBACK, no rollback listener
+        $db->answer = 'gone';
+        $db->beginTransaction();
+        $fail('harmless_table');
+        $db->rollback();
+        $this->assertSame(2, $db->asked);
+        $this->assertSame(2, $rollbacks);
+        [$outcome, $error] = array_pop($ends);
+        $this->assertSame(DatabaseInterface::TRANSACTION_LOST, $outcome);
+        $this->assertInstanceOf(PDOException::class, $error);
+        $this->assertStringContainsString('harmless_table', $error->getMessage());
+        $this->assertTrue($this->pdo->reallyInTransaction(), 'nothing was sent');
+        $this->pdo->hideTransaction = false;
+        $this->pdo->rollBack();
+
+        // gone for certain: no mark of a transaction that "may still be open" stays behind
+        $this->pdo->beginTransaction();
+        $db->commit();
+        $this->assertSame([DatabaseInterface::TRANSACTION_COMMITTED, null], array_pop($ends));
+
+        // in transaction(): the callback's exception is the error of that end
+        $cause = new \RuntimeException('callback failed');
+        try {
+            $db->transaction(static function () use ($fail, $cause): void {
+                $fail('harmless_table');
+                throw $cause;
+            });
+            $this->fail('Expected the callback exception');
+        } catch (\RuntimeException $e) {
+            $this->assertSame($cause, $e);
+        }
+        $this->assertSame(3, $db->asked);
+        $this->assertSame([DatabaseInterface::TRANSACTION_LOST, $cause], array_pop($ends));
+        $this->pdo->hideTransaction = false;
+        $this->pdo->rollBack();
+
+        // the driver could not find out: the ROLLBACK is sent, and confirms nothing
+        $db->answer = 'unknown';
+        $db->beginTransaction();
+        $db->insert(self::TABLE, ['id' => 7, 'name' => 'unknown']);
+        $fail('harmless_table');
+        $before = $rollbacks;
+        $db->rollback();
+        $this->assertSame(4, $db->asked, 'asked once');
+        $this->assertSame($before, $rollbacks, 'no rollback listener');
+        [$outcome, $error] = array_pop($ends);
+        $this->assertSame(DatabaseInterface::TRANSACTION_LOST, $outcome);
+        $this->assertStringContainsString('harmless_table', $error instanceof PDOException ? $error->getMessage() : '');
+        $this->assertFalse($this->pdo->reallyInTransaction(), 'the ROLLBACK was sent');
+        $this->assertSame([], $db->table(self::TABLE)->get());
+        $this->assertSame([], $ends, 'told once');
+
+        // a failure that settles the matter by itself is not asked about
+        $db->answer = 'alive';
+        $db->beginTransaction();
+        $fail('fatal_table');
+        $db->rollback();
+        $this->assertSame(4, $db->asked);
+        $this->assertSame([DatabaseInterface::TRANSACTION_ROLLED_BACK, null], array_pop($ends));
+
+        // PDO reports no transaction already (a later statement told it): nothing is asked, and the
+        // ROLLBACK is sent as before - here it goes through, because the scenario only hides the transaction
+        $db->answer = 'gone';
+        $db->beginTransaction();
+        $fail('harmless_table');
+        $this->pdo->hideTransaction = true;
+        $db->rollback();
+        $this->pdo->hideTransaction = false;
+        $this->assertSame(4, $db->asked);
+        $this->assertSame([DatabaseInterface::TRANSACTION_ROLLED_BACK, null], array_pop($ends));
+        $this->assertFalse($this->pdo->reallyInTransaction());
+
+        // a transaction begun on raw PDO: asked while PDO reports it, not when the state cannot be read
+        $db->answer = 'gone';
+        $this->pdo->beginTransaction();
+        $fail('harmless_table');
+        $db->rollback();
+        $this->assertSame(5, $db->asked);
+        $this->assertSame(DatabaseInterface::TRANSACTION_LOST, array_pop($ends)[0] ?? null);
+        $this->pdo->hideTransaction = false;
+        $fail('harmless_table');
+        $this->pdo->stateUnreadable = true;
+        try {
+            $db->rollback();
+        } finally {
+            $this->pdo->stateUnreadable = false;
+        }
+        $this->assertSame(5, $db->asked, 'an unreadable state is no reason to ask');
+        $this->assertFalse($this->pdo->reallyInTransaction(), 'the ROLLBACK was sent');
+        array_pop($ends);
+
+        // a 'lost' was told for a transaction that may still be open: its rollback tells no second end, asked or not
+        $this->pdo->failRollBackAlways = true;
+        try {
+            $db->transaction(static function (): void {
+                throw new \RuntimeException('callback failed');
+            });
+        } catch (\RuntimeException) {
+            $this->pdo->failRollBackAlways = false;
+        }
+        $this->assertSame(DatabaseInterface::TRANSACTION_LOST, array_pop($ends)[0] ?? null);
+        $fail('harmless_table');
+        $db->rollback();
+        $this->assertSame(5, $db->asked);
+        $this->assertSame([], $ends, 'no second end');
+        $this->assertFalse($this->pdo->reallyInTransaction());
+    }
+
+    /**
+     * The driver cannot find out, and the ROLLBACK that is sent to clean up fails as well: nothing
+     * is told on a manual rollback() and the transaction stays the caller's - a second rollback()
+     * asks again. In transaction() the end is 'lost' for a transaction that may still be open, and
+     * its later rollback tells no second end.
+     */
+    public function testARollbackThatConfirmsNothingAndFailsLeavesTheTransactionToTheCaller(): void
+    {
+        $db = new class ($this->pdo) extends SqliteDriver {
+            public int $asked = 0;
+
+            public function __construct(PDO $pdo)
+            {
+                $this->pdo = $pdo;
+            }
+
+            protected function failureToRemember(?PDOException $remembered, PDOException $failure): PDOException
+            {
+                return $failure;
+            }
+
+            protected function refreshTransactionState(): bool
+            {
+                $this->asked++;
+
+                return false;
+            }
+        };
+        $fail = $this->failingQuery($db);
+        $ends = [];
+        $db->on('transaction.end', static function (array $data) use (&$ends): void {
+            $ends[] = $data['outcome'];
+        });
+
+        $db->beginTransaction();
+        $db->insert(self::TABLE, ['id' => 1, 'name' => 'a']);
+        $fail('harmless_table');
+        $this->pdo->failRollBackAlways = true;
+        try {
+            $db->rollback();
+            $this->fail('Expected TransactionException');
+        } catch (TransactionException $e) {
+            $this->assertSame('Failed to rollback transaction', $e->getMessage());
+        } finally {
+            $this->pdo->failRollBackAlways = false;
+        }
+        $this->assertSame([], $ends, 'nothing is told: the transaction is still the caller\'s');
+        $this->assertSame(1, $db->asked);
+
+        $db->rollback();
+        $this->assertSame(2, $db->asked, 'asked again: the failure is still remembered');
+        $this->assertSame([DatabaseInterface::TRANSACTION_LOST], $ends);
+        $this->assertFalse($this->pdo->reallyInTransaction());
+        $this->assertSame([], $db->table(self::TABLE)->get());
+
+        $ends = [];
+        $this->pdo->failRollBackAlways = true;
+        try {
+            $db->transaction(static function (DatabaseInterface $db) use ($fail): void {
+                $db->insert(self::TABLE, ['id' => 2, 'name' => 'b']);
+                $fail('harmless_table');
+                throw new \RuntimeException('callback failed');
+            });
+            $this->fail('Expected the callback exception');
+        } catch (\RuntimeException) {
+            $this->pdo->failRollBackAlways = false;
+        }
+        $this->assertSame([DatabaseInterface::TRANSACTION_LOST], $ends);
+        $this->assertTrue($this->pdo->reallyInTransaction(), 'may still be open: it is');
+        $db->rollback();
+        $this->assertSame([DatabaseInterface::TRANSACTION_LOST], $ends, 'no second end');
+        $this->assertFalse($this->pdo->reallyInTransaction());
+        $this->assertSame(3, $db->asked, 'not asked for a transaction whose end was told');
+    }
+
+    /**
+     * transaction() swallowed a failed statement, and commit() is refused because the driver cannot
+     * say whether the transaction still exists. The rollback that follows asks again: gone. The
+     * refused commit leaves with 'lost' - the outcome the end listeners were told with it.
+     */
+    public function testARefusedCommitWhoseRollbackFindsTheTransactionGoneIsLost(): void
+    {
+        $db = new class ($this->pdo) extends SqliteDriver {
+            public bool $gone = false;
+
+            public bool $unknown = false;
+
+            public int $asked = 0;
+
+            public function __construct(PDO $pdo)
+            {
+                $this->pdo = $pdo;
+            }
+
+            protected function failureToRemember(?PDOException $remembered, PDOException $failure): PDOException
+            {
+                return $failure;
+            }
+
+            protected function transactionEndedBy(PDOException $failure): ?string
+            {
+                return 'could not be asked (scenario)';
+            }
+
+            protected function refreshTransactionState(): bool
+            {
+                $this->asked++;
+                if ($this->gone && $this->pdo instanceof ScenarioPdo) {
+                    $this->pdo->hideTransaction = true;
+                }
+
+                return !$this->unknown;
+            }
+        };
+        $fail = $this->failingQuery($db);
+        $ends = [];
+        $db->on('transaction.end', static function (array $data) use (&$ends): void {
+            $ends[] = [$data['outcome'], $data['error'], $data['error'] instanceof CommitFailedException ? $data['error']->outcome : null];
+        });
+
+        $db->gone = true;
+        try {
+            $db->transaction(static function () use ($fail): void {
+                $fail('harmless_table');
+            });
+            $this->fail('Expected CommitFailedException');
+        } catch (CommitFailedException $refusal) {
+            $this->assertSame(DatabaseInterface::TRANSACTION_LOST, $refusal->outcome);
+            $this->assertSame([[DatabaseInterface::TRANSACTION_LOST, $refusal, DatabaseInterface::TRANSACTION_LOST]], $ends, 'told once, with the refused commit, which says lost at that moment already');
+        } finally {
+            $this->pdo->hideTransaction = false;
+        }
+        $this->assertTrue($this->pdo->reallyInTransaction(), 'nothing was sent');
+        $this->pdo->rollBack();
+
+        // the transaction is still there: the ROLLBACK is sent and confirms that nothing is committed
+        $db->gone = false;
+        $ends = [];
+        try {
+            $db->transaction(static function () use ($fail): void {
+                $fail('harmless_table');
+            });
+            $this->fail('Expected CommitFailedException');
+        } catch (CommitFailedException $refusal) {
+            $this->assertSame(DatabaseInterface::TRANSACTION_ROLLED_BACK, $refusal->outcome);
+            $this->assertSame([[DatabaseInterface::TRANSACTION_ROLLED_BACK, $refusal, DatabaseInterface::TRANSACTION_ROLLED_BACK]], $ends);
+        }
+        $this->assertFalse($this->pdo->reallyInTransaction());
+
+        // the driver cannot find out: the ROLLBACK is sent, and the refused commit says 'lost'
+        $db->unknown = true;
+        $ends = [];
+        try {
+            $db->transaction(static function () use ($fail): void {
+                $fail('harmless_table');
+            });
+            $this->fail('Expected CommitFailedException');
+        } catch (CommitFailedException $refusal) {
+            $this->assertSame(DatabaseInterface::TRANSACTION_LOST, $refusal->outcome);
+            $this->assertSame([[DatabaseInterface::TRANSACTION_LOST, $refusal, DatabaseInterface::TRANSACTION_LOST]], $ends);
+        }
+        $this->assertFalse($this->pdo->reallyInTransaction());
+
+        // ... and the ROLLBACK fails as well: 'lost' for a transaction that may still be open
+        $ends = [];
+        $asked = $db->asked;
+        $this->pdo->failRollBackAlways = true;
+        try {
+            $db->transaction(static function () use ($fail): void {
+                $fail('harmless_table');
+            });
+            $this->fail('Expected CommitFailedException');
+        } catch (CommitFailedException $refusal) {
+            $this->assertSame(DatabaseInterface::TRANSACTION_LOST, $refusal->outcome);
+            $this->assertSame([[DatabaseInterface::TRANSACTION_LOST, $refusal, DatabaseInterface::TRANSACTION_LOST]], $ends);
+        } finally {
+            $this->pdo->failRollBackAlways = false;
+        }
+        $this->assertSame($asked + 1, $db->asked, 'asked before the ROLLBACK that failed');
+        $this->assertTrue($this->pdo->reallyInTransaction(), 'still open');
+        $db->rollback();
+        $this->assertCount(1, $ends, 'no second end');
+        $this->assertFalse($this->pdo->reallyInTransaction());
+    }
+
+    /**
+     * The end listeners of a rollback that confirmed nothing: one that throws is told to the
+     * 'error' hook and rollback() returns; one that begins a transaction keeps it.
+     */
+    public function testEndListenersOfARollbackThatConfirmsNothing(): void
+    {
+        $db = new class ($this->pdo) extends SqliteDriver {
+            public function __construct(PDO $pdo)
+            {
+                $this->pdo = $pdo;
+            }
+
+            protected function failureToRemember(?PDOException $remembered, PDOException $failure): PDOException
+            {
+                return $failure;
+            }
+
+            protected function refreshTransactionState(): bool
+            {
+                return false;
+            }
+        };
+        $fail = $this->failingQuery($db);
+        $reported = [];
+        $db->on('error', static function (array $data) use (&$reported): void {
+            if (($data['hook'] ?? null) === 'transaction.end') {
+                $reported[] = [$data['outcome'] ?? null, $data['error']];
+            }
+        });
+        $mode = 'throw';
+        $outcomes = [];
+        $db->on('transaction.end', static function (array $data) use ($db, &$mode, &$outcomes): void {
+            $outcomes[] = $data['outcome'];
+            if ($mode === 'throw') {
+                throw new \RuntimeException('end listener failed');
+            }
+            if ($mode === 'begin') {
+                $mode = 'none';
+                $db->beginTransaction();
+                $db->insert(self::TABLE, ['id' => 5, 'name' => 'listener']);
+            }
+        });
+
+        $db->beginTransaction();
+        $fail('harmless_table');
+        $db->rollback();
+        $this->assertSame([DatabaseInterface::TRANSACTION_LOST], $outcomes);
+        $this->assertSame([[DatabaseInterface::TRANSACTION_LOST, 'end listener failed']], $reported, 'not thrown: told to the error hook');
+        $this->assertFalse($this->pdo->reallyInTransaction());
+
+        $mode = 'begin';
+        $db->beginTransaction();
+        $fail('harmless_table');
+        $db->rollback();
+        $this->assertTrue($this->pdo->reallyInTransaction(), "the listener's transaction is the listener's");
+        $db->commit();
+        $this->assertSame([DatabaseInterface::TRANSACTION_LOST, DatabaseInterface::TRANSACTION_LOST, DatabaseInterface::TRANSACTION_COMMITTED], $outcomes);
+        $this->assertSame([5], array_column($db->table(self::TABLE)->get(), 'id'));
+    }
+
+    /**
      * @return SqliteDriver&object{asked: list<string>}
      */
     private function makeFlaggingDriver(): SqliteDriver

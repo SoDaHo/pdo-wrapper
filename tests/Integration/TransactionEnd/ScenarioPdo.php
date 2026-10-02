@@ -29,6 +29,25 @@ final class ScenarioPdo extends PDO
 
     public bool $stateUnreadable = false;
 
+    /** exec() fails: what a driver's own question to the server (a statement on raw PDO) runs into on a broken connection */
+    public bool $failExec = false;
+
+    /** exec() makes the driver report no transaction from then on: a driver's question to the server that learns the server ended it */
+    public bool $vanishOnExec = false;
+
+    public function exec(string $statement): int|false
+    {
+        if ($this->failExec) {
+            throw new PDOException('exec failed (scenario)');
+        }
+        if ($this->vanishOnExec) {
+            $this->vanishOnExec = false;
+            $this->hideTransaction = true;
+        }
+
+        return parent::exec($statement);
+    }
+
     public function rollBack(): bool
     {
         if ($this->failRollBackAlways) {
