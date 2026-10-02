@@ -274,6 +274,48 @@ class MySqlTransactionEndScenariosTest extends AbstractTransactionEndScenarios
     }
 
     /**
+     * A rollback listener runs before the end of its transaction is told, and may run a
+     * transaction of its own. When the handler's rollback - in the middle of the question - has
+     * such a listener, the rollback() that asked still sees that its transaction has ended.
+     */
+    public function testAListenersOwnTransactionWhileRollbackAsksDoesNotHideThatTheTransactionEnded(): void
+    {
+        $db = $this->db;
+        $audit = new class () {
+            public bool $written = false;
+        };
+        $this->db->on('transaction.rollback', static function () use ($db, $audit): void {
+            if (!$audit->written) {
+                $audit->written = true;
+                $db->transaction(static fn (DatabaseInterface $db) => $db->insert(self::TABLE, ['id' => 2, 'name' => 'audit']));
+            }
+        });
+        $this->db->beginTransaction();
+        $this->db->insert(self::TABLE, ['id' => 1, 'name' => 'a']);
+        try {
+            $this->db->query('SELECT * FROM end_scenarios_missing');
+            $this->fail('Expected QueryException');
+        } catch (QueryException) {
+            // remembered: the next rollback asks the server
+        }
+        $this->pdo->duringExec = static function () use ($db): void {
+            $db->rollback();
+            throw new \RuntimeException('thrown by an error handler');
+        };
+        $this->events = [];
+        $this->ends = [];
+
+        $this->db->rollback();
+
+        $this->assertSame(
+            [['outcome' => DatabaseInterface::TRANSACTION_COMMITTED, 'error' => null], ['outcome' => DatabaseInterface::TRANSACTION_ROLLED_BACK, 'error' => null]],
+            $this->ends,
+            'the listener\'s transaction, then the one the handler rolled back - and nothing after it'
+        );
+        $this->assertVisible([2]);
+    }
+
+    /**
      * The same while the cleanup after a throwing begin listener asks: the handler's rollback
      * ended the transaction that was just begun, nothing is left to undo or to tell.
      */

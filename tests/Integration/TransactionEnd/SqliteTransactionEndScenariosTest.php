@@ -892,6 +892,56 @@ class SqliteTransactionEndScenariosTest extends AbstractTransactionEndScenarios
     }
 
     /**
+     * The cleanup after a begin listener whose failed statement left the state unknown: an error
+     * handler inside the failing ROLLBACK commits the transaction through the driver, and a commit
+     * listener runs a transaction of its own before that end is told. The cleanup still sees that
+     * the transaction it was for has ended: no 'lost' after its 'committed'.
+     */
+    public function testAListenersOwnTransactionDuringTheUnconfirmedCleanupDoesNotHideThatTheTransactionEnded(): void
+    {
+        $db = new AskingSqliteDriver($this->pdo);
+        $db->answer = 'unknown';
+        $pdo = $this->pdo;
+        $ends = new Recorder(static fn (array $data): mixed => $data['outcome']);
+        $db->on('transaction.end', $ends);
+        $once = new class () {
+            public bool $fail = true;
+
+            public bool $audit = true;
+        };
+        $db->on('transaction.begin', static function () use ($db, $once): void {
+            if ($once->fail) {
+                $once->fail = false;
+                $db->query('SELECT * FROM harmless_table'); // fails, and leaves the listener
+            }
+        });
+        $db->on('transaction.commit', static function () use ($db, $once): void {
+            if ($once->audit) {
+                $once->audit = false;
+                $db->transaction(static fn (DatabaseInterface $db) => $db->insert(self::TABLE, ['id' => 2, 'name' => 'audit']));
+            }
+        });
+        $pdo->duringRollBack = static function () use ($db): void {
+            $db->commit();
+        };
+        $pdo->rollBackReturnsFalse = true;
+
+        try {
+            $db->beginTransaction();
+            $this->fail('Expected QueryException');
+        } catch (QueryException) {
+            $pdo->rollBackReturnsFalse = false;
+        }
+
+        $this->assertSame(
+            [DatabaseInterface::TRANSACTION_COMMITTED, DatabaseInterface::TRANSACTION_COMMITTED],
+            $ends->all(),
+            'the listener\'s transaction, then the one the handler committed - and no "lost" after it'
+        );
+        $this->assertFalse($this->pdo->reallyInTransaction());
+    }
+
+    /**
      * The same for an earlier failed commit of the very transaction transaction() began: the
      * callback tried to commit, caught the failure, and that exception is thrown again inside the
      * commit transaction() runs. It is still not the failure of that commit - it was thrown by

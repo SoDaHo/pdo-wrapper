@@ -50,14 +50,16 @@ abstract class AbstractDriver implements DatabaseInterface
     private bool $lostReported = false;
 
     /**
-     * Counts the 'transaction.end' events told. A call that has been inside PDO - and with it,
-     * possibly, inside foreign code that used this driver (an error handler for a PDO warning) -
-     * compares it to see that the transaction it was about has been ended meanwhile (endedSince()).
+     * Counts the transactions ended through this driver - by commit(), by rollback(), or told as
+     * 'lost' -, at the moment they end: before any of their listeners runs. A call that has been
+     * inside PDO - and with it, possibly, inside foreign code that used this driver (an error
+     * handler for a PDO warning) - compares it to see that the transaction it was about has been
+     * ended meanwhile (endedSince()).
      */
-    private int $endsTold = 0;
+    private int $transactionsEnded = 0;
 
-    /** What $endsTold was when the latest transaction was begun through this driver */
-    private int $endsToldAtBegin = 0;
+    /** What $transactionsEnded was when the latest transaction was begun through this driver */
+    private int $endedAtBegin = 0;
 
     /**
      * Set by queryThen(): the step for exactly that statement - its SQL, at the hook depth
@@ -742,7 +744,7 @@ abstract class AbstractDriver implements DatabaseInterface
 
         $this->transactionBegun = true;
         $number = ++$this->transactionsBegun;
-        $this->endsToldAtBegin = $this->endsTold;
+        $this->endedAtBegin = $this->transactionsEnded;
         $this->lostReported = false;
         $this->suspectFailure = null;
 
@@ -888,10 +890,10 @@ abstract class AbstractDriver implements DatabaseInterface
      */
     private function cleanUpUnconfirmed(Throwable $cause): void
     {
-        $told = $this->endsTold;
+        $ended = $this->transactionsEnded;
         $number = $this->transactionsBegun;
         $gone = $this->rollbackRawQuietly();
-        if ($this->endedSince($told, $number)) {
+        if ($this->endedSince($ended, $number)) {
             // The ROLLBACK is a call into PDO, and with it into foreign code (an error handler) that
             // ended the transaction through this driver - a commit(), say, when the ROLLBACK failed:
             // that call has told the end
@@ -954,7 +956,7 @@ abstract class AbstractDriver implements DatabaseInterface
     {
         $call = ++$this->commitCalls;
         $this->deadTransactionPending(); // forgets the failure of a transaction begun on raw PDO that PDO no longer reports
-        $told = $this->endsTold;
+        $ended = $this->transactionsEnded;
         $number = $this->transactionsBegun; // read now: foreign code inside the PDO calls below may begin another
 
         if ($this->suspectFailure !== null) {
@@ -966,7 +968,7 @@ abstract class AbstractDriver implements DatabaseInterface
                     previous: $this->suspectFailure,
                     debugMessage: $reason
                 );
-                $this->endFailedCommitIfGone($refusal, false, $told, $number);
+                $this->endFailedCommitIfGone($refusal, false, $ended, $number);
                 $this->thrownByCommit = [$refusal, $call]; // after the listeners: a failed commit() of theirs would stand here instead
 
                 throw $refusal;
@@ -992,7 +994,7 @@ abstract class AbstractDriver implements DatabaseInterface
                 previous: $e,
                 debugMessage: $e->getMessage()
             );
-            $this->endFailedCommitIfGone($failure, $wasOpen, $told, $number);
+            $this->endFailedCommitIfGone($failure, $wasOpen, $ended, $number);
             $this->thrownByCommit = [$failure, $call];
 
             throw $failure;
@@ -1005,7 +1007,7 @@ abstract class AbstractDriver implements DatabaseInterface
                 previous: $this->silentFailure('PDO::commit() returned false', $this->pdo->errorInfo()),
                 debugMessage: 'PDO::commit() returned false'
             );
-            $this->endFailedCommitIfGone($failure, $wasOpen, $told, $number);
+            $this->endFailedCommitIfGone($failure, $wasOpen, $ended, $number);
             $this->thrownByCommit = [$failure, $call];
 
             throw $failure;
@@ -1013,6 +1015,7 @@ abstract class AbstractDriver implements DatabaseInterface
 
         // Committed from here on: a listener error must not look like a failed commit.
         $this->transactionBegun = false;
+        $this->transactionsEnded++;
         $endOwed = !$this->lostReported; // after a reported 'lost' this transaction's end has already been told
         $this->lostReported = false;
         [$failures, $connectionInTransaction, $innerEnds] = $this->runCommitListeners($this->chainedTransaction('COMMIT'));
@@ -1034,9 +1037,9 @@ abstract class AbstractDriver implements DatabaseInterface
      * and its end would never be told. It ends here as 'lost', with the failure as error;
      * transaction() then finds nothing left to end.
      */
-    private function endFailedCommitIfGone(CommitFailedException $failure, bool $wasOpen, int $told, int $number): void
+    private function endFailedCommitIfGone(CommitFailedException $failure, bool $wasOpen, int $ended, int $number): void
     {
-        if ($this->endedSince($told, $number)) {
+        if ($this->endedSince($ended, $number)) {
             // While the COMMIT, or the driver's question before it, was under way, foreign code (an
             // error handler) ended the transaction through this driver. That the transaction is
             // gone is that call's doing, and it has told the end.
@@ -1055,18 +1058,20 @@ abstract class AbstractDriver implements DatabaseInterface
     }
 
     /**
-     * Whether the transaction that was at hand at an earlier moment - when $told ends had been
-     * told and $number transactions begun - has been ended through this driver since: an end was
-     * told before anything else was begun. What foreign code began and ended by itself afterwards
-     * is not that transaction's end: a transaction begun on raw PDO that vanished (a COMMIT the
-     * server answered with a rollback) still owes its 'lost'. One begun through this driver is
-     * always told first - nothing begins before its end is told. Exact up to the first transaction
-     * begun since; after a second one the count at the latest begin stands in, and a transaction
-     * begun on raw PDO that vanished counts as ended (a documented limit, see Traits\HasHooks).
+     * Whether the transaction that was at hand at an earlier moment - when $ended transactions had
+     * been ended and $number begun - has been ended through this driver since: one was ended
+     * before anything else was begun. What foreign code began and ended by itself afterwards is
+     * not that transaction's end: a transaction begun on raw PDO that vanished (a COMMIT the
+     * server answered with a rollback) still owes its 'lost'. For one begun through this driver
+     * the answer is exact: nothing is begun through the driver before it is ended through it or
+     * told as lost, and the count goes up at that moment - before its rollback, commit or end
+     * listeners run, which may begin the next one. For one begun on raw PDO it is exact up to the
+     * first transaction begun since; after a second one the count at the latest begin stands in,
+     * and one that vanished counts as ended (a documented limit, see Traits\HasHooks).
      */
-    private function endedSince(int $told, int $number): bool
+    private function endedSince(int $ended, int $number): bool
     {
-        return ($this->transactionsBegun === $number ? $this->endsTold : $this->endsToldAtBegin) !== $told;
+        return ($this->transactionsBegun === $number ? $this->transactionsEnded : $this->endedAtBegin) !== $ended;
     }
 
     /**
@@ -1078,7 +1083,6 @@ abstract class AbstractDriver implements DatabaseInterface
      */
     private function dispatchTransactionEnd(string $outcome, ?Throwable $error): array
     {
-        $this->endsTold++;
         $failures = [];
 
         foreach ($this->hooks['transaction.end'] ?? [] as $listener) {
@@ -1338,10 +1342,10 @@ abstract class AbstractDriver implements DatabaseInterface
         $unconfirmed = null;
         if ($this->suspectFailure !== null && $this->reportsATransactionThatOwesItsEnd() && !$this->transactionIsOver($this->suspectFailure)) {
             $failure = $this->suspectFailure;
-            $told = $this->endsTold;
+            $ended = $this->transactionsEnded;
             $number = $this->transactionsBegun;
             $known = $this->refreshTransactionState();
-            if ($this->endedSince($told, $number)) {
+            if ($this->endedSince($ended, $number)) {
                 // The question is a call into PDO, and with it into foreign code (an error handler)
                 // that ended the transaction through this driver: nothing is left for this call. A
                 // statement that failed in there changes nothing.
@@ -1395,6 +1399,7 @@ abstract class AbstractDriver implements DatabaseInterface
 
         // Rolled back from here on. A PDOException from a hook keeps arriving as TransactionException (unchanged contract).
         $this->transactionBegun = false;
+        $this->transactionsEnded++;
         $this->suspectFailure = null;
         $endOwed = !$this->lostReported; // after a reported 'lost' this transaction's end has already been told
         $this->lostReported = false;
@@ -1687,6 +1692,7 @@ abstract class AbstractDriver implements DatabaseInterface
     private function endLostTransaction(Throwable $cause, bool $mayStillBeOpen): void
     {
         $this->transactionBegun = false;
+        $this->transactionsEnded++;
         $this->lostReported = $mayStillBeOpen;
         if (!$mayStillBeOpen) {
             $this->suspectFailure = null; // gone with the transaction; one that may still be open keeps its commit refused
