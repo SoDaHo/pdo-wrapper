@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-10-02
+
 ### Added
 - `CommitFailedException` (a `TransactionException`): what `commit()` throws when the commit itself fails or is refused, so that "the commit failed" can be told from "the transaction could not be started". Its public `$outcome` says what became of the transaction, in the words of `transaction.end`: `rolled_back` when the rollback after the failed commit is confirmed (nothing is committed), `lost` when it is not (the commit may or may not have taken effect), `null` after a `commit()` the caller issues itself (directly, in a callback, in a hook), unless that commit told the end itself. `transaction()` and `updateMultiple()` always set one for the commit they run themselves - the value their `transaction.end` listeners received with the exception as error, or `lost` when no end was told with it -, and nothing writes into an exception afterwards. Only `rolled_back` means that nothing is committed.
 - `UniqueViolationException` (a `QueryException`): thrown instead of a plain `QueryException` when a statement violates a unique key or the primary key (MySQL/MariaDB error 1062, PostgreSQL SQLSTATE 23505, SQLite `UNIQUE constraint failed`). `$constraint` is the name the database reports - the index name on MySQL/MariaDB (`PRIMARY` for the primary key; without the table MySQL puts in front), the constraint name on PostgreSQL, `null` on SQLite and wherever the name cannot be read reliably from the server's English message (another message language; a table or key name that contains a dot on MySQL since 8.0.19, which prints `table.key`, or a name with a dot wherever the server version cannot be read). A custom driver opts in by overriding `isUniqueViolation()` and `violatedConstraint()`.
