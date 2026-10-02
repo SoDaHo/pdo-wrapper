@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+Work on 2.0 (branch `2.x`). What breaks is collected under "Upgrading from 1.x" as it is built.
+
+### Changed
+- PHP 8.5 or newer is required (1.x: PHP 8.2). The test suite fails on deprecations and notices.
+
+### Upgrading from 1.x
+- **PHP version:** `"php": "^8.2"` (1.x) becomes PHP 8.5 or newer. Stay on `^1.6` until the application runs on PHP 8.5.
+- **MySQL driver options:** write `Pdo\Mysql::ATTR_MULTI_STATEMENTS` / `Pdo\Mysql::ATTR_FOUND_ROWS` in `options`; the `PDO::MYSQL_ATTR_*` constants are deprecated in PHP 8.5 (both names are the same number, so old code keeps working, with a deprecation notice from PHP).
+
 ## [1.6.0] - 2026-10-02
 
 ### Added

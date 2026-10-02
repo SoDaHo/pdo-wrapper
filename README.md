@@ -70,7 +70,7 @@ $db = Database::postgres([
 ]);
 ```
 
-`options` replace the library's PDO defaults, the security-relevant ones included: exceptions as error mode, native prepared statements (`PDO::ATTR_EMULATE_PREPARES => false`) and, on MySQL/MariaDB, multi-statements switched off. No statement of the library needs multi-statements; switched on, a string that reaches raw PDO (`getPdo()->exec()`) or an emulated prepare could carry a second statement. `Pdo\Mysql::ATTR_MULTI_STATEMENTS => true` (`PDO::MYSQL_ATTR_MULTI_STATEMENTS` before PHP 8.4) brings them back, for example for a migration that sends a whole file in one call. Set the connection charset with the `charset` key, never with `SET NAMES` at runtime: PDO's own escaping (emulated prepares, `PDO::quote()`) only knows the charset of the DSN. `port` must be a whole number between 1 and 65535, also when it comes from `DB_PORT` (an invalid value throws a `ConnectionException` instead of falling back to the default).
+`options` replace the library's PDO defaults, the security-relevant ones included: exceptions as error mode, native prepared statements (`PDO::ATTR_EMULATE_PREPARES => false`) and, on MySQL/MariaDB, multi-statements switched off. No statement of the library needs multi-statements; switched on, a string that reaches raw PDO (`getPdo()->exec()`) or an emulated prepare could carry a second statement. `Pdo\Mysql::ATTR_MULTI_STATEMENTS => true` brings them back, for example for a migration that sends a whole file in one call. Set the connection charset with the `charset` key, never with `SET NAMES` at runtime: PDO's own escaping (emulated prepares, `PDO::quote()`) only knows the charset of the DSN. `port` must be a whole number between 1 and 65535, also when it comes from `DB_PORT` (an invalid value throws a `ConnectionException` instead of falling back to the default).
 
 ### SQLite
 
@@ -870,7 +870,7 @@ These limitations keep the QueryBuilder simple and predictable. For complex quer
 
 ## Requirements
 
-- PHP 8.2+
+- PHP 8.5+
 - PDO extension
 - Database-specific PDO driver (pdo_mysql, pdo_pgsql, pdo_sqlite)
 
