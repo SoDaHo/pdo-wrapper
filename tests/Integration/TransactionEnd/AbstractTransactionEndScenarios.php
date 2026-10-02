@@ -2015,6 +2015,70 @@ abstract class AbstractTransactionEndScenarios extends TestCase
     }
 
     /**
+     * The same when the listener throws after it ended the transaction behind the library's back:
+     * nothing is left to roll back, what it wrote is committed, and that end is told as 'lost'
+     * with the exception the caller gets - the listener's own, a PDOException as
+     * TransactionException. A throwing listener whose transaction is still open has it rolled
+     * back without an event, as before.
+     */
+    public function testAThrowingBeginListenerThatEndedTheTransactionOnRawPdoTellsItAsLost(): void
+    {
+        $failure = new RuntimeException('begin listener failed');
+        $mode = 'commit and throw';
+        $this->db->on('transaction.begin', function () use (&$mode, $failure): void {
+            if ($mode === 'commit and throw') {
+                $this->db->insert(self::TABLE, ['id' => 1, 'name' => 'listener']);
+                $this->pdo->commit();
+                throw $failure;
+            }
+            if ($mode === 'commit and throw a PDOException') {
+                $this->pdo->commit();
+                throw new \PDOException('begin listener failed (PDO)');
+            }
+            if ($mode === 'throw') {
+                $this->db->insert(self::TABLE, ['id' => 2, 'name' => 'rolled back']);
+                throw $failure;
+            }
+        });
+
+        try {
+            $this->db->beginTransaction();
+            $this->fail('Expected the listener exception');
+        } catch (RuntimeException $e) {
+            $this->assertSame($failure, $e);
+        }
+        $this->assertSame([['outcome' => self::LOST, 'error' => $failure]], $this->ends);
+        $this->assertVisible([1], 'what the listener committed itself');
+
+        $mode = 'commit and throw a PDOException';
+        $this->ends = [];
+        try {
+            $this->db->beginTransaction();
+            $this->fail('Expected TransactionException');
+        } catch (TransactionException $e) {
+            $this->assertSame('Failed to begin transaction', $e->getMessage());
+            $this->assertSame('begin listener failed (PDO)', $e->getPrevious()?->getMessage());
+            $this->assertSame([['outcome' => self::LOST, 'error' => $e]], $this->ends, 'the exception the caller gets');
+        }
+
+        $mode = 'throw';
+        $this->ends = [];
+        $this->events = [];
+        try {
+            $this->db->beginTransaction();
+            $this->fail('Expected the listener exception');
+        } catch (RuntimeException $e) {
+            $this->assertSame($failure, $e);
+        }
+        $this->assertSame([], $this->events, 'still open when the listener threw: rolled back raw, no event');
+        $this->assertVisible([1]);
+
+        $mode = 'none';
+        $this->db->transaction(static fn (): null => null);
+        $this->assertSame(['commit', 'end'], $this->events, 'no end of an earlier transaction is owed any more');
+    }
+
+    /**
      * After a throwing 'transaction.begin' listener the transaction just begun is rolled back on
      * raw PDO - but not one the listener began itself after ending the first: that one keeps its
      * mark and its end.

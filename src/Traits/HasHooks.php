@@ -91,11 +91,16 @@ namespace Sodaho\PdoWrapper\Traits;
  * would go on outside of the transaction that was asked for, or inside one somebody began
  * afterwards. An end behind this library's back (an implicit commit by a DDL statement on
  * MySQL/MariaDB, raw PDO) is told as 'lost' with that exception as error before it is thrown.
+ * The 'transaction.begin' listeners are called one by one by beginTransaction() itself, as the
+ * 'transaction.commit' and 'transaction.end' listeners always were: an overriding trigger() does
+ * not see these three events.
  *
  * Not paired and other caveats: a failing explicit commit() or rollback() fires nothing (the
  * transaction is still the caller's to end; the one exception is the failed or refused commit of
  * a transaction PDO no longer reports, see below), and so does the raw rollback after a throwing
- * 'transaction.begin' listener. In a custom driver, a commit()/rollback() override that does not
+ * 'transaction.begin' listener (when that listener ended the transaction behind this library's
+ * back before it threw, nothing is left to roll back and the end is told as 'lost', with the
+ * exception the caller gets as error). In a custom driver, a commit()/rollback() override that does not
  * call the parent dispatches no 'transaction.end' for that call, and a beginTransaction() override
  * that does not call the parent leaves this library unaware of the transaction (no 'lost' for it).
  * An override that ends or begins transactions of its own around the parent call is outside of
@@ -160,10 +165,17 @@ namespace Sodaho\PdoWrapper\Traits;
  * listener of that 'lost' begins and loses in the same way is told next, before the new one
  * begins; when the listeners leave a third one behind, beginTransaction() throws a
  * TransactionException and begins nothing (the next call tells the end that is still owed).
+ * That bound holds for this check at the start of one beginTransaction() call. Listeners that
+ * call each other through this library without end - an end listener that answers every end
+ * with beginTransaction(), a begin listener that ends every transaction it is told about -
+ * recurse like any two functions that call each other: guard against it in the listeners.
  * All of this is described for autocommit, the default. With autocommit switched off
  * (PDO::ATTR_AUTOCOMMIT, SET autocommit = 0) a statement after the transaction's end is not
  * committed on its own but opens the next transaction: after a deadlock the refusals above hold
- * all the same, and the rollback undoes that statement too.
+ * all the same, and the rollback undoes that statement too. That next transaction is not told
+ * apart from the one that ended - also not after a 'transaction.begin' listener whose DDL
+ * statement committed the transaction just begun and whose next statement opened another: the
+ * caller goes on in that one, and its rollback is told as the end of the first.
  * So a callback that swallows such an error and returns no longer gets a 'committed'. Not seen:
  * statements that failed on raw PDO (getPdo()) - on PostgreSQL the next statement through this
  * library fails as a consequence and is remembered in their place - and rows that fail while a

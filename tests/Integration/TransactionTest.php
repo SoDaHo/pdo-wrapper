@@ -1034,6 +1034,23 @@ class TransactionTest extends TestCase
     }
 
     /**
+     * The 'transaction.begin' listeners are called by beginTransaction() itself, with a payload
+     * a listener may take by reference - as trigger() hands it over for the other events.
+     */
+    public function testABeginListenerMayTakeItsPayloadByReference(): void
+    {
+        $seen = null;
+        $this->db->on('transaction.begin', static function (array &$data) use (&$seen): void {
+            $seen = $data;
+        });
+
+        $this->db->beginTransaction();
+        $this->assertSame([], $seen);
+        $this->assertTrue($this->db->inTransaction());
+        $this->db->rollback();
+    }
+
+    /**
      * A driver whose beginTransaction() does not go through the one of AbstractDriver has no
      * numbered transactions: transaction() and updateMultiple() commit and roll back what is
      * open, as they always did.
