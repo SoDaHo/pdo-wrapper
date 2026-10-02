@@ -54,6 +54,7 @@ $db = Database::mysql([
     'port' => 3306,             // optional, default: 3306
     'charset' => 'utf8mb4',     // optional, default: utf8mb4
     'options' => [],            // optional, PDO options
+    'pdoClass' => PDO::class,   // optional, the class of the PDO object (see "The PDO Class")
 ]);
 ```
 
@@ -67,6 +68,7 @@ $db = Database::postgres([
     'password' => 'secret',     // optional
     'port' => 5432,             // optional, default: 5432
     'options' => [],            // optional, PDO options
+    'pdoClass' => PDO::class,   // optional, the class of the PDO object (see "The PDO Class")
 ]);
 ```
 
@@ -86,7 +88,7 @@ $db = Database::sqlite('/path/to/database.db', [PDO::ATTR_TIMEOUT => 5]);
 $db = Database::sqlite('/path/to/database.db', [Pdo\Sqlite::ATTR_OPEN_FLAGS => Pdo\Sqlite::OPEN_READONLY]);
 ```
 
-The options replace the library's PDO defaults like the `options` of the other drivers (see above); in `connect()` and `fromEnv()` they are the `options` key.
+The options replace the library's PDO defaults like the `options` of the other drivers (see above); in `connect()` and `fromEnv()` they are the `options` key. A third argument names the class of the PDO object (`pdoClass` in `connect()` and `fromEnv()`, see "The PDO Class").
 
 An empty path throws a `ConnectionException`: SQLite would open a private temporary database for it and delete it when the connection closes, so a missing setting would look like a working database that forgets everything.
 
@@ -110,7 +112,7 @@ $db = Database::connect(['driver' => 'mysql', 'host' => 'localhost', 'database' 
 $db = Database::connect(['driver' => 'sqlite', 'path' => ':memory:']);
 ```
 
-Accepted driver names: `mysql` (also `mariadb`), `pgsql` (also `postgres`, `postgresql`), `sqlite`. A missing or unknown driver throws a `ConnectionException`. For SQLite the file is `path`, else `database`; one of them is required (`:memory:` for an in-memory database), and `options` are its PDO options.
+Accepted driver names: `mysql` (also `mariadb`), `pgsql` (also `postgres`, `postgresql`), `sqlite`. A missing or unknown driver throws a `ConnectionException`. For SQLite the file is `path`, else `database`; one of them is required (`:memory:` for an in-memory database), `options` are its PDO options and `pdoClass` the class of its PDO object.
 
 `mysql()`, `postgres()`, `sqlite()` and `connect()` use what they are given and nothing else. They never read the environment: a required value that was not passed throws a `ConnectionException`, whatever `DB_HOST` says.
 
@@ -134,11 +136,58 @@ $db = Database::fromEnv(['driver' => 'mysql', 'charset' => 'utf8mb4']);
 
 The list is complete: no other variable is read, and none of these anywhere else.
 
-**Priority:** `$overrides` > `$_ENV` > the process environment. A key that is passed counts instead of its variable, also with `null` or an empty value: `fromEnv(['password' => null])` connects without a password whatever `DB_PASSWORD` says. The keys are those of `connect()`; `charset` and `options` have no variable and can only be passed. `$_ENV` is checked first (thread-safe), then `getenv($name, true)`.
+**Priority:** `$overrides` > `$_ENV` > the process environment. A key that is passed counts instead of its variable, also with `null` or an empty value: `fromEnv(['password' => null])` connects without a password whatever `DB_PASSWORD` says. The keys are those of `connect()`; `charset`, `options` and `pdoClass` have no variable and can only be passed. `$_ENV` is checked first (thread-safe), then `getenv($name, true)`.
 
 The second source is the process environment and nothing else: `getenv()` is asked with `local_only`. Without it PHP asks the web server module first, and that answers with what came with the request - under PHP-FPM the FastCGI parameters, every request header among them as `HTTP_*`. A `DB_*` value that is only a FastCGI parameter (`fastcgi_param DB_HOST ...;` in nginx) or an Apache `SetEnv` is therefore not found there. Set it where the process gets it - `env[DB_HOST] = ...` in the FPM pool, the service's or the container's environment - or load it into `$_ENV`. One thing the library cannot change: with `E` in `variables_order` (PHP's default without a `php.ini`; `php.ini-production` and `php.ini-development` leave it out) PHP-FPM fills `$_ENV` with the request's parameters as well, so a `fastcgi_param DB_HOST` still arrives through `$_ENV` there. A client cannot use that: what it sends arrives as `HTTP_*`, never as `DB_*`.
 
 A variable that is set but empty counts as not set (`DB_HOST=` in a dotenv template): a required value is then reported as missing instead of connecting with an empty one. SQLite has no default path anywhere - `Database::sqlite($path)`, `new SqliteDriver($path)`, `connect()` and `fromEnv()` throw without one, and so does an empty `DB_SQLITE_PATH`: a missing setting must not end in an in-memory database that forgets everything. The SQLite file comes from `DB_SQLITE_PATH` or from a `path`/`database` that is passed, never from `DB_DATABASE`: that is the name of a server database. Use a library like [sodaho/env-loader](https://github.com/sodaho/env-loader) to load `.env` files.
+
+### The PDO Class
+
+The library creates the PDO object itself, with its defaults. `pdoClass` names the class it creates it as: `PDO` by default, otherwise any class that extends `PDO`. It is a key of `mysql()`, `postgres()`, `connect()` and of the overrides of `fromEnv()`, and the third argument of `sqlite()` and `new SqliteDriver()`; `getPdo()` returns the object.
+
+```php
+$db = Database::mysql($config + ['pdoClass' => Pdo\Mysql::class]);
+$db = Database::sqlite(':memory:', [], Pdo\Sqlite::class);   // getPdo() has createFunction() and the like
+```
+
+The class is created with the arguments PDO's constructor takes (DSN, user name, password, options) and has to pass them on to it; a constructor of its own should mark the password `#[\SensitiveParameter]` as PDO's does, or it shows up in stack traces. A value that is not the name of a class that extends `PDO` and can be instantiated throws a `ConnectionException` before anything is connected; `getDebugMessage()` names the key, not the value. A class PDO refuses for the driver (`Pdo\Sqlite` for a MySQL connection) is a failed connection. The class is never read from the environment: a class name from there would be handed the credentials.
+
+**A COMMIT that fails, in a test.** `beginTransaction()`, `commit()` and `rollback()` are `final`: a test cannot override them to see what the application does when a COMMIT fails after the callback has returned. Give the connection a class whose `commit()` fails on demand instead - the test then runs the library's own commit path, on the connection everything else uses:
+
+```php
+final class SwitchablePdo extends PDO
+{
+    public ?Throwable $commitFailure = null;
+
+    public function commit(): bool
+    {
+        if ($this->commitFailure !== null) {
+            [$failure, $this->commitFailure] = [$this->commitFailure, null];
+
+            throw $failure;
+        }
+
+        return parent::commit();
+    }
+}
+
+$db = Database::mysql($config + ['pdoClass' => SwitchablePdo::class]);
+$pdo = $db->getPdo();
+assert($pdo instanceof SwitchablePdo);
+
+$pdo->commitFailure = new PDOException('COMMIT failed');
+$db->transaction($callback);   // the callback returns, then: CommitFailedException, $outcome 'rolled_back'
+```
+
+| `commit()` of the class | `transaction()` throws | `transaction.end` |
+|---|---|---|
+| throws a `PDOException` | `CommitFailedException` with it as `getPrevious()`, `$outcome` `rolled_back` | `rolled_back`, after the `transaction.rollback` listeners, the exception as `error` |
+| returns `false` | `CommitFailedException`, `$outcome` `rolled_back` | the same |
+| throws anything else | that object itself, unchanged | `rolled_back`, after the `transaction.rollback` listeners, the object as `error` |
+| any of these, and `rollBack()` of the class fails too | the same exception; the `$outcome` of a `CommitFailedException` is `lost` | `lost`; no `transaction.rollback` listener runs |
+
+No `transaction.commit` listener runs in any of them. In the last row no ROLLBACK was sent, so the transaction is still open on the server: end it with `getPdo()->rollBack()` - once the class lets it through - before the connection is used again. A `commit()` called directly hands the failure on (`$outcome` is still `null`) and leaves the transaction to the caller, whose `rollback()` ends it. These are simulations - the class decides what PDO reports, not what the server did; what the databases really do with a COMMIT is described under [Transactions](#transactions).
 
 ## Raw Queries
 
