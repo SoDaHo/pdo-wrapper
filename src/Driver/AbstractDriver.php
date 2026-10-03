@@ -1144,10 +1144,11 @@ abstract class AbstractDriver implements DatabaseInterface
     }
 
     /**
-     * Hand an exception that will not reach the caller to the 'error' hook: the existing keys (sql
-     * '', params [], error, code, sqlState, driverCode), then $context, then the exception itself.
-     * A throwing 'error' listener is ignored, and so is an exception whose codes cannot be read:
-     * the exception that ended the transaction is more important.
+     * Hand an exception to the 'error' hook that the caller does not get as the thrown one (at most
+     * as getPrevious()): the existing keys (sql '', params [], error, code, sqlState, driverCode),
+     * then $context, then the exception itself. A throwing 'error' listener is ignored, and so is
+     * an exception whose codes cannot be read (no hook entry then): the exception that ended the
+     * transaction is more important.
      *
      * @param array<string, string> $context
      */

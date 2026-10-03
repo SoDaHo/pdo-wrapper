@@ -18,7 +18,10 @@ final class Codes
 {
     /**
      * A PDOException's errorInfo, the codes of an exception of this library, nothing for anything
-     * else - null for both where no database failure stands behind the exception.
+     * else - null for both where no database failure stands behind the exception. Reading a
+     * foreign subclass may run its code (a property hook on errorInfo) and throw: where that must
+     * not disturb what the library is doing - the error hook's report of a listener's failure -,
+     * the caller guards the call.
      *
      * @return array{?string, ?int}
      */
