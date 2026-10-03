@@ -177,6 +177,50 @@ class TransactionEndHookTest extends TestCase
         $this->assertSame($boom, $this->errors[0]['exception']);
     }
 
+    /**
+     * An exception of a consumer's that extends DatabaseException without calling the parent
+     * constructor has no codes to read: the error hook reports it with none, and the rollback
+     * paths keep their outcome - no Error escapes from reading it.
+     */
+    public function testAnEndListenerExceptionWhoseCodesCannotBeReadIsReportedWithout(): void
+    {
+        $broken = new class () extends QueryException {
+            public function __construct()
+            {
+                // parent::__construct() is not called: $sqlState and $driverCode stay uninitialized
+            }
+        };
+        $db = $this->driver();
+        $db->on('transaction.end', static function () use ($broken): void {
+            throw $broken;
+        });
+
+        // after the automatic rollback: the hook is told, the cause reaches the caller
+        $cause = new RuntimeException('domain error');
+        try {
+            $db->transaction(static function () use ($cause): void {
+                throw $cause;
+            });
+            $this->fail('Expected the callback exception');
+        } catch (RuntimeException $e) {
+            $this->assertSame($cause, $e);
+        }
+        $this->assertCount(1, $this->errors);
+        $this->assertSame($broken, $this->errors[0]['exception']);
+        $this->assertSame([null, null], [$this->errors[0]['sqlState'], $this->errors[0]['driverCode']]);
+
+        // after an explicit rollback: the end listener's failure arrives as TransactionException, as for any other
+        $db->beginTransaction();
+        try {
+            $db->rollback();
+            $this->fail('Expected TransactionException');
+        } catch (TransactionException $e) {
+            $this->assertSame($broken, $e->getPrevious());
+        }
+        $this->assertCount(2, $this->errors);
+        $this->assertSame([null, null], [$this->errors[1]['sqlState'], $this->errors[1]['driverCode']]);
+    }
+
     public function testAThrowingErrorHookDoesNotMaskTheCauseOnTheAutomaticRollback(): void
     {
         $db = $this->driver();

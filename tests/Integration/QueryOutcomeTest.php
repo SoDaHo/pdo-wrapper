@@ -6,11 +6,14 @@ namespace Sodaho\PdoWrapper\Tests\Integration;
 
 use PDO;
 use PDOException;
+use PDOStatement;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
 use Sodaho\PdoWrapper\Database;
 use Sodaho\PdoWrapper\DatabaseInterface;
+use Sodaho\PdoWrapper\Driver\SqliteDriver;
 use Sodaho\PdoWrapper\Exception\QueryException;
+use Sodaho\PdoWrapper\Tests\Support\Recorder;
 
 /**
  * Outcomes of query(): a statement that ran is never reported as a failed query, and a failure that
@@ -131,5 +134,77 @@ class QueryOutcomeTest extends TestCase
         $this->assertSame(['INSERT INTO `users` (`id`, `name`) VALUES (?, ?)'], $this->errors);
         $this->assertSame(['INSERT INTO `users` (`id`, `name`) VALUES (?, ?)'], $this->queries, 'only the first insert ran');
         $this->assertSame(1, $this->db->table('users')->count());
+    }
+
+    /**
+     * What the error hook is told in a non-exception error mode: the same codes as the exception,
+     * read from errorInfo(); 'code' is the driver's number there, as the stand-in PDOException
+     * carries it.
+     */
+    public function testTheErrorHookCarriesTheCodesOfAFailureReportedByReturningFalse(): void
+    {
+        $this->useSilentErrorMode();
+        /** @var Recorder<array<string, mixed>> $reported */
+        $reported = new Recorder(static fn (array $data): array => $data);
+        $this->db->on('error', $reported);
+
+        try {
+            $this->db->query('SELECT * FROM missing_table');
+            $this->fail('Expected QueryException was not thrown');
+        } catch (QueryException $e) {
+            $this->assertSame(['HY000', 1], [$e->sqlState, $e->driverCode]);
+            $this->assertCount(1, $reported->all());
+            $hook = $reported->all()[0];
+            $this->assertSame([$e->sqlState, $e->driverCode], [$hook['sqlState'], $hook['driverCode']]);
+            $this->assertSame(1, $hook['code'], 'the driver\'s number: what the stand-in PDOException carries as its code');
+            $this->assertSame('SELECT * FROM missing_table', $hook['sql']);
+        }
+    }
+
+    /**
+     * A failure PDO reports by returning false without recording anything: errorInfo() says
+     * '00000', "no error". That is no code - hook and exception carry null, as they would for a
+     * thrown PDOException with the same errorInfo.
+     */
+    public function testAFailureWithoutARecordedErrorCarriesNoCodesToTheHook(): void
+    {
+        $pdo = new class ('sqlite::memory:') extends PDO {
+            /**
+             * @param array<int, mixed> $options
+             */
+            public function prepare(string $query, array $options = []): PDOStatement|false
+            {
+                return false;
+            }
+
+            /**
+             * @return array<int, mixed>
+             */
+            public function errorInfo(): array
+            {
+                return ['00000', null, null];
+            }
+        };
+        $db = new class ($pdo) extends SqliteDriver {
+            public function __construct(PDO $pdo)
+            {
+                $this->pdo = $pdo;
+            }
+        };
+        /** @var Recorder<array<string, mixed>> $reported */
+        $reported = new Recorder(static fn (array $data): array => $data);
+        $db->on('error', $reported);
+
+        try {
+            $db->query('SELECT 1');
+            $this->fail('Expected QueryException was not thrown');
+        } catch (QueryException $e) {
+            $this->assertSame([null, null], [$e->sqlState, $e->driverCode]);
+            $this->assertCount(1, $reported->all());
+            $hook = $reported->all()[0];
+            $this->assertSame([null, null], [$hook['sqlState'], $hook['driverCode']]);
+            $this->assertSame(0, $hook['code']);
+            $this->assertSame('PDO::prepare() returned false: unknown error (SQLSTATE 00000)', $hook['error']);
+        }
     }
 }

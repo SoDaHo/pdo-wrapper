@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Sodaho\PdoWrapper\Exception;
 
 use Exception;
-use PDOException;
 use Throwable;
 
 /**
@@ -52,7 +51,7 @@ class DatabaseException extends Exception
     ) {
         parent::__construct($message, 0, $previous);
 
-        [$this->sqlState, $this->driverCode] = $listenerFailure ? [null, null] : self::codesBehind($previous);
+        [$this->sqlState, $this->driverCode] = $listenerFailure ? [null, null] : Codes::behind($previous);
     }
 
     /**
@@ -65,31 +64,4 @@ class DatabaseException extends Exception
         return $this->debugMessage;
     }
 
-    /**
-     * The SQLSTATE and driver code an exception stands for, as $sqlState and $driverCode would
-     * hold them: a PDOException's errorInfo, the codes of an exception of this library, nothing
-     * for anything else. What the 'error' hook is told about an exception it reports.
-     *
-     * @internal
-     *
-     * @return array{?string, ?int}
-     */
-    public static function codesBehind(?Throwable $previous): array
-    {
-        if ($previous instanceof self) {
-            return [$previous->sqlState, $previous->driverCode];
-        }
-        if (!$previous instanceof PDOException) {
-            return [null, null];
-        }
-
-        // PDO's errorInfo: [SQLSTATE, driver code, driver message] - on every driver, for a failed
-        // statement and for a failed connection alike (measured). getCode() is the SQLSTATE for the
-        // one and the driver code for the other, so it is not read here.
-        $state = $previous->errorInfo[0] ?? null;
-        $code = $previous->errorInfo[1] ?? null;
-
-        // '00000' is "no error": what PDO holds when it reported a failure it recorded nothing for
-        return [is_string($state) && $state !== '' && $state !== '00000' ? $state : null, is_int($code) ? $code : null];
-    }
 }
