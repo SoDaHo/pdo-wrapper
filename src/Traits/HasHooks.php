@@ -235,7 +235,7 @@ use Sodaho\PdoWrapper\Exception\DatabaseException;
  * rollback and end listeners run, then that TransactionException reaches the caller. Where another
  * exception reaches the caller instead - a rollback listener's, or on the automatic rollback the
  * one that ended the transaction - the 'error' hook is told about the chained transaction (sql '',
- * params [], error, code, outcome 'rolled_back', exception). After a ROLLBACK that confirmed
+ * params [], error, code, sqlState, driverCode, outcome 'rolled_back', exception). After a ROLLBACK that confirmed
  * nothing (see above: the driver could not find out whether the transaction still existed) only
  * the end listeners run, and the outcome told to them and to the 'error' hook is 'lost'. The end, rollback and error listeners
  * of such a commit or rollback already run inside the chained transaction: what they write there

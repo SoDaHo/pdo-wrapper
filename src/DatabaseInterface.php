@@ -225,9 +225,9 @@ interface DatabaseInterface
      * once per transaction this library ends, after the commit or rollback listeners; see Traits\HasHooks).
      * Any other name is refused (see @throws): a listener for it would never run. The 'query' and 'error' payloads
      * carry the SQL and the parameters as passed, secrets included: redact before logging. 'error'
-     * carries sql, params, error (the message), code (PDO's exception code), sqlState and driverCode
-     * (what the database said, as DatabaseException::$sqlState and $driverCode hold it: null where
-     * no database failure stands behind the error).
+     * carries sql, params, error (the message), code (the code of the reported exception), sqlState
+     * and driverCode (what the database said, read by the rule of DatabaseException::$sqlState and
+     * $driverCode: null where no database failure stands behind the reported error).
      *
      * A throwing hook stops the remaining hooks of its event (for 'transaction.begin' a rollback
      * of the new transaction is attempted first, best effort), except for 'transaction.commit' and
