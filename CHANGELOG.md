@@ -2,7 +2,9 @@
 
 ## [Unreleased]
 
-Work on 2.0 (branch `2.x`). What breaks is collected under "Upgrading from 1.x" as it is built.
+## [2.0.0] - 2026-10-03
+
+A major release: PHP 8.5, the environment read in one place only (`Database::fromEnv()`), exceptions that name what the database said (`$sqlState`, `$driverCode`, also in the `error` hook), `transaction()` that ends only the transaction it began, `beginTransaction()`, `commit()` and `rollback()` final, and `pdoClass` for the class of the PDO object. Everything that breaks, with an old → new line for each, is under "Upgrading from 1.x".
 
 ### Added
 - `Database::fromEnv(array $overrides = [])`: creates the connection from the environment and is the one place in the library that reads it - `DB_DRIVER`, `DB_HOST`, `DB_PORT`, `DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD` and, for SQLite, `DB_SQLITE_PATH`, from `$_ENV` first, then from the process environment (`getenv($name, true)`). A key in `$overrides` (the keys of `connect()`) counts instead of its variable, also with `null` or an empty value. The SQLite file never comes from `DB_DATABASE`.
@@ -325,7 +327,11 @@ What can break code that ran on 1.4:
 - **CI**: GitHub Actions with PHP 8.2-8.5, MySQL 8.0/8.4, MariaDB 10.11/11.4, PostgreSQL 15/16/17.
 - **Quality**: PHPStan level 9, PHP-CS-Fixer (PSR-12).
 
-[Unreleased]: https://github.com/sodaho/pdo-wrapper/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/sodaho/pdo-wrapper/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/sodaho/pdo-wrapper/compare/v1.6.1...v2.0.0
+[1.6.1]: https://github.com/sodaho/pdo-wrapper/compare/v1.6.0...v1.6.1
+[1.6.0]: https://github.com/sodaho/pdo-wrapper/compare/v1.5.0...v1.6.0
+[1.5.0]: https://github.com/sodaho/pdo-wrapper/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/sodaho/pdo-wrapper/compare/v1.3.1...v1.4.0
 [1.3.1]: https://github.com/sodaho/pdo-wrapper/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/sodaho/pdo-wrapper/compare/v1.2.0...v1.3.0
