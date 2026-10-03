@@ -78,7 +78,7 @@ use Sodaho\PdoWrapper\Exception\DatabaseException;
  *   only the 'error' hook - and so they do when that rollback() tells the end as 'lost';
  * - on the automatic rollback in transaction()/updateMultiple() and on a 'lost' reported there (not
  *   the buffered ends of transactions commit listeners left open: those join the CommitHookException):
- *   only via the 'error' hook (sql '', params [], error, code, plus hook 'transaction.end', outcome
+ *   only via the 'error' hook (sql '', params [], error, code, sqlState, driverCode, plus hook 'transaction.end', outcome
  *   and exception; a throwing 'error' listener is ignored there), so that the exception that ended
  *   the transaction reaches the caller unchanged.
  *

@@ -66,9 +66,15 @@ class DatabaseException extends Exception
     }
 
     /**
+     * The SQLSTATE and driver code an exception stands for, as $sqlState and $driverCode would
+     * hold them: a PDOException's errorInfo, the codes of an exception of this library, nothing
+     * for anything else. What the 'error' hook is told about an exception it reports.
+     *
+     * @internal
+     *
      * @return array{?string, ?int}
      */
-    private static function codesBehind(?Throwable $previous): array
+    public static function codesBehind(?Throwable $previous): array
     {
         if ($previous instanceof self) {
             return [$previous->sqlState, $previous->driverCode];

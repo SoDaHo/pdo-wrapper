@@ -115,5 +115,7 @@ class WrapperTest extends TestCase
         $this->assertNotNull($hookData);
         $this->assertSame('INVALID SQL', $hookData['sql']);
         $this->assertArrayHasKey('error', $hookData);
+        $this->assertSame(['sql', 'params', 'error', 'code', 'sqlState', 'driverCode'], array_keys($hookData));
+        $this->assertSame(['HY000', 1], [$hookData['sqlState'], $hookData['driverCode']], 'SQLite: generic error, SQLSTATE HY000, result code 1');
     }
 }

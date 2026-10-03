@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Sodaho\PdoWrapper\Tests\Integration\TransactionEnd;
 
+use ArrayObject;
 use Closure;
 use LogicException;
 use PHPUnit\Framework\TestCase;
@@ -435,6 +436,100 @@ abstract class AbstractTransactionEndScenarios extends TestCase
         $this->assertSame($failure, $this->errors[0]['exception']);
         $this->assertSame('transaction.end', $this->errors[0]['hook']);
         $this->assertSame(self::ROLLED_BACK, $this->errors[0]['outcome']);
+        $this->assertSame([null, null], [$this->errors[0]['sqlState'], $this->errors[0]['driverCode']], 'no database failure behind a LogicException');
+        $this->assertVisible([]);
+    }
+
+    /**
+     * An end listener whose own statement failed: the failed statement itself is told to the
+     * error hook first (with its SQL), then - after all end listeners ran - each listener's
+     * failure, with the codes of the exception it reports.
+     */
+    public function testAnEndListenerFailureThatIsAFailedStatementCarriesItsCodesToTheErrorHook(): void
+    {
+        $cause = new RuntimeException('domain rule violated');
+        $first = new LogicException('unexpected');
+        $this->db->on('transaction.end', static function () use ($first): void {
+            throw $first;
+        });
+        /** @var ArrayObject<int, QueryException> $caught */
+        $caught = new ArrayObject();
+        $this->db->on('transaction.end', function () use ($caught): void {
+            // after the rollback the transaction is over: the statement runs, and fails for the missing table
+            try {
+                $this->db->query('SELECT * FROM no_such_table_for_the_error_hook');
+            } catch (QueryException $e) {
+                $caught[] = $e;
+
+                throw $e;
+            }
+        });
+
+        try {
+            $this->db->transaction(static function (DatabaseInterface $db) use ($cause): void {
+                $db->insert(self::TABLE, ['id' => 1, 'name' => 'a']);
+                throw $cause;
+            });
+            $this->fail('Expected the callback exception');
+        } catch (RuntimeException $e) {
+            $this->assertSame($cause, $e);
+        }
+
+        $this->assertCount(1, $caught);
+        $failed = $caught[0];
+        $this->assertInstanceOf(QueryException::class, $failed);
+        $this->assertMatchesRegularExpression('/^[0-9A-Z]{5}$/', (string) $failed->sqlState, 'the engine names the missing table with a SQLSTATE');
+        $this->assertCount(3, $this->errors, 'the failed statement, then the two listener failures');
+        $this->assertSame('SELECT * FROM no_such_table_for_the_error_hook', $this->errors[0]['sql']);
+        $this->assertSame([$failed->sqlState, $failed->driverCode], [$this->errors[0]['sqlState'], $this->errors[0]['driverCode']], 'the statement, with its codes');
+        $this->assertSame($first, $this->errors[1]['exception']);
+        $this->assertSame([null, null], [$this->errors[1]['sqlState'], $this->errors[1]['driverCode']], 'a LogicException stands for no database failure');
+        $this->assertSame($failed, $this->errors[2]['exception']);
+        $this->assertSame('transaction.end', $this->errors[2]['hook']);
+        $this->assertSame([$failed->sqlState, $failed->driverCode], [$this->errors[2]['sqlState'], $this->errors[2]['driverCode']], 'the codes of the exception it reports');
+        $this->assertVisible([]);
+    }
+
+    // ---- the error hook ---------------------------------------------------------------------------
+
+    /**
+     * What the database said about a failed statement reaches the error hook as it reaches the
+     * exception: the SQLSTATE and the driver's code, next to PDO's exception code as before.
+     */
+    public function testTheErrorHookCarriesTheCodesOfAFailedStatement(): void
+    {
+        try {
+            $this->db->query('SELECT * FROM no_such_table_for_the_error_hook');
+            $this->fail('Expected QueryException');
+        } catch (QueryException $e) {
+            $this->assertCount(1, $this->errors);
+            $this->assertSame('SELECT * FROM no_such_table_for_the_error_hook', $this->errors[0]['sql']);
+            $this->assertSame([], $this->errors[0]['params']);
+            $this->assertSame($e->getPrevious()?->getMessage(), $this->errors[0]['error']);
+            $this->assertSame($e->getPrevious()?->getCode(), $this->errors[0]['code'], 'PDO\'s exception code, unchanged');
+            $this->assertMatchesRegularExpression('/^[0-9A-Z]{5}$/', (string) $e->sqlState);
+            $this->assertIsInt($e->driverCode);
+            $this->assertSame($e->sqlState, $this->errors[0]['sqlState']);
+            $this->assertSame($e->driverCode, $this->errors[0]['driverCode']);
+        }
+    }
+
+    /**
+     * A statement the library refuses before sending it (a parameter that cannot be bound) has
+     * no database failure behind it: the codes are null, as they are on its exception.
+     */
+    public function testTheErrorHookCarriesNoCodesForAStatementThatWasNotSent(): void
+    {
+        try {
+            $this->db->insert(self::TABLE, ['id' => 1, 'name' => ['not', 'bindable']]);
+            $this->fail('Expected QueryException');
+        } catch (QueryException $e) {
+            $this->assertSame([null, null], [$e->sqlState, $e->driverCode]);
+            $this->assertCount(1, $this->errors);
+            $this->assertSame(0, $this->errors[0]['code']);
+            $this->assertSame([null, null], [$this->errors[0]['sqlState'], $this->errors[0]['driverCode']]);
+            $this->assertSame([1, ['not', 'bindable']], $this->errors[0]['params'], 'the values as they would have been bound');
+        }
         $this->assertVisible([]);
     }
 

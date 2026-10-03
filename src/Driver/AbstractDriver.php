@@ -14,6 +14,7 @@ use Sodaho\PdoWrapper\DatabaseInterface;
 use Sodaho\PdoWrapper\Exception\CommitFailedException;
 use Sodaho\PdoWrapper\Exception\CommitHookException;
 use Sodaho\PdoWrapper\Exception\ConnectionException;
+use Sodaho\PdoWrapper\Exception\DatabaseException;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Exception\TransactionException;
 use Sodaho\PdoWrapper\Exception\UniqueViolationException;
@@ -205,6 +206,8 @@ abstract class AbstractDriver implements DatabaseInterface
                 'params' => $params,
                 'error' => $unbindable,
                 'code' => 0,
+                'sqlState' => null, // nothing was sent: no database failure stands behind it
+                'driverCode' => null,
             ]);
 
             throw new QueryException(
@@ -281,11 +284,14 @@ abstract class AbstractDriver implements DatabaseInterface
     private function failedQuery(string $sql, array $params, PDOException $e): QueryException
     {
         $this->noteStatementFailure($e);
+        [$sqlState, $driverCode] = DatabaseException::codesBehind($e); // what the exception below will carry
         $this->triggerFromQuery('error', [
             'sql' => $sql,
             'params' => $params,
             'error' => $e->getMessage(),
             'code' => $e->getCode(),
+            'sqlState' => $sqlState,
+            'driverCode' => $driverCode,
         ]);
 
         $debugMessage = sprintf('%s | SQL: %s | Params: %s', $e->getMessage(), $sql, $this->encodeParams($params));
@@ -1139,19 +1145,24 @@ abstract class AbstractDriver implements DatabaseInterface
 
     /**
      * Hand an exception that will not reach the caller to the 'error' hook: the existing keys (sql
-     * '', params []), then $context, then the exception itself. A throwing 'error' listener is
-     * ignored: the exception that ended the transaction is more important.
+     * '', params [], error, code, sqlState, driverCode), then $context, then the exception itself.
+     * A throwing 'error' listener is ignored: the exception that ended the transaction is more
+     * important.
      *
      * @param array<string, string> $context
      */
     private function reportQuietly(Throwable $e, array $context): void
     {
+        [$sqlState, $driverCode] = DatabaseException::codesBehind($e);
+
         try {
             $this->trigger('error', [
                 'sql' => '',
                 'params' => [],
                 'error' => $e->getMessage(),
                 'code' => $e->getCode(),
+                'sqlState' => $sqlState,
+                'driverCode' => $driverCode,
                 ...$context,
                 'exception' => $e,
             ]);

@@ -519,6 +519,7 @@ abstract class AbstractSecurityTest extends TestCase
             $this->assertIsArray($error);
             $this->assertStringContainsString($expected, $error['error']);
             $this->assertSame(0, $error['code']);
+            $this->assertSame([null, null], [$error['sqlState'], $error['driverCode']], 'nothing was sent');
             $this->assertSame(['Bound', $value], $error['params']);
         }
         fclose($stream);

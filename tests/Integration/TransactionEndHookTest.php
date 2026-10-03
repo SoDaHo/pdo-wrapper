@@ -171,6 +171,7 @@ class TransactionEndHookTest extends TestCase
         $this->assertSame([], $this->errors[0]['params']);
         $this->assertSame('end listener failed', $this->errors[0]['error']);
         $this->assertSame(7, $this->errors[0]['code']);
+        $this->assertSame([null, null], [$this->errors[0]['sqlState'], $this->errors[0]['driverCode']], 'a RuntimeException stands for no database failure');
         $this->assertSame('transaction.end', $this->errors[0]['hook']);
         $this->assertSame('rolled_back', $this->errors[0]['outcome']);
         $this->assertSame($boom, $this->errors[0]['exception']);

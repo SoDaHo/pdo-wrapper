@@ -289,8 +289,9 @@ class MySqlDriverIntegrationTest extends TestCase
             }
             $this->assertSame(['rollback', 'rolled_back'], $events);
             $this->assertCount(1, $reported->all(), 'the error hook is where the chained transaction is told');
-            $this->assertSame(['sql', 'params', 'error', 'code', 'outcome', 'exception'], array_keys($reported->all()[0]));
+            $this->assertSame(['sql', 'params', 'error', 'code', 'sqlState', 'driverCode', 'outcome', 'exception'], array_keys($reported->all()[0]));
             $this->assertSame('Connection is in a new transaction', $reported->all()[0]['error']);
+            $this->assertSame([null, null], [$reported->all()[0]['sqlState'], $reported->all()[0]['driverCode']], 'no database failure: the session chained a transaction');
             $this->assertSame('rolled_back', $reported->all()[0]['outcome']);
             $this->assertInstanceOf(TransactionException::class, $reported->all()[0]['exception']);
         } finally {
