@@ -117,6 +117,9 @@ class QueryOutcomeTest extends TestCase
     public function testAnExecuteFailureReportedWithoutAnExceptionIsAQueryException(): void
     {
         $this->useSilentErrorMode();
+        /** @var Recorder<array<string, mixed>> $reported */
+        $reported = new Recorder(static fn (array $data): array => $data);
+        $this->db->on('error', $reported);
         $this->db->insert('users', ['id' => 1, 'name' => 'Max']);
 
         try {
@@ -129,6 +132,11 @@ class QueryOutcomeTest extends TestCase
             $this->assertStringContainsString('PDOStatement::execute() returned false: UNIQUE constraint failed', $previous->getMessage());
             $this->assertSame(19, $previous->errorInfo[1] ?? null, 'SQLite driver code for a constraint violation');
             $this->assertSame(19, $previous->getCode());
+            $this->assertSame(['23000', 19], [$e->sqlState, $e->driverCode]);
+            $this->assertCount(1, $reported->all());
+            $hook = $reported->all()[0];
+            $this->assertSame([$e->sqlState, $e->driverCode], [$hook['sqlState'], $hook['driverCode']], 'the hook carries what the exception carries');
+            $this->assertSame(19, $hook['code'], 'the driver\'s number: what the stand-in PDOException carries as its code');
         }
 
         $this->assertSame(['INSERT INTO `users` (`id`, `name`) VALUES (?, ?)'], $this->errors);

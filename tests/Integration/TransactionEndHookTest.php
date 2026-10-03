@@ -14,6 +14,7 @@ use Sodaho\PdoWrapper\Driver\SqliteDriver;
 use Sodaho\PdoWrapper\Exception\CommitHookException;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Exception\TransactionException;
+use Sodaho\PdoWrapper\Tests\Support\UnreadablePdoException;
 use Throwable;
 
 /**
@@ -219,6 +220,54 @@ class TransactionEndHookTest extends TestCase
         }
         $this->assertCount(2, $this->errors);
         $this->assertSame([null, null], [$this->errors[1]['sqlState'], $this->errors[1]['driverCode']]);
+    }
+
+    /**
+     * Reading the codes of a listener's exception can fail: a PDOException whose errorInfo is
+     * gone and whose magic __isset() throws. That costs the hook entry, nothing else - the cause
+     * still reaches the caller of transaction(), unmasked.
+     */
+    public function testAnEndListenerExceptionThatFailsToBeReadCostsOnlyTheHookEntry(): void
+    {
+        $unreadable = new UnreadablePdoException('unreadable (fixture)');
+        $db = $this->driver();
+        $db->on('transaction.end', static function () use ($unreadable): void {
+            throw $unreadable;
+        });
+        $db->on('transaction.end', function (): void {
+            $this->events[] = 'end-after-failure';
+        });
+
+        $cause = new RuntimeException('domain error');
+        try {
+            $db->transaction(static function () use ($cause): void {
+                throw $cause;
+            });
+            $this->fail('Expected the callback exception');
+        } catch (RuntimeException $e) {
+            $this->assertSame($cause, $e, 'the cause reaches the caller unmasked');
+        }
+
+        $this->assertSame(['rollback', 'end', 'end-after-failure'], $this->events, 'every end listener ran');
+        $this->assertSame([['outcome' => 'rolled_back', 'error' => $cause]], $this->ends);
+        $this->assertSame([], $this->errors, 'only the hook entry of the unreadable exception is lost');
+        $this->assertFalse($db->getPdo()->inTransaction());
+
+        // after an explicit rollback the caller gets the TransactionException about the listener's
+        // failure, as for any other - not what reading the exception threw
+        $this->events = [];
+        $db->beginTransaction();
+        try {
+            $db->rollback();
+            $this->fail('Expected TransactionException');
+        } catch (TransactionException $e) {
+            $this->assertSame($unreadable, $e->getPrevious());
+            $this->assertSame([null, null], [$e->sqlState, $e->driverCode], 'a listener\'s failure: no codes, nothing read');
+        }
+        $this->assertSame(['rollback', 'end', 'end-after-failure'], $this->events);
+        $this->assertSame([['outcome' => 'rolled_back', 'error' => $cause], ['outcome' => 'rolled_back', 'error' => null]], $this->ends);
+        $this->assertSame([], $this->errors);
+        $this->assertFalse($db->getPdo()->inTransaction());
     }
 
     public function testAThrowingErrorHookDoesNotMaskTheCauseOnTheAutomaticRollback(): void
