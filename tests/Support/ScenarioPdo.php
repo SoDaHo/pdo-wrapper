@@ -50,6 +50,9 @@ final class ScenarioPdo extends PDO
     /** After the failed commit the driver reports no transaction any more (as PostgreSQL does after a COMMIT it rejected) */
     public bool $vanishOnFailedCommit = false;
 
+    /** commit() commits, then throws a PDOException, once: a COMMIT that took effect but is reported as failed (the connection lost while its answer was under way) */
+    public bool $failAfterCommit = false;
+
     public bool $hideTransaction = false;
 
     public bool $stateUnreadable = false;
@@ -107,6 +110,12 @@ final class ScenarioPdo extends PDO
             $this->vanish();
 
             return false;
+        }
+        if ($this->failAfterCommit) {
+            $this->failAfterCommit = false;
+            parent::commit();
+
+            throw new PDOException('commit reported as failed after it took effect (scenario)');
         }
 
         return parent::commit();

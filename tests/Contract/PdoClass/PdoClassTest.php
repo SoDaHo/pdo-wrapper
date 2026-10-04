@@ -194,6 +194,50 @@ class PdoClassTest extends ContractTestCase
     }
 
     /**
+     * A COMMIT that took effect but is reported as failed - the class commits, then throws: PDO
+     * reports no transaction any more, nothing is left to roll back and nothing says what the
+     * server did. 'lost', from transaction() and from a commit() called directly; no ROLLBACK is
+     * sent, no listener but the end's runs. The row is there: the uncertainty is real.
+     */
+    public function testACommitThatTookEffectButFailedIsLost(): void
+    {
+        foreach (['transaction()' => 1, 'commit()' => 2] as $how => $id) {
+            $this->events = [];
+            $this->ends = [];
+            $this->pdo->failAfterCommit = true;
+            $rollBacks = $this->pdo->rollBackCalls;
+
+            try {
+                if ($how === 'transaction()') {
+                    $this->db->transaction(function (DatabaseInterface $db) use ($id): void {
+                        $db->insert(self::TABLE, ['id' => $id, 'name' => 'committed after all']);
+                        $this->events[] = 'callback returned';
+                    });
+                } else {
+                    $this->db->beginTransaction();
+                    $this->db->insert(self::TABLE, ['id' => $id, 'name' => 'committed after all']);
+                    $this->events[] = 'callback returned';
+                    $this->db->commit();
+                }
+                $this->fail("Expected CommitFailedException: {$how}");
+            } catch (CommitFailedException $e) {
+                $this->assertSame(self::LOST, $e->outcome, $how);
+                $this->assertInstanceOf(PDOException::class, $e->getPrevious(), $how);
+                $this->assertSame('commit reported as failed after it took effect (scenario)', $e->getPrevious()->getMessage(), $how);
+                $this->assertSame([['outcome' => self::LOST, 'error' => $e]], $this->ends, $how);
+            }
+
+            $this->assertSame(['callback returned', 'end'], $this->events, "{$how}: neither a commit nor a rollback listener");
+            $this->assertSame($rollBacks, $this->pdo->rollBackCalls, "{$how}: no ROLLBACK sent");
+            $this->assertFalse($this->pdo->reallyInTransaction(), $how);
+            $this->assertSame($id, $this->rows(), "{$how}: committed after all");
+        }
+
+        $this->db->table(self::TABLE)->whereIn('id', [1, 2])->delete();
+        $this->assertTheNextTransactionCommits();
+    }
+
+    /**
      * When the ROLLBACK after the failed COMMIT fails as well, nothing confirms what became of the
      * transaction: 'lost', no rollback listener. The class only refused to send the ROLLBACK, so
      * the transaction is in fact still open: the test ends it on raw PDO, and the connection is
