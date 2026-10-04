@@ -9,6 +9,16 @@ use Sodaho\PdoWrapper\Exception\DatabaseException;
 /**
  * Provides event hook functionality for database operations.
  *
+ * The transaction events name their transaction: 'transaction.begin' with
+ * ['transaction' => int, 'depth' => int], 'transaction.commit' and 'transaction.rollback' with
+ * ['transaction' => ?int, 'depth' => ?int], 'transaction.end' with ['outcome', 'error',
+ * 'transaction', 'depth']. The number counts the transactions begun through the driver, from 1,
+ * for as long as the driver lives; the depth is 1 for one begun while no other owed its end. A
+ * transaction begun on raw PDO carries null for both. Every told begin is followed by exactly one
+ * end with the same number - also after a throwing begin listener ('rolled_back' after the raw
+ * rollback, or 'lost' when it failed; no rollback listener runs) and for a transaction a commit
+ * listener began and ended on raw PDO ('lost'). A BEGIN that fails in PDO tells nothing.
+ *
  * "Fail Hard" implementation for 'query', 'error', 'transaction.begin' and 'transaction.rollback':
  * exceptions in those hooks bubble up to the caller (a PDOException from a 'transaction.begin' or
  * 'transaction.rollback' hook arrives as TransactionException) and the first failing hook stops the

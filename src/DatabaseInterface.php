@@ -220,9 +220,11 @@ interface DatabaseInterface
     /**
      * Register a hook callback for an event.
      *
-     * Events: 'query', 'error', 'transaction.begin', 'transaction.commit', 'transaction.rollback',
-     * 'transaction.end' (array{outcome: 'committed'|'rolled_back'|'lost', error: ?Throwable},
-     * once per transaction this library ends, after the commit or rollback listeners; see Traits\HasHooks).
+     * Events: 'query', 'error', 'transaction.begin' (array{transaction: int, depth: int}),
+     * 'transaction.commit' and 'transaction.rollback' (array{transaction: ?int, depth: ?int}),
+     * 'transaction.end' (array{outcome: 'committed'|'rolled_back'|'lost', error: ?Throwable,
+     * transaction: ?int, depth: ?int}, once per transaction this library ends - exactly one for
+     * every told begin -, after the commit or rollback listeners; see Traits\HasHooks).
      * Any other name is refused (see @throws): a listener for it would never run. The 'query' and 'error' payloads
      * carry the SQL and the parameters as passed, secrets included: redact before logging. 'error'
      * carries sql, params, error (the message), code (the code of the reported exception), sqlState
