@@ -9,6 +9,7 @@ use PDOException;
 use Sodaho\PdoWrapper\Exception\ConnectionException;
 use Sodaho\PdoWrapper\Exception\NamedLockReentryException;
 use Sodaho\PdoWrapper\Exception\QueryException;
+use Sodaho\PdoWrapper\Schema\Schema;
 use Throwable;
 
 /**
@@ -287,6 +288,15 @@ class MariaDbDriver extends AbstractDriver
         }
 
         return parent::insertWhen($table, $data, $condition, $bindings, $update);
+    }
+
+    /**
+     * What the current database holds - tables, columns, indexes, constraints -, read from
+     * information_schema (see Schema\Schema). Read only.
+     */
+    public function schema(): Schema
+    {
+        return new Schema($this);
     }
 
     /**
