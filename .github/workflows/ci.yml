@@ -2,149 +2,27 @@
 # container and the database service images to their manifest-list digests, so a moved tag cannot change what runs
 # here. The job token is read-only.
 # To update a pin, look up the tag's commit (git ls-remote --tags https://github.com/<owner>/<repo>) or the image
-# digest (docker buildx imagetools inspect shivammathur/node:24.04 --format '{{.Manifest.Digest}}') and change the
-# SHA and the comment together. The database digests were read on 2026-10-02; refresh them now and then, so that
-# the tests keep running against current patch releases (a digest also appears in the coverage job).
+# digest (docker buildx imagetools inspect mariadb:11.4 --format '{{.Manifest.Digest}}') and change the SHA and the
+# comment together. The database digests of 10.11 and 11.4 were read on 2026-10-02, the one of 12.3 on 2026-10-04;
+# refresh them now and then, so that the tests keep running against current patch releases (a digest also appears in
+# the coverage job). Only numeric tags: `latest` and `lts` move to new major versions.
+# MariaDB is the only database since 3.0: 10.11 is the oldest supported version (the hosting runs it), 11.4 and
+# 12.3 are the later LTS releases.
 # PHP 8.6 is not released yet: the test jobs run on its pre-release build as well and may fail there without
 # failing the run (continue-on-error). Coverage, static analysis and code style stay on 8.5.
 name: CI
 
 on:
   push:
-    branches: [main, master, 2.x]
+    branches: [main, master, 3.x]
   pull_request:
-    branches: [main, master, 2.x]
+    branches: [main, master, 3.x]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  test-sqlite:
-    runs-on: ubuntu-latest
-    container: shivammathur/node:24.04@sha256:ee402d3448af7d680cc697f0cd76f62b04598a527044e38dc4cf1c3404b13071
-    name: PHP ${{ matrix.php }} (SQLite)
-    continue-on-error: ${{ matrix.php == '8.6' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        php: ['8.5', '8.6']
-
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-        with:
-          persist-credentials: false
-
-      - name: Setup PHP
-        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
-        with:
-          php-version: ${{ matrix.php }}
-          extensions: pdo_sqlite
-          coverage: none
-
-      - name: Check the PHP version
-        run: |
-          php -r 'echo PHP_VERSION, PHP_EOL; exit(str_starts_with(PHP_VERSION, getenv("WANTED") . ".") ? 0 : 1);'
-        env:
-          WANTED: ${{ matrix.php }}
-
-      - name: Get Composer Cache Directory
-        id: composer-cache
-        run: echo "dir=$(composer config cache-files-dir)" >> $GITHUB_OUTPUT
-
-      - name: Cache Composer dependencies
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
-        with:
-          path: ${{ steps.composer-cache.outputs.dir }}
-          key: ${{ runner.os }}-composer-${{ hashFiles('**/composer.lock') }}
-          restore-keys: ${{ runner.os }}-composer-
-
-      - name: Install dependencies
-        run: composer install --prefer-dist --no-progress
-
-      - name: Run Unit tests
-        run: vendor/bin/phpunit --testsuite Unit --exclude-group mysql --exclude-group postgres --no-coverage
-
-      - name: Run Integration tests
-        run: vendor/bin/phpunit --testsuite Integration --exclude-group mysql --exclude-group postgres --no-coverage
-
-      - name: Run Feature tests
-        run: vendor/bin/phpunit --testsuite Feature --exclude-group mysql --exclude-group postgres --no-coverage
-
-  test-mysql:
-    runs-on: ubuntu-latest
-    container: shivammathur/node:24.04@sha256:ee402d3448af7d680cc697f0cd76f62b04598a527044e38dc4cf1c3404b13071
-    name: MySQL ${{ matrix.mysql.version }} / PHP ${{ matrix.php }}
-    continue-on-error: ${{ matrix.php == '8.6' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        php: ['8.5', '8.6']
-        mysql:
-          - { version: '8.0', image: 'mysql:8.0@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b' }
-          - { version: '8.4', image: 'mysql:8.4@sha256:6ea90827b1100f8f2ae306a539f86d2c264a26ed435a2a9f75551dd5c3aeb242' }
-
-    services:
-      mysql:
-        image: ${{ matrix.mysql.image }}
-        env:
-          MYSQL_ROOT_PASSWORD: root
-          MYSQL_DATABASE: pdo_wrapper_test
-        options: >-
-          --health-cmd="mysqladmin ping"
-          --health-interval=10s
-          --health-timeout=5s
-          --health-retries=3
-
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-        with:
-          persist-credentials: false
-
-      - name: Setup PHP
-        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
-        with:
-          php-version: ${{ matrix.php }}
-          extensions: pdo_mysql
-          coverage: none
-
-      - name: Check the PHP version
-        run: |
-          php -r 'echo PHP_VERSION, PHP_EOL; exit(str_starts_with(PHP_VERSION, getenv("WANTED") . ".") ? 0 : 1);'
-        env:
-          WANTED: ${{ matrix.php }}
-
-      - name: Get Composer Cache Directory
-        id: composer-cache
-        run: echo "dir=$(composer config cache-files-dir)" >> $GITHUB_OUTPUT
-
-      - name: Cache Composer dependencies
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
-        with:
-          path: ${{ steps.composer-cache.outputs.dir }}
-          key: ${{ runner.os }}-composer-${{ hashFiles('**/composer.lock') }}
-          restore-keys: ${{ runner.os }}-composer-
-
-      - name: Install dependencies
-        run: composer install --prefer-dist --no-progress
-
-      - name: Wait for MySQL
-        run: |
-          for i in $(seq 1 90); do
-            mysql -h mysql -uroot -proot -e "SELECT 1" pdo_wrapper_test >/dev/null 2>&1 && exit 0
-            sleep 1
-          done
-          echo "MySQL not ready"; exit 1
-
-      - name: Run MySQL tests
-        run: vendor/bin/phpunit --group mysql --no-coverage
-        env:
-          MYSQL_HOST: mysql
-          MYSQL_PORT: 3306
-          MYSQL_DATABASE: pdo_wrapper_test
-          MYSQL_USERNAME: root
-          MYSQL_PASSWORD: root
-
   test-mariadb:
     runs-on: ubuntu-latest
     container: shivammathur/node:24.04@sha256:ee402d3448af7d680cc697f0cd76f62b04598a527044e38dc4cf1c3404b13071
@@ -157,6 +35,7 @@ jobs:
         mariadb:
           - { version: '10.11', image: 'mariadb:10.11@sha256:7f22313fc130a377a44999965bcb0a08dd5b21e8502824c1b864f792f9bc66ab' }
           - { version: '11.4', image: 'mariadb:11.4@sha256:70cc072b29b4a89ae07abb2d4da2c64678a7f2dfe092751bb51c87d67dc1338b' }
+          - { version: '12.3', image: 'mariadb:12.3@sha256:2bdff1534a7e569fecaf4b10b66ad0d410806e382d9db29ba305448addda97c4' }
 
     services:
       mariadb:
@@ -210,8 +89,8 @@ jobs:
           done
           echo "MariaDB not ready"; exit 1
 
-      - name: Run MariaDB tests
-        run: vendor/bin/phpunit --group mysql --no-coverage
+      - name: Run all tests
+        run: vendor/bin/phpunit --no-coverage
         env:
           MYSQL_HOST: mariadb
           MYSQL_PORT: 3306
@@ -219,108 +98,21 @@ jobs:
           MYSQL_USERNAME: root
           MYSQL_PASSWORD: root
 
-  test-postgres:
-    runs-on: ubuntu-latest
-    container: shivammathur/node:24.04@sha256:ee402d3448af7d680cc697f0cd76f62b04598a527044e38dc4cf1c3404b13071
-    name: PGSQL ${{ matrix.postgres.version }} / PHP ${{ matrix.php }}
-    continue-on-error: ${{ matrix.php == '8.6' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        php: ['8.5', '8.6']
-        postgres:
-          - { version: '15', image: 'postgres:15@sha256:724292da1f2e50bdccfc3302ce75bbba7f4a6076701b588cc795fcac65683550' }
-          - { version: '16', image: 'postgres:16@sha256:1a6ab3f5345eb6dbe04a1349529caabdb0ab09293a09590fad07b2246bfa4b54' }
-          - { version: '17', image: 'postgres:17@sha256:d74eeac9a635390a49bc21bd49fccd973de707e2a53a76ac49b552b8712ec46f' }
-
-    services:
-      postgres:
-        image: ${{ matrix.postgres.image }}
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: pdo_wrapper_test
-        options: >-
-          --health-cmd=pg_isready
-          --health-interval=10s
-          --health-timeout=5s
-          --health-retries=3
-
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-        with:
-          persist-credentials: false
-
-      - name: Setup PHP
-        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
-        with:
-          php-version: ${{ matrix.php }}
-          extensions: pdo_pgsql
-          coverage: none
-
-      - name: Check the PHP version
-        run: |
-          php -r 'echo PHP_VERSION, PHP_EOL; exit(str_starts_with(PHP_VERSION, getenv("WANTED") . ".") ? 0 : 1);'
-        env:
-          WANTED: ${{ matrix.php }}
-
-      - name: Get Composer Cache Directory
-        id: composer-cache
-        run: echo "dir=$(composer config cache-files-dir)" >> $GITHUB_OUTPUT
-
-      - name: Cache Composer dependencies
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
-        with:
-          path: ${{ steps.composer-cache.outputs.dir }}
-          key: ${{ runner.os }}-composer-${{ hashFiles('**/composer.lock') }}
-          restore-keys: ${{ runner.os }}-composer-
-
-      - name: Install dependencies
-        run: composer install --prefer-dist --no-progress
-
-      - name: Wait for Postgres
-        run: |
-          for i in $(seq 1 90); do
-            PGPASSWORD=postgres psql -h postgres -U postgres -d pdo_wrapper_test -c "SELECT 1" >/dev/null 2>&1 && exit 0
-            sleep 1
-          done
-          echo "Postgres not ready"; exit 1
-
-      - name: Run PostgreSQL tests
-        run: vendor/bin/phpunit --group postgres --no-coverage
-        env:
-          POSTGRES_HOST: postgres
-          POSTGRES_PORT: 5432
-          POSTGRES_DATABASE: pdo_wrapper_test
-          POSTGRES_USERNAME: postgres
-          POSTGRES_PASSWORD: postgres
-
-  # One run against all three databases with a coverage driver: src/ must stay fully covered. The matrix jobs above
-  # run without coverage; this job is what fails when new code arrives without a test on the database it is for.
+  # One run with a coverage driver: src/ must stay fully covered. The matrix jobs above run without coverage; this
+  # job is what fails when new code arrives without a test.
   coverage:
     runs-on: ubuntu-latest
     container: shivammathur/node:24.04@sha256:ee402d3448af7d680cc697f0cd76f62b04598a527044e38dc4cf1c3404b13071
-    name: Coverage (SQLite, MySQL, PostgreSQL)
+    name: Coverage (MariaDB 11.4)
 
     services:
-      mysql:
-        image: mysql:8.0@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b
+      mariadb:
+        image: mariadb:11.4@sha256:70cc072b29b4a89ae07abb2d4da2c64678a7f2dfe092751bb51c87d67dc1338b
         env:
-          MYSQL_ROOT_PASSWORD: root
-          MYSQL_DATABASE: pdo_wrapper_test
+          MARIADB_ROOT_PASSWORD: root
+          MARIADB_DATABASE: pdo_wrapper_test
         options: >-
-          --health-cmd="mysqladmin ping"
-          --health-interval=10s
-          --health-timeout=5s
-          --health-retries=3
-      postgres:
-        image: postgres:15@sha256:724292da1f2e50bdccfc3302ce75bbba7f4a6076701b588cc795fcac65683550
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: pdo_wrapper_test
-        options: >-
-          --health-cmd=pg_isready
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
           --health-interval=10s
           --health-timeout=5s
           --health-retries=3
@@ -334,7 +126,7 @@ jobs:
         uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
         with:
           php-version: '8.5'
-          extensions: pdo_sqlite, pdo_mysql, pdo_pgsql
+          extensions: pdo_mysql
           coverage: xdebug
 
       - name: Get Composer Cache Directory
@@ -351,30 +143,23 @@ jobs:
       - name: Install dependencies
         run: composer install --prefer-dist --no-progress
 
-      - name: Wait for MySQL and Postgres
+      - name: Wait for MariaDB
         run: |
           for i in $(seq 1 90); do
-            mysql -h mysql -uroot -proot -e "SELECT 1" pdo_wrapper_test >/dev/null 2>&1 \
-              && PGPASSWORD=postgres psql -h postgres -U postgres -d pdo_wrapper_test -c "SELECT 1" >/dev/null 2>&1 \
-              && exit 0
+            mysql -h mariadb -uroot -proot -e "SELECT 1" pdo_wrapper_test >/dev/null 2>&1 && exit 0
             sleep 1
           done
-          echo "databases not ready"; exit 1
+          echo "MariaDB not ready"; exit 1
 
       - name: Run all tests with coverage
         run: vendor/bin/phpunit --coverage-clover clover.xml
         env:
           XDEBUG_MODE: coverage
-          MYSQL_HOST: mysql
+          MYSQL_HOST: mariadb
           MYSQL_PORT: 3306
           MYSQL_DATABASE: pdo_wrapper_test
           MYSQL_USERNAME: root
           MYSQL_PASSWORD: root
-          POSTGRES_HOST: postgres
-          POSTGRES_PORT: 5432
-          POSTGRES_DATABASE: pdo_wrapper_test
-          POSTGRES_USERNAME: postgres
-          POSTGRES_PASSWORD: postgres
 
       - name: Require full statement coverage of src/
         run: |

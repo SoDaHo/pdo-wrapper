@@ -2093,8 +2093,8 @@ abstract class AbstractDriver implements DatabaseInterface
     /**
      * Insert a row only when a condition holds, in one statement.
      *
-     * Renders `INSERT INTO table (...) SELECT ?, ?, ... WHERE (condition)`; MySQL/MariaDB need
-     * `FROM DUAL` before a WHERE without a table. The row's values are bound first, then the
+     * Renders `INSERT INTO table (...) SELECT ?, ?, ... FROM DUAL WHERE (condition)` (MariaDB needs
+     * `FROM DUAL` before a WHERE without a table). The row's values are bound first, then the
      * condition's bindings (see DatabaseInterface::insertWhen()).
      *
      * @param string $table Table name (supports schema.table format)
@@ -2132,11 +2132,10 @@ abstract class AbstractDriver implements DatabaseInterface
         [$columns, $values, $params] = $this->buildInsertParts($data);
 
         $sql = sprintf(
-            'INSERT INTO %s (%s) SELECT %s%s WHERE (%s)',
+            'INSERT INTO %s (%s) SELECT %s FROM DUAL WHERE (%s)',
             $this->quoteIdentifier($table),
             $columns,
             $values,
-            $this->getDialect() === \Sodaho\PdoWrapper\Query\QueryBuilder::DIALECT_MYSQL ? ' FROM DUAL' : '',
             trim($condition)
         );
 
@@ -2146,9 +2145,8 @@ abstract class AbstractDriver implements DatabaseInterface
     /**
      * Insert a row unless it collides with an existing one (see DatabaseInterface::insertIgnore()).
      *
-     * MySQL/MariaDB get `ON DUPLICATE KEY UPDATE col = col` on the row's first column: a no-op
-     * whichever key collided, reported as 0 affected rows. Every other dialect gets
-     * `ON CONFLICT DO NOTHING`.
+     * `ON DUPLICATE KEY UPDATE col = col` on the row's first column: a no-op whichever key
+     * collided, reported as 0 affected rows.
      *
      * @param string $table Table name (supports schema.table format)
      * @param array<string, mixed> $data Column => value pairs of the row
@@ -2168,12 +2166,8 @@ abstract class AbstractDriver implements DatabaseInterface
 
         [$columns, $values, $params] = $this->buildInsertParts($data);
 
-        if ($this->getDialect() === \Sodaho\PdoWrapper\Query\QueryBuilder::DIALECT_MYSQL) {
-            $first = $this->quoteIdentifier((string) array_key_first($data));
-            $onDuplicate = sprintf('ON DUPLICATE KEY UPDATE %s = %s', $first, $first);
-        } else {
-            $onDuplicate = 'ON CONFLICT DO NOTHING';
-        }
+        $first = $this->quoteIdentifier((string) array_key_first($data));
+        $onDuplicate = sprintf('ON DUPLICATE KEY UPDATE %s = %s', $first, $first);
 
         $sql = sprintf(
             'INSERT INTO %s (%s) VALUES (%s) %s',
@@ -2399,7 +2393,7 @@ abstract class AbstractDriver implements DatabaseInterface
      */
     protected function quoteIdentifier(string $identifier): string
     {
-        $quote = $this->getQuoteChar();
+        $quote = '`';
         $escape = $quote . $quote;
 
         // Handle schema.table or table.column format
@@ -2514,58 +2508,20 @@ abstract class AbstractDriver implements DatabaseInterface
     }
 
     /**
-     * Current date and time as a raw SQL expression for insert()/update()/where() values.
-     *
-     * The shipped drivers return their dialect's statement-time expression (MySQL `NOW()`,
-     * PostgreSQL `CAST(statement_timestamp() AS TIMESTAMP(0))`, SQLite `datetime('now', 'localtime')`);
-     * this default is the SQL standard `CURRENT_TIMESTAMP`. Override in a custom driver.
+     * Current date and time in the session's time zone, as a raw SQL expression for
+     * insert()/update()/where() values: `NOW()`.
      */
     public function now(): RawExpression
     {
-        return new RawExpression('CURRENT_TIMESTAMP');
+        return new RawExpression('NOW()');
     }
 
     /**
-     * Current UTC date and time as a raw SQL expression (a zoneless value).
-     *
-     * The shipped drivers return their dialect's expression (MySQL `UTC_TIMESTAMP()`, PostgreSQL
-     * `CAST(statement_timestamp() AT TIME ZONE 'UTC' AS TIMESTAMP(0))`, SQLite `datetime('now')`);
-     * this default is `CURRENT_TIMESTAMP`, which is UTC only when the dialect evaluates it in UTC
-     * and the session's time zone is UTC. Override in a custom driver.
+     * Current UTC date and time, as a raw SQL expression: `UTC_TIMESTAMP()` (a zoneless value).
      */
     public function utcNow(): RawExpression
     {
-        return new RawExpression('CURRENT_TIMESTAMP');
-    }
-
-    /**
-     * Get the quote character for identifiers.
-     *
-     * Override in driver for DB-specific quoting.
-     * - PostgreSQL: " (double quote)
-     * - MySQL, SQLite: ` (backtick; SQLite would read an unknown double-quoted name as a string)
-     *
-     * @return string Quote character
-     */
-    protected function getQuoteChar(): string
-    {
-        return '"';
-    }
-
-    /**
-     * Get the SQL dialect the query builder renders for (one of QueryBuilder::DIALECT_*).
-     *
-     * The bundled drivers override it. The default derives it from the quote character, as the
-     * builder did before it knew dialects: a backtick means MySQL (a custom driver that only
-     * overrides getQuoteChar() keeps MySQL's LIKE escaping and lock syntax), anything else ANSI,
-     * which renders FOR UPDATE / FOR SHARE, IS [NOT] DISTINCT FROM and OFFSET without LIMIT as
-     * PostgreSQL does.
-     */
-    protected function getDialect(): string
-    {
-        return $this->getQuoteChar() === '`'
-            ? \Sodaho\PdoWrapper\Query\QueryBuilder::DIALECT_MYSQL
-            : \Sodaho\PdoWrapper\Query\QueryBuilder::DIALECT_ANSI;
+        return new RawExpression('UTC_TIMESTAMP()');
     }
 
     // =========================================================================
@@ -2579,6 +2535,6 @@ abstract class AbstractDriver implements DatabaseInterface
      */
     public function table(string $table): \Sodaho\PdoWrapper\Query\QueryBuilder
     {
-        return new \Sodaho\PdoWrapper\Query\QueryBuilder($this, $table, $this->getQuoteChar(), $this->getDialect());
+        return new \Sodaho\PdoWrapper\Query\QueryBuilder($this, $table);
     }
 }

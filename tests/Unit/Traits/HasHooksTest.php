@@ -5,8 +5,7 @@ declare(strict_types=1);
 namespace Sodaho\PdoWrapper\Tests\Unit\Traits;
 
 use PHPUnit\Framework\TestCase;
-use Sodaho\PdoWrapper\Database;
-use Sodaho\PdoWrapper\Driver\SqliteDriver;
+use Sodaho\PdoWrapper\Driver\AbstractDriver;
 use Sodaho\PdoWrapper\Exception\DatabaseException;
 
 class HasHooksTest extends TestCase
@@ -24,7 +23,8 @@ class HasHooksTest extends TestCase
      */
     public function testOnRefusesAnUnknownEvent(): void
     {
-        $db = Database::sqlite(':memory:');
+        $db = new class () extends AbstractDriver {
+        }; // a driver without a connection: on() needs none
         $noop = static function (): void {
         };
 
@@ -52,7 +52,7 @@ class HasHooksTest extends TestCase
      */
     public function testADriverAddsItsOwnEvents(): void
     {
-        $db = new class (':memory:') extends SqliteDriver {
+        $db = new class () extends AbstractDriver {
             protected function knownEvents(): array
             {
                 return [...parent::knownEvents(), 'cache.hit'];

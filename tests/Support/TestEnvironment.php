@@ -7,7 +7,7 @@ namespace Sodaho\PdoWrapper\Tests\Support;
 use UnexpectedValueException;
 
 /**
- * Connection settings of the test databases, read from the MYSQL_* and POSTGRES_* variables
+ * Connection settings of the test database, read from the MYSQL_* variables
  * (phpunit.xml.dist holds the defaults). A variable that is set to something unusable fails the
  * test instead of being cast into a value nobody asked for.
  */
@@ -24,20 +24,6 @@ final class TestEnvironment
             'database' => self::text('MYSQL_DATABASE', 'pdo_wrapper_test'),
             'username' => self::text('MYSQL_USERNAME', 'root'),
             'password' => self::text('MYSQL_PASSWORD', 'root'),
-        ];
-    }
-
-    /**
-     * @return array{host: string, port: int, database: string, username: string, password: string}
-     */
-    public static function postgres(): array
-    {
-        return [
-            'host' => self::text('POSTGRES_HOST', '127.0.0.1'),
-            'port' => self::port('POSTGRES_PORT', 5432),
-            'database' => self::text('POSTGRES_DATABASE', 'pdo_wrapper_test'),
-            'username' => self::text('POSTGRES_USERNAME', 'postgres'),
-            'password' => self::text('POSTGRES_PASSWORD', 'postgres'),
         ];
     }
 

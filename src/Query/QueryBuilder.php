@@ -22,7 +22,7 @@ class QueryBuilder
     private const ALLOWED_OPERATORS = [
         '=', '!=', '<>', '<', '>', '<=', '>=',
         'LIKE', 'NOT LIKE',
-        'IS', 'IS NOT', // null-safe equality, rendered per dialect (see comparison())
+        'IS', 'IS NOT', // null-safe equality, rendered as <=> (see comparison())
     ];
 
     /**
@@ -33,18 +33,11 @@ class QueryBuilder
      */
     private const LIKE_ESCAPE = '\\';
 
-    /**
-     * SQL dialects the builder renders for: row locks, IS / IS NOT and OFFSET without LIMIT differ.
-     */
-    public const DIALECT_ANSI = 'ansi';
-    public const DIALECT_MYSQL = 'mysql';
-    public const DIALECT_PGSQL = 'pgsql';
-    public const DIALECT_SQLITE = 'sqlite';
+    /** Identifiers are quoted with backticks (MariaDB) */
+    private const QUOTE = '`';
 
     private DatabaseInterface $db;
     private string $table;
-    private string $quoteChar;
-    private string $dialect;
 
     /** @var array<int, string|RawExpression> */
     private array $columns = ['*'];
@@ -77,27 +70,11 @@ class QueryBuilder
      *
      * @param DatabaseInterface $db Database connection
      * @param string $table Table name
-     * @param string $quoteChar Quote character for identifiers (" or `)
-     * @param string|null $dialect One of the DIALECT_* constants; null derives it from the quote character (` = MySQL, otherwise ANSI).
-     *                             Drivers pass their dialect from table(); pass DIALECT_SQLITE yourself for a SQLite builder (backtick, too)
-     *
-     * @throws QueryException When the dialect is unknown
      */
-    public function __construct(DatabaseInterface $db, string $table, string $quoteChar = '"', ?string $dialect = null)
+    public function __construct(DatabaseInterface $db, string $table)
     {
-        $dialect ??= $quoteChar === '`' ? self::DIALECT_MYSQL : self::DIALECT_ANSI;
-        if (!in_array($dialect, [self::DIALECT_ANSI, self::DIALECT_MYSQL, self::DIALECT_PGSQL, self::DIALECT_SQLITE], true)) {
-            // The name that was passed stands in the debug message only, like every value
-            throw new QueryException(
-                message: 'Query failed',
-                debugMessage: sprintf('Unknown SQL dialect "%s": use one of the QueryBuilder::DIALECT_* constants', $dialect)
-            );
-        }
-
         $this->db = $db;
         $this->table = $table;
-        $this->quoteChar = $quoteChar;
-        $this->dialect = $dialect;
     }
 
     // =========================================================================
@@ -443,7 +420,7 @@ class QueryBuilder
     /**
      * Add a WHERE LIKE condition.
      *
-     * Rendered as `LIKE ? ESCAPE ?` with the backslash bound as escape character on every dialect,
+     * Rendered as `LIKE ? ESCAPE ?` with the backslash bound as escape character,
      * so a pattern part run through Database::escapeLike() is literal whatever the engine's default
      * or SQL mode. The same holds for where() and having() with the LIKE / NOT LIKE operator.
      *
@@ -802,19 +779,11 @@ class QueryBuilder
 
     /**
      * A name the builder renders quoted (a column, a string entry's alias) as a comparison key.
-     * MySQL/MariaDB and SQLite compare column names without case: folded to lower case. A quoted
-     * name is case-sensitive on PostgreSQL and in ANSI SQL ("Name" and "name" are two columns):
-     * one without an upper-case letter is the name a bare one folds to, any other gets the key
-     * aliasKey() gives a quoted alias in a raw expression.
+     * MariaDB compares column names without case: folded to lower case.
      */
     private function quotedNameKey(string $name): string
     {
-        $folded = strtolower($name);
-        if ($this->dialect === self::DIALECT_MYSQL || $this->dialect === self::DIALECT_SQLITE || $folded === $name) {
-            return $folded;
-        }
-
-        return $this->quoteChar . $name;
+        return strtolower($name);
     }
 
     /**
@@ -844,7 +813,7 @@ class QueryBuilder
                 $name = $this->quotedNameKey($dot === false ? $entry : substr($entry, $dot + 1));
             }
             if (isset($names[$name])) {
-                return sprintf('"%s" appears twice as an output name', ltrim($name, $this->quoteChar));
+                return sprintf('"%s" appears twice as an output name', ltrim($name, self::QUOTE));
             }
             $names[$name] = true;
         }
@@ -1104,25 +1073,22 @@ class QueryBuilder
      *
      * Requires at least one WHERE condition for safety.
      *
-     * On MySQL/MariaDB, limit() updates at most that many rows, in orderBy() order when given
-     * (`UPDATE ... ORDER BY ... LIMIT n`, for updating in batches; order by a unique key, or add one
-     * as tie-breaker, so that the batch is deterministic). UPDATE ... LIMIT is not portable: on the
-     * other dialects limit() throws instead of silently updating every matching row. OFFSET, JOIN,
-     * GROUP BY, HAVING and an orderBy() without limit() are not supported (not part of the generated
-     * statement); select(), distinct() and a row lock are ignored.
+     * limit() updates at most that many rows, in orderBy() order when given (`UPDATE ... ORDER BY
+     * ... LIMIT n`, for updating in batches; order by a unique key, or add one as tie-breaker, so
+     * that the batch is deterministic). OFFSET, JOIN, GROUP BY, HAVING and an orderBy() without
+     * limit() are not supported (not part of the generated statement); select(), distinct() and a
+     * row lock are ignored.
      *
      * @param array<string, mixed> $data Column => value pairs to update
      *
      * @throws QueryException When no WHERE conditions set (safety)
-     * @throws QueryException When offset(), join(), groupBy(), having() or an orderBy() without limit() is set, or limit() is used on a dialect other than MySQL
+     * @throws QueryException When offset(), join(), groupBy(), having() or an orderBy() without limit() is set
      *
      * @return int Number of affected rows
      */
     public function update(array $data): int
     {
-        // Only MySQL/MariaDB render UPDATE ... [ORDER BY ...] LIMIT n; elsewhere the guard throws as before
-        $limited = $this->limit !== null && $this->dialect === self::DIALECT_MYSQL;
-        $this->guardAgainstSelectClauses('update', $limited);
+        $this->guardAgainstSelectClauses('update');
 
         if (empty($this->wheres)) {
             throw new QueryException(
@@ -1156,7 +1122,7 @@ class QueryBuilder
             implode(', ', $setClauses),
             $whereSql
         );
-        if ($limited) {
+        if ($this->limit !== null) {
             $sql .= $this->orderByClause() . ' LIMIT ' . $this->limit;
         }
 
@@ -1168,23 +1134,20 @@ class QueryBuilder
      *
      * Requires at least one WHERE condition for safety.
      *
-     * On MySQL/MariaDB, limit() deletes at most that many rows, in orderBy() order when given
-     * (`DELETE ... ORDER BY ... LIMIT n`: "the oldest n", for deleting in batches; order by a unique
-     * key, or add one as tie-breaker, so that the batch is deterministic). DELETE ... LIMIT is not
-     * portable: on the other dialects limit() throws instead of silently deleting every matching row.
-     * OFFSET, JOIN, GROUP BY, HAVING and an orderBy() without limit() are not supported (not part of
-     * the generated statement); select(), distinct() and a row lock are ignored.
+     * limit() deletes at most that many rows, in orderBy() order when given (`DELETE ... ORDER BY
+     * ... LIMIT n`: "the oldest n", for deleting in batches; order by a unique key, or add one as
+     * tie-breaker, so that the batch is deterministic). OFFSET, JOIN, GROUP BY, HAVING and an
+     * orderBy() without limit() are not supported (not part of the generated statement); select(),
+     * distinct() and a row lock are ignored.
      *
      * @throws QueryException When no WHERE conditions set (safety)
-     * @throws QueryException When offset(), join(), groupBy(), having() or an orderBy() without limit() is set, or limit() is used on a dialect other than MySQL
+     * @throws QueryException When offset(), join(), groupBy(), having() or an orderBy() without limit() is set
      *
      * @return int Number of affected rows
      */
     public function delete(): int
     {
-        // Only MySQL/MariaDB render DELETE ... [ORDER BY ...] LIMIT n; elsewhere the guard throws as before
-        $limited = $this->limit !== null && $this->dialect === self::DIALECT_MYSQL;
-        $this->guardAgainstSelectClauses('delete', $limited);
+        $this->guardAgainstSelectClauses('delete');
 
         if (empty($this->wheres)) {
             throw new QueryException(
@@ -1200,7 +1163,7 @@ class QueryBuilder
             $this->quoteIdentifier($this->table),
             $whereSql
         );
-        if ($limited) {
+        if ($this->limit !== null) {
             $sql .= $this->orderByClause() . ' LIMIT ' . $this->limit;
         }
 
@@ -1310,7 +1273,7 @@ class QueryBuilder
         $sql .= $this->orderByClause();
 
         // LIMIT / OFFSET (typed as ?int, enforced by PHP's type system); MySQL and SQLite need a
-        // LIMIT before an OFFSET, so an offset() without limit() gets the dialect's "no limit" value
+        // LIMIT before an OFFSET, so an offset() without limit() gets MariaDB's "no limit" value
         if ($this->limit !== null) {
             $sql .= ' LIMIT ' . $this->limit;
         } elseif ($this->offset !== null) {
@@ -1361,35 +1324,23 @@ class QueryBuilder
     }
 
     /**
-     * LIMIT that MySQL and SQLite need before an OFFSET without LIMIT (PostgreSQL needs none).
+     * The LIMIT MariaDB needs before an OFFSET without LIMIT: the largest it takes.
      */
     private function unlimitedLimit(): string
     {
-        return match ($this->dialect) {
-            self::DIALECT_MYSQL => ' LIMIT 18446744073709551615',
-            self::DIALECT_SQLITE => ' LIMIT -1',
-            default => '',
-        };
+        return ' LIMIT 18446744073709551615';
     }
 
     /**
-     * Row lock clause for the SELECT in the dialect's syntax; SQLite has no row locks.
+     * Row lock clause for the SELECT.
      */
     private function lockClause(): string
     {
-        if ($this->dialect === self::DIALECT_SQLITE) {
-            return '';
-        }
-        if ($this->lock === 'share') {
-            return $this->dialect === self::DIALECT_MYSQL ? ' LOCK IN SHARE MODE' : ' FOR SHARE';
-        }
-
-        return ' FOR UPDATE';
+        return $this->lock === 'share' ? ' LOCK IN SHARE MODE' : ' FOR UPDATE';
     }
 
     /**
-     * Render a comparison. IS / IS NOT with a bound value mean null-safe equality and are rendered
-     * in the dialect's own syntax: SQLite `IS`, MySQL `<=>`, PostgreSQL/ANSI `IS NOT DISTINCT FROM`.
+     * Render a comparison. IS / IS NOT with a bound value mean null-safe equality: `<=>`.
      * With a raw right side (Database::raw('TRUE'), raw('NULL'), raw('UNKNOWN')) they are passed
      * through unchanged: those truth tests were valid SQL before and keep their semantics.
      *
@@ -1403,11 +1354,7 @@ class QueryBuilder
 
         $negated = $operator === 'IS NOT';
 
-        return match ($this->dialect) {
-            self::DIALECT_SQLITE => sprintf('%s %s %s', $left, $operator, $right),
-            self::DIALECT_MYSQL => $negated ? sprintf('NOT (%s <=> %s)', $left, $right) : sprintf('%s <=> %s', $left, $right),
-            default => sprintf('%s %s %s', $left, $negated ? 'IS DISTINCT FROM' : 'IS NOT DISTINCT FROM', $right),
-        };
+        return $negated ? sprintf('NOT (%s <=> %s)', $left, $right) : sprintf('%s <=> %s', $left, $right);
     }
 
     /**
@@ -1569,22 +1516,22 @@ class QueryBuilder
     {
         // Handle alias: "column as alias" or "table.column as alias"
         if (preg_match('/^(.+)\s+as\s+(\w+)$/i', $identifier, $matches)) {
-            return $this->quoteIdentifier(trim($matches[1])) . ' as ' . $this->quoteChar . $matches[2] . $this->quoteChar;
+            return $this->quoteIdentifier(trim($matches[1])) . ' as ' . self::QUOTE . $matches[2] . self::QUOTE;
         }
 
         // Escape character: double the quote char (standard SQL escaping)
-        $escape = $this->quoteChar . $this->quoteChar;
+        $escape = self::QUOTE . self::QUOTE;
 
         // Handle table.column format; "users.*" keeps its wildcard: "users".*
         if (str_contains($identifier, '.')) {
             $parts = explode('.', $identifier);
             return implode('.', array_map(
-                fn ($p) => $p === '*' ? '*' : $this->quoteChar . str_replace($this->quoteChar, $escape, $p) . $this->quoteChar,
+                fn ($p) => $p === '*' ? '*' : self::QUOTE . str_replace(self::QUOTE, $escape, $p) . self::QUOTE,
                 $parts
             ));
         }
 
-        return $this->quoteChar . str_replace($this->quoteChar, $escape, $identifier) . $this->quoteChar;
+        return self::QUOTE . str_replace(self::QUOTE, $escape, $identifier) . self::QUOTE;
     }
 
     /**
@@ -1667,22 +1614,20 @@ class QueryBuilder
      * distinct() and a row lock are ignored: they cannot change which rows an UPDATE/DELETE hits
      * (the statement takes its own row locks), so a builder locked for a first() may be reused.
      *
-     * @param string $operation Operation name for error message ('update' or 'delete')
-     * @param bool $orderedLimitAllowed True when the statement renders ORDER BY ... LIMIT (update()/delete() on MySQL/MariaDB)
+     * The statements render ORDER BY ... LIMIT, so limit() is allowed, and orderBy() with it.
      *
-     * @throws QueryException When limit, offset, orderBy, join, groupBy or having is set (limit and orderBy allowed together when $orderedLimitAllowed)
+     * @param string $operation Operation name for error message ('update' or 'delete')
+     *
+     * @throws QueryException When offset, join, groupBy or having is set, or orderBy without limit
      */
-    private function guardAgainstSelectClauses(string $operation, bool $orderedLimitAllowed = false): void
+    private function guardAgainstSelectClauses(string $operation): void
     {
         $unsupported = [];
 
-        if ($this->limit !== null && !$orderedLimitAllowed) {
-            $unsupported[] = 'limit()';
-        }
         if ($this->offset !== null) {
             $unsupported[] = 'offset()';
         }
-        if (!empty($this->orderBy) && !($orderedLimitAllowed && $this->limit !== null)) {
+        if (!empty($this->orderBy) && $this->limit === null) {
             $unsupported[] = 'orderBy()';
         }
         if (!empty($this->joins)) {
@@ -1696,16 +1641,12 @@ class QueryBuilder
         }
 
         if (!empty($unsupported)) {
-            $hint = ($this->limit !== null && $this->dialect !== self::DIALECT_MYSQL)
-                ? sprintf(' %s() with limit() would need %s ... LIMIT, which only MySQL/MariaDB support (dialect "%s"): use a subquery in raw execute() instead.', $operation, strtoupper($operation), $this->dialect)
-                : '';
             throw new QueryException(
                 message: ucfirst($operation) . ' failed',
                 debugMessage: sprintf(
-                    '%s does not support %s (not part of the generated statement; the affected rows could silently differ). Use raw execute() for database-specific syntax.%s',
+                    '%s does not support %s (not part of the generated statement; the affected rows could silently differ). Use raw execute() for database-specific syntax.',
                     $operation,
-                    implode(', ', $unsupported),
-                    $hint
+                    implode(', ', $unsupported)
                 )
             );
         }

@@ -19,12 +19,11 @@
         <testsuite name="Unit">
             <directory>tests/Unit</directory>
         </testsuite>
-        <testsuite name="Integration">
-            <directory>tests/Integration</directory>
+        <testsuite name="Contract">
+            <directory>tests/Contract</directory>
         </testsuite>
-        <testsuite name="Feature">
-            <directory>tests/Feature</directory>
-            <exclude>tests/Feature/Concerns</exclude>
+        <testsuite name="Driver">
+            <directory>tests/Driver</directory>
         </testsuite>
     </testsuites>
 
@@ -42,20 +41,12 @@
     </coverage>
 
     <php>
-        <!-- MySQL Configuration -->
+        <!-- The MariaDB test database (Unit needs none; Contract and Driver do) -->
         <env name="MYSQL_HOST" value="127.0.0.1"/>
         <env name="MYSQL_PORT" value="3306"/>
         <env name="MYSQL_DATABASE" value="pdo_wrapper_test"/>
         <env name="MYSQL_USERNAME" value="root"/>
         <env name="MYSQL_PASSWORD" value="root"/>
 
-        <!-- MariaDB runs the same tests as MySQL (group "mysql"): point MYSQL_PORT at it, 3307 with docker-compose -->
-
-        <!-- PostgreSQL Configuration -->
-        <env name="POSTGRES_HOST" value="127.0.0.1"/>
-        <env name="POSTGRES_PORT" value="5432"/>
-        <env name="POSTGRES_DATABASE" value="pdo_wrapper_test"/>
-        <env name="POSTGRES_USERNAME" value="postgres"/>
-        <env name="POSTGRES_PASSWORD" value="postgres"/>
     </php>
 </phpunit>

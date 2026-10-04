@@ -7,20 +7,22 @@ namespace Sodaho\PdoWrapper\Tests\Unit;
 use PHPUnit\Framework\TestCase;
 use Sodaho\PdoWrapper\Database;
 use Sodaho\PdoWrapper\DatabaseInterface;
+use Sodaho\PdoWrapper\Query\QueryBuilder;
 use Sodaho\PdoWrapper\Query\RawExpression;
 
 /**
  * Security tests for RawExpression behavior.
  * Verifies that the new explicit raw() approach is secure by default.
+ *
+ * Only the SQL the builder renders is checked, so no database is needed: the builder is the one
+ * the MariaDB driver creates (backticks, MySQL dialect), on a database it never reaches.
  */
 class RawExpressionSecurityTest extends TestCase
 {
-    private DatabaseInterface $db;
-
-    protected function setUp(): void
+    /** What MySqlDriver::table('users') builds */
+    private function users(): QueryBuilder
     {
-        $this->db = Database::sqlite(':memory:');
-        $this->db->execute('CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT, role TEXT)');
+        return new QueryBuilder($this->createStub(DatabaseInterface::class), 'users');
     }
 
     /**
@@ -29,7 +31,7 @@ class RawExpressionSecurityTest extends TestCase
     public function testPreventsSqlInjectionInValues(): void
     {
         $maliciousInput = "' OR '1'='1";
-        [$sql, $params] = $this->db->table('users')->where('username', $maliciousInput)->toSql();
+        [$sql, $params] = $this->users()->where('username', $maliciousInput)->toSql();
 
         $this->assertStringContainsString('?', $sql);
         $this->assertContains($maliciousInput, $params);
@@ -43,10 +45,10 @@ class RawExpressionSecurityTest extends TestCase
         // Attempt to break out of column name quoting
         $maliciousColumn = 'username" --';
 
-        [$sql, ] = $this->db->table('users')->select($maliciousColumn)->toSql();
+        [$sql, ] = $this->users()->select($maliciousColumn)->toSql();
 
         // Expectation: The attack string is completely quoted as identifier
-        // Result: SELECT `username" --` FROM ... (SQLite quotes with backticks)
+        // Result: SELECT `username" --` FROM ... (MariaDB quotes with backticks)
         $this->assertStringContainsString('`username" --`', $sql);
     }
 
@@ -58,16 +60,16 @@ class RawExpressionSecurityTest extends TestCase
         // CASE A: String with parentheses WITHOUT Raw wrapper
         // Before: Was not quoted (insecure/magic)
         // Now: MUST be quoted (secure)
-        [$sqlSafe, ] = $this->db->table('users')->select('COUNT(*)')->toSql();
+        [$sqlSafe, ] = $this->users()->select('COUNT(*)')->toSql();
 
-        // SQLite quote: `COUNT(*)`
+        // MariaDB quote: `COUNT(*)`
         $this->assertStringContainsString('`COUNT(*)`', $sqlSafe);
         $this->assertStringNotContainsString('SELECT COUNT(*) ', $sqlSafe); // Must NOT be raw
 
 
         // CASE B: String WITH Raw wrapper
         // Expectation: Passed through 1:1
-        [$sqlRaw, ] = $this->db->table('users')
+        [$sqlRaw, ] = $this->users()
             ->select([Database::raw('COUNT(*) as total')])
             ->toSql();
 
@@ -83,7 +85,7 @@ class RawExpressionSecurityTest extends TestCase
         $maliciousInput = '0; DROP TABLE users; --';
 
         // If a developer is foolish enough to put user input in raw():
-        [$sql, ] = $this->db->table('users')
+        [$sql, ] = $this->users()
             ->select([Database::raw($maliciousInput)])
             ->toSql();
 
@@ -96,7 +98,7 @@ class RawExpressionSecurityTest extends TestCase
      */
     public function testHavingSupportsRaw(): void
     {
-        [$sql, ] = $this->db->table('users')
+        [$sql, ] = $this->users()
             ->groupBy('role')
             ->having(Database::raw('COUNT(*)'), '>', 5)
             ->toSql();

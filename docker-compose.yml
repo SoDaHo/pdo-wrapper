@@ -1,19 +1,7 @@
 # Test databases with well-known passwords: published on the loopback interface only.
+# MariaDB is the only database since 3.0. phpunit.xml.dist points at port 3306 (10.11, the oldest supported
+# version); run the suite against the later LTS releases with MYSQL_PORT=3307 (11.4) or MYSQL_PORT=3308 (12.3).
 services:
-  mysql:
-    image: mysql:8.0
-    container_name: pdo-wrapper-mysql
-    environment:
-      MYSQL_ROOT_PASSWORD: root
-      MYSQL_DATABASE: pdo_wrapper_test
-    ports:
-      - "127.0.0.1:3306:3306"
-    healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
   mariadb:
     image: mariadb:10.11
     container_name: pdo-wrapper-mariadb
@@ -21,24 +9,37 @@ services:
       MARIADB_ROOT_PASSWORD: root
       MARIADB_DATABASE: pdo_wrapper_test
     ports:
-      - "127.0.0.1:3307:3306"
+      - "127.0.0.1:3306:3306"
     healthcheck:
-      test: ["CMD", "mariadb-admin", "ping", "-h", "localhost"]
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
       interval: 5s
       timeout: 5s
       retries: 10
 
-  postgres:
-    image: postgres:15
-    container_name: pdo-wrapper-postgres
+  mariadb-11.4:
+    image: mariadb:11.4
+    container_name: pdo-wrapper-mariadb-11.4
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: pdo_wrapper_test
+      MARIADB_ROOT_PASSWORD: root
+      MARIADB_DATABASE: pdo_wrapper_test
     ports:
-      - "127.0.0.1:5432:5432"
+      - "127.0.0.1:3307:3306"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mariadb-12.3:
+    image: mariadb:12.3
+    container_name: pdo-wrapper-mariadb-12.3
+    environment:
+      MARIADB_ROOT_PASSWORD: root
+      MARIADB_DATABASE: pdo_wrapper_test
+    ports:
+      - "127.0.0.1:3308:3306"
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
       interval: 5s
       timeout: 5s
       retries: 10

@@ -5,30 +5,25 @@ declare(strict_types=1);
 namespace Sodaho\PdoWrapper;
 
 use PDO;
-use Sodaho\PdoWrapper\Driver\AbstractDriver;
 use Sodaho\PdoWrapper\Driver\MySqlDriver;
-use Sodaho\PdoWrapper\Driver\PostgresDriver;
-use Sodaho\PdoWrapper\Driver\SqliteDriver;
 use Sodaho\PdoWrapper\Exception\ConnectionException;
 use Sodaho\PdoWrapper\Query\RawExpression;
 
 /**
  * Factory class for creating database connections.
  *
- * mysql(), postgres(), sqlite() and connect() use what they are given and nothing else: they
- * never read the environment. fromEnv() is the one entry that does - DB_DRIVER, DB_HOST, DB_PORT,
- * DB_DATABASE, DB_USERNAME, DB_PASSWORD and DB_SQLITE_PATH, from $_ENV first, then getenv().
+ * mysql() and connect() use what they are given and nothing else: they never read the
+ * environment. fromEnv() is the one entry that does - DB_DRIVER, DB_HOST, DB_PORT, DB_DATABASE,
+ * DB_USERNAME and DB_PASSWORD, from $_ENV first, then getenv().
  *
  * Usage:
  * - Database::mysql(['host' => '...', 'database' => '...', 'username' => '...', ...])
- * - Database::postgres(['host' => '...', 'database' => '...', 'username' => '...', ...])
- * - Database::sqlite('/path/to/database.db') or Database::sqlite(':memory:') for an in-memory database
  * - Database::connect(['driver' => 'mysql', 'host' => '...', ...])
  * - Database::fromEnv() or Database::fromEnv(['password' => $secret])
  *
  * Every factory creates the PDO object itself, with the library's defaults. Its class can be
- * chosen ('pdoClass', for SQLite the third argument): a class that extends PDO - for a test that
- * needs a COMMIT to fail, or the driver's own class. It is never read from the environment.
+ * chosen ('pdoClass'): a class that extends PDO - for a test that needs a COMMIT to fail, or the
+ * driver's own class. It is never read from the environment.
  */
 class Database
 {
@@ -46,52 +41,13 @@ class Database
     }
 
     /**
-     * Create a PostgreSQL connection from the given config (see PostgresDriver for the keys).
-     * Nothing is read from the environment: use fromEnv() for that.
-     *
-     * @param array{host?: string|null, database?: string|null, username?: string|null, password?: string|null, port?: int|string, options?: array<int, mixed>, pdoClass?: class-string<PDO>|null} $config
-     *
-     * @throws Exception\ConnectionException When a required value is missing or the connection fails
-     */
-    public static function postgres(#[\SensitiveParameter] array $config): PostgresDriver
-    {
-        return new PostgresDriver($config);
-    }
-
-    /**
-     * Create a SQLite connection. Nothing is read from the environment: use fromEnv() for that.
-     * The path has no default: an in-memory database is asked for by name, so that a call
-     * without a path cannot end in a database that forgets everything.
-     *
-     * @param string $path Path to the SQLite file, or ':memory:' for an in-memory database
-     * @param array<int, mixed> $options Additional PDO options (they replace the defaults), as the
-     *                                   'options' of mysql() and postgres(): PDO::ATTR_TIMEOUT,
-     *                                   Pdo\Sqlite::ATTR_OPEN_FLAGS, ...
-     * @param class-string<PDO> $pdoClass Name of a class that extends PDO: the connection is
-     *                                    created as an object of that class, as with the
-     *                                    'pdoClass' of mysql() and postgres()
-     *
-     * @throws Exception\ConnectionException When the path is an empty string, $pdoClass names no class that extends PDO, or the connection fails
-     */
-    public static function sqlite(string $path, array $options = [], string $pdoClass = PDO::class): SqliteDriver
-    {
-        return new SqliteDriver($path, $options, $pdoClass);
-    }
-
-    /**
      * Create a connection for the driver named in the config.
      *
-     * 'mysql' (also 'mariadb'), 'pgsql' (also 'postgres', 'postgresql') and 'sqlite' delegate to
-     * mysql(), postgres() and sqlite() with the same config keys; the SQLite path comes from
-     * 'path', else 'database' - one of them is required (':memory:' for an in-memory database) -,
-     * its PDO options from 'options', the class of its PDO object from 'pdoClass' (checked here:
-     * in a config array the value can be anything, and what is no class name is refused as the
-     * other drivers refuse it, before it meets the typed argument of sqlite()).
-     * One config array for every environment:
-     * the driver decides which of the keys are used. Nothing is read from the environment: use
-     * fromEnv() for that.
+     * 'mysql' (also 'mariadb') delegates to mysql() with the same config keys. The drivers for
+     * PostgreSQL and SQLite were removed in 3.0: 'pgsql', 'postgres', 'postgresql' and 'sqlite'
+     * throw, saying so. Nothing is read from the environment: use fromEnv() for that.
      *
-     * @param array{driver?: string|null, path?: string|null, host?: string|null, database?: string|null, username?: string|null, password?: string|null, port?: int|string, charset?: string, options?: array<int, mixed>, pdoClass?: class-string<PDO>|null} $config
+     * @param array{driver?: string|null, host?: string|null, database?: string|null, username?: string|null, password?: string|null, port?: int|string, charset?: string, options?: array<int, mixed>, pdoClass?: class-string<PDO>|null} $config
      *
      * @throws ConnectionException When no or an unknown driver is named, a required value is missing, or the connection fails
      */
@@ -101,16 +57,15 @@ class Database
 
         return match ($driver) {
             'mysql', 'mariadb' => self::mysql($config),
-            'pgsql', 'postgres', 'postgresql' => self::postgres($config),
-            'sqlite' => self::sqlite($config['path'] ?? $config['database'] ?? throw new ConnectionException(
+            'pgsql', 'postgres', 'postgresql', 'sqlite' => throw new ConnectionException(
                 message: 'Database connection failed',
-                debugMessage: 'Missing required config: path (":memory:" for an in-memory database, or the path of a file)'
-            ), $config['options'] ?? [], AbstractDriver::validPdoClass($config['pdoClass'] ?? PDO::class)),
+                debugMessage: sprintf('The driver "%s" was removed in 3.0: this library supports MariaDB only', $driver)
+            ),
             default => throw new ConnectionException(
                 message: 'Database connection failed',
                 debugMessage: $driver === ''
-                    ? 'No database driver given: pass \'driver\' (mysql, pgsql or sqlite), or set DB_DRIVER for fromEnv()'
-                    : sprintf('Unknown database driver "%s": use mysql, pgsql or sqlite', $driver)
+                    ? 'No database driver given: pass \'driver\' (mysql), or set DB_DRIVER for fromEnv()'
+                    : sprintf('Unknown database driver "%s": use mysql', $driver)
             ),
         };
     }
@@ -119,21 +74,19 @@ class Database
      * Create a connection from the environment: the one place in this library that reads it.
      *
      * Variables, $_ENV first, then the process environment (getenv() with local_only, so not
-     * what a web server sends with the request): DB_DRIVER (mysql, pgsql or sqlite), DB_HOST, DB_PORT,
-     * DB_DATABASE, DB_USERNAME, DB_PASSWORD, and for SQLite DB_SQLITE_PATH. A variable that is
-     * set but empty counts as not set (`DB_HOST=` in a dotenv template): a required value is
-     * then reported as missing, DB_PORT takes the driver's default. For SQLite DB_SQLITE_PATH
-     * is required (":memory:" for an in-memory database): not set or empty, it throws. The SQLite
-     * file never comes from DB_DATABASE, the name of a server database.
+     * what a web server sends with the request): DB_DRIVER (mysql), DB_HOST, DB_PORT, DB_DATABASE,
+     * DB_USERNAME, DB_PASSWORD. A variable that is set but empty counts as not set (`DB_HOST=` in
+     * a dotenv template): a required value is then reported as missing, DB_PORT takes the
+     * driver's default.
      *
      * What is passed in $overrides counts instead of the environment - also null and an empty
      * string: fromEnv(['password' => null]) connects without a password whatever DB_PASSWORD
      * says. The keys are those of connect(), 'charset', 'options' and 'pdoClass' included: these
      * three have no variable. A class name from the environment would be handed the credentials.
      *
-     * @param array{driver?: string|null, path?: string|null, host?: string|null, database?: string|null, username?: string|null, password?: string|null, port?: int|string, charset?: string, options?: array<int, mixed>, pdoClass?: class-string<PDO>|null} $overrides
+     * @param array{driver?: string|null, host?: string|null, database?: string|null, username?: string|null, password?: string|null, port?: int|string, charset?: string, options?: array<int, mixed>, pdoClass?: class-string<PDO>|null} $overrides
      *
-     * @throws ConnectionException When no or an unknown driver is named, a required value is missing (for SQLite: DB_SQLITE_PATH, or a 'path'/'database' that is passed), or the connection fails
+     * @throws ConnectionException When no or an unknown driver is named, a required value is missing, or the connection fails
      */
     public static function fromEnv(#[\SensitiveParameter] array $overrides = []): DatabaseInterface
     {
@@ -148,25 +101,6 @@ class Database
         $port = trim((string) self::env('DB_PORT')); // surrounding whitespace (a trailing CR from an .env file) is not part of the value
         if ($port !== '' && !array_key_exists('port', $config)) {
             $config['port'] = $port;
-        }
-
-        if (strtolower(trim($config['driver'] ?? '')) === 'sqlite') {
-            // The file comes from what was passed or from DB_SQLITE_PATH - never from DB_DATABASE
-            if (array_key_exists('path', $overrides) || array_key_exists('database', $overrides)) {
-                return self::connect(['driver' => 'sqlite'] + $overrides);
-            }
-
-            $path = self::env('DB_SQLITE_PATH', keepEmpty: true);
-            if ($path === null || $path === '') {
-                throw new ConnectionException(
-                    message: 'Database connection failed',
-                    debugMessage: $path === null
-                        ? 'DB_SQLITE_PATH is not set: set it to ":memory:" for an in-memory database, or to the path of a file'
-                        : 'DB_SQLITE_PATH is set but empty or not a scalar: set it to ":memory:" for an in-memory database, or to the path of a file'
-                );
-            }
-
-            return self::sqlite($path, $config['options'] ?? [], AbstractDriver::validPdoClass($config['pdoClass'] ?? PDO::class));
         }
 
         return self::connect($config);
@@ -240,11 +174,10 @@ class Database
      * first channel that has a value for the key decides; null in $_ENV is no value, as before.
      *
      * @param string $key Environment variable name
-     * @param bool $keepEmpty Return an empty or unusable value as '' instead of null, for a caller that tells that from "not set"
      *
-     * @return string|null Value or null if not set (or empty, unless $keepEmpty)
+     * @return string|null Value or null if not set or empty
      */
-    private static function env(string $key, bool $keepEmpty = false): ?string
+    private static function env(string $key): ?string
     {
         // $_ENV is thread-safe, preferred
         if (isset($_ENV[$key])) {
@@ -259,6 +192,6 @@ class Database
             }
         }
 
-        return $value === '' && !$keepEmpty ? null : $value;
+        return $value === '' ? null : $value;
     }
 }

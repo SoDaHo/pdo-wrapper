@@ -8,8 +8,6 @@ use PDO;
 use PDOException;
 use Sodaho\PdoWrapper\Exception\ConnectionException;
 use Sodaho\PdoWrapper\Exception\QueryException;
-use Sodaho\PdoWrapper\Query\QueryBuilder;
-use Sodaho\PdoWrapper\Query\RawExpression;
 use Throwable;
 
 /**
@@ -295,34 +293,5 @@ class MySqlDriver extends AbstractDriver
     private static function isDeadlock(PDOException $failure): bool
     {
         return ($failure->errorInfo[1] ?? null) === 1213;
-    }
-
-    /**
-     * Get the MySQL quote character (backtick).
-     */
-    protected function getQuoteChar(): string
-    {
-        return '`';
-    }
-
-    protected function getDialect(): string
-    {
-        return QueryBuilder::DIALECT_MYSQL;
-    }
-
-    /**
-     * Current date and time in the session's time zone: `NOW()`.
-     */
-    public function now(): RawExpression
-    {
-        return new RawExpression('NOW()');
-    }
-
-    /**
-     * Current UTC date and time: `UTC_TIMESTAMP()`.
-     */
-    public function utcNow(): RawExpression
-    {
-        return new RawExpression('UTC_TIMESTAMP()');
     }
 }
