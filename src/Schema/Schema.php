@@ -26,8 +26,9 @@ use Sodaho\PdoWrapper\Exception\QueryException;
  * privilege on the database.
  *
  * Names are ordered as the server orders them (utf8mb3_general_ci: without case or accents, `_`
- * after the letters), names equal there by their bytes. They are never compared there: `e` and
- * `é` are two indexes, a UNIQUE named `PRÍMARY` is no primary key (measured).
+ * after the letters), names equal there by their bytes. Index and constraint names are never
+ * compared there: `e` and `é` are two indexes, a UNIQUE named `PRÍMARY` is no primary key
+ * (measured); a table's name is looked up as the server looks up tables.
  *
  * It is no snapshot: a table another connection changes at that moment can show either state, or
  * a mix - the table found, its rows from after the change (none after a DROP: columns() throws,
@@ -44,8 +45,8 @@ final class Schema
 
     /**
      * The tables of the current database, in the server's order of names (utf8mb3_general_ci:
-     * without case or accents, `_` after the letters; where two names differ in case or accents
-     * only - case with lower_case_table_names=0 - by their bytes, so for ASCII names the upper case
+     * without case or accents, `_` after the letters; names equal there - names that differ in
+     * case need lower_case_table_names=0 - by their bytes, so for ASCII names the upper case
      * first).
      *
      * @return list<string>
