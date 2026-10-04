@@ -261,8 +261,10 @@ class SchemaTest extends ContractTestCase
     /**
      * What a user with fewer privileges sees (measured the same on 10.11, 11.4 and 12.3): with
      * SELECT on the database all of it - TABLE_CONSTRAINTS would show no constraint -; with SELECT
-     * on the table no CHECK; with one column only that column and the index and key on it alone;
-     * with DELETE no column, which columns() reports instead of returning none.
+     * on the table no CHECK; with one column only that column and the index and key on it alone -
+     * a key over a further column not, also where its first column has the privilege (constraints()
+     * reads a key by its first column); with DELETE no column, which columns() reports instead of
+     * returning none.
      */
     public function testWhatTheUsersPrivilegesShow(): void
     {
@@ -289,6 +291,13 @@ class SchemaTest extends ContractTestCase
             $this->assertSame(['email'], array_column($column->indexes('meta_parent'), 'name'), 'idx_multi is on n and s');
             $this->assertSame([['name' => 'email', 'type' => 'UNIQUE']], $column->constraints('meta_parent'));
 
+            $this->db->execute('CREATE TABLE meta_keys (id INT PRIMARY KEY, n INT, s INT, UNIQUE KEY u_ns (n, s), CONSTRAINT fk_ns FOREIGN KEY (n, s) REFERENCES meta_keys (n, s))');
+            $first = $this->schemaAs(sprintf('SELECT (id, n) ON `%s`.meta_keys', $database));
+            $this->assertSame(['id', 'n'], array_column($first->columns('meta_keys'), 'name'));
+            $this->assertSame(['PRIMARY'], array_column($first->indexes('meta_keys'), 'name'), 'u_ns is on n and s');
+            $this->assertSame([['name' => 'PRIMARY', 'type' => 'PRIMARY KEY']], $first->constraints('meta_keys'), 'u_ns and fk_ns are on n and s');
+            $this->assertSame(['PRIMARY', 'fk_ns', 'u_ns'], array_column($this->schema()->constraints('meta_keys'), 'name'), 'all of them, for root');
+
             $delete = $this->schemaAs(sprintf('DELETE ON `%s`.meta_parent', $database));
             $this->assertSame(['PRIMARY', 'email', 'idx_multi'], array_column($delete->indexes('meta_parent'), 'name'));
             try {
@@ -299,6 +308,7 @@ class SchemaTest extends ContractTestCase
             }
         } finally {
             $this->db->execute("DROP USER IF EXISTS 'pdo_wrapper_schema'@'%'");
+            $this->db->execute('DROP TABLE IF EXISTS meta_keys');
         }
     }
 
