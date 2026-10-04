@@ -1923,14 +1923,17 @@ abstract class AbstractDriver implements DatabaseInterface
      * with Pdo\Sqlite::createFunction(), a PDO object a subclass put in its place. getPdo() returns
      * the new PDO object; a reference to the old one keeps the old connection open until it is
      * dropped. A persistent connection (PDO::ATTR_PERSISTENT) cannot be discarded: PDO would hand
-     * the same one back. The driver keeps nothing of the old connection; others may: a PDOStatement
-     * of it, an exception of a statement that failed on it (its trace holds the statement while
-     * arguments are kept - the error the end listeners of a refused commit are told, the
-     * CommitFailedException its caller gets), and the call reconnect() is made from (query()
-     * holds its statement while its 'query' and 'error' listeners run, an error handler runs inside
-     * the call into PDO). An error handler that reconnects in the middle of a statement and begins
-     * a transaction there: the statement's failure may be remembered for the new transaction, and
-     * the old statement with it, until that transaction ends (a documented limit).
+     * the same one back. The driver keeps nothing of the old connection (but see the error handler
+     * below); others may: a PDOStatement of it; an exception whose trace holds one, directly or
+     * through another exception, while arguments are kept - a failed statement's exception, the
+     * error the end listeners of a refused commit are told, the CommitFailedException its caller
+     * gets, and the error of the 'lost' told here when reconnect() is called from where such an
+     * exception is an argument (an 'error' listener): an end listener that keeps it keeps the old
+     * connection; and the call reconnect() is made from (query() holds its statement while its
+     * 'query' and 'error' listeners run, an error handler runs inside the call into PDO). An error
+     * handler that reconnects in the middle of a statement and begins a transaction there: the
+     * statement's failure may be remembered for the new transaction, and the old statement with
+     * it, until that transaction ends (a documented limit).
      *
      * @throws ConnectionException When the new connection cannot be opened (the old one stays), the driver was not created with its connection settings (a custom driver that sets $pdo itself), or the connection is persistent
      */
