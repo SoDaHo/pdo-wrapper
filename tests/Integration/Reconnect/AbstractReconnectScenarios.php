@@ -488,6 +488,31 @@ abstract class AbstractReconnectScenarios extends TestCase
         $this->assertSame([false], $alive);
     }
 
+    /**
+     * The handler inside the first question reconnects while the ROLLBACK of the old connection
+     * fails: the old transaction is still there when the outer call goes on, and only the old
+     * connection is rolled back - not the transaction the handler began on its new one.
+     */
+    public function testOnlyTheOldConnectionIsRolledBackWhenAHandlerReconnectedInTheFirstQuestion(): void
+    {
+        $this->db->beginTransaction();
+        $old = $this->scenarioPdo();
+        $old->failRollBackAlways = true;
+        $old->duringInTransaction = function (): void {
+            $this->db->reconnect();
+            $this->db->beginTransaction();
+        };
+        unset($old);
+
+        $this->db->reconnect();
+
+        $this->assertSame(['begin 1', 'end lost 1', 'begin 2'], $this->events);
+        $this->assertTrue($this->db->inTransaction(), "the handler's transaction on its connection");
+        $this->db->insert(self::TABLE, ['id' => 1, 'name' => 'kept']);
+        $this->db->commit();
+        $this->assertSame([1], $this->visible());
+    }
+
     // ---- what reconnect() needs ------------------------------------------------------------------
 
     /**

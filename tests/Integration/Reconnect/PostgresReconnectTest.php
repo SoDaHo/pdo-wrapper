@@ -23,6 +23,44 @@ class PostgresReconnectTest extends AbstractReconnectScenarios
     }
 
     /**
+     * A refused commit keeps its failed statement in its trace (with arguments kept), and the
+     * statement its PDO object: reconnect() forgets what the driver keeps of it, so the old
+     * connection is closed before the end listeners run all the same.
+     */
+    public function testARefusedCommitDoesNotKeepTheOldConnectionOpen(): void
+    {
+        $ignoreArgs = ini_get('zend.exception_ignore_args');
+        ini_set('zend.exception_ignore_args', '0');
+        try {
+            (function (): void {
+                $this->db->beginTransaction();
+                try {
+                    $this->db->query('SELECT * FROM no_such_table_for_reconnect');
+                } catch (\Sodaho\PdoWrapper\Exception\QueryException) {
+                    // aborts the transaction on PostgreSQL: the commit is refused
+                }
+                try {
+                    $this->db->commit();
+                    $this->fail('Expected CommitFailedException');
+                } catch (\Sodaho\PdoWrapper\Exception\CommitFailedException) {
+                    // refused; the driver keeps it
+                }
+            })();
+            $old = \WeakReference::create($this->db->getPdo());
+            $alive = [];
+            $this->db->on('transaction.end', static function () use ($old, &$alive): void {
+                $alive[] = $old->get() !== null;
+            });
+
+            $this->db->reconnect();
+
+            $this->assertSame([false], $alive);
+        } finally {
+            ini_set('zend.exception_ignore_args', (string) $ignoreArgs);
+        }
+    }
+
+    /**
      * The locks of the discarded transaction are released - also while someone still holds the
      * old PDO object, which keeps the old connection open: the ROLLBACK reconnect() sends there.
      */

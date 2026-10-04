@@ -1116,7 +1116,9 @@ class TransactionTest extends TestCase
     /**
      * The 'transaction.begin' listeners are called by beginTransaction() itself, with a payload
      * a listener may take by reference - as trigger() hands it over for the other events. What it
-     * changes there is what the listeners after it are told, as in 2.0.
+     * changes there is what the listeners after it are told, as in 2.0. The numbers are the
+     * library's: one that changes them changes what the later begin listeners are told, not what
+     * the library tells at the end.
      */
     public function testABeginListenerMayTakeItsPayloadByReference(): void
     {
@@ -1124,15 +1126,24 @@ class TransactionTest extends TestCase
         $this->db->on('transaction.begin', static function (array &$data) use (&$seen): void {
             $seen[] = $data;
             $data['marked'] = true;
+            $data['transaction'] = 99;
         });
         $this->db->on('transaction.begin', static function (array $data) use (&$seen): void {
             $seen[] = $data;
         });
+        $this->db->on('transaction.end', static function (array $data) use (&$seen): void {
+            $seen[] = ['end' => $data['transaction']];
+        });
 
         $this->db->beginTransaction();
-        $this->assertSame([['transaction' => 1, 'depth' => 1], ['transaction' => 1, 'depth' => 1, 'marked' => true]], $seen);
         $this->assertTrue($this->db->inTransaction());
         $this->db->rollback();
+
+        $this->assertSame([
+            ['transaction' => 1, 'depth' => 1],
+            ['transaction' => 99, 'depth' => 1, 'marked' => true],
+            ['end' => 1],
+        ], $seen);
     }
 
     /**

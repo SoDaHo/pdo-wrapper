@@ -1917,7 +1917,10 @@ abstract class AbstractDriver implements DatabaseInterface
      * with Pdo\Sqlite::createFunction(), a PDO object a subclass put in its place. getPdo() returns
      * the new PDO object; a reference to the old one keeps the old connection open until it is
      * dropped. A persistent connection (PDO::ATTR_PERSISTENT) cannot be discarded: PDO would hand
-     * the same one back.
+     * the same one back. Others that may still hold the old connection while the end listeners
+     * run: a PDOStatement the caller keeps, and the call reconnect() is made from - a 'query' or
+     * 'error' listener holds the statement it was told about, an error handler in the middle of a
+     * call into PDO holds that call.
      *
      * @throws ConnectionException When the new connection cannot be opened (the old one stays), the driver was not created with its connection settings (a custom driver that sets $pdo itself), or the connection is persistent
      */
@@ -1961,6 +1964,10 @@ abstract class AbstractDriver implements DatabaseInterface
             return;
         }
         unset($old); // the old connection closes at the swap below, before any end listener runs - unless someone else holds it
+        // So does what the driver keeps of it: a remembered failure and a refused commit hold the
+        // failed statement in their trace (with arguments kept), and the statement holds its PDO object
+        $this->suspectFailure = null;
+        $this->thrownByCommit = null;
 
         // What is owed is read now, not before: foreign code inside that ROLLBACK (an error handler)
         // may have ended the transaction through this driver - that call told its end - or begun
@@ -1974,7 +1981,6 @@ abstract class AbstractDriver implements DatabaseInterface
         }
 
         $this->pdo = $new;
-        $this->suspectFailure = null;
         if ($at === null) {
             // Nothing owes its end; a 'lost' told while the transaction might still be open is gone
             // with the old connection
