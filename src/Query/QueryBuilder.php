@@ -1056,24 +1056,44 @@ class QueryBuilder
      * limit()/offset(), distinct() or row lock set on this builder is not part of the statement, so
      * the method refuses to run with one (insert() ignores them); a select() is harmless and ignored.
      *
+     * With $update, a row that collides with an existing one changes it instead (see upsert()):
+     * `INSERT ... SELECT ... FROM DUAL WHERE (condition) ON DUPLICATE KEY UPDATE ...`.
+     *
      * @param array<string, mixed> $data Column => value pairs of the row
      * @param string $condition Trusted condition SQL with ? placeholders
      * @param array<array-key, mixed> $bindings Values for the condition, bound after the row's values
+     * @param array<string, mixed> $update Column => value pairs to set on a duplicate, in this order, bound last
      *
-     * @throws QueryException When a builder clause is set, $data or the condition is empty, a binding is a RawExpression, or the query fails
+     * @throws QueryException When a builder clause is set, $data or the condition is empty, a binding is a RawExpression, $update is given on a connection with ATTR_FOUND_ROWS, or the query fails
      *
-     * @return int Inserted rows: 1 or 0
+     * @return int Inserted rows, 1 or 0; with $update MariaDB's count (1 inserted, 2 updated, 0 neither - insertWhenReturning() tells "condition false" from "unchanged")
      */
-    public function insertWhen(array $data, string $condition, array $bindings = []): int
+    public function insertWhen(array $data, string $condition, array $bindings = [], array $update = []): int
     {
-        if ($this->hasClauses()) {
-            throw new QueryException(
-                message: 'Insert failed',
-                debugMessage: 'insertWhen() takes its condition as an argument; where()/whereRaw(), joins, groupBy()/having(), orderBy(), limit()/offset(), distinct() and locks set on the builder are not part of the statement.'
-            );
-        }
+        $this->refuseClauses('insertWhen', 'takes its condition as an argument');
 
-        return $this->db->insertWhen($this->table, $data, $condition, $bindings);
+        return $this->db->insertWhen($this->table, $data, $condition, $bindings, $update);
+    }
+
+    /**
+     * insertWhen() that returns the row (`... RETURNING <columns>`): the inserted row, with $update
+     * the existing row after the update - or null when the condition was false.
+     *
+     * @param array<string, mixed> $data Column => value pairs of the row
+     * @param string $condition Trusted condition SQL with ? placeholders
+     * @param array<array-key, mixed> $bindings Values for the condition, bound after the row's values
+     * @param array<string, mixed> $update Column => value pairs to set on a duplicate, in this order, bound last
+     * @param list<string|RawExpression> $columns What to return: column names, '*', or expressions without bindings (Database::raw('n * 2 AS twice'))
+     *
+     * @throws QueryException As insertWhen() (not for ATTR_FOUND_ROWS), and when $columns is empty or holds an expression with bindings
+     *
+     * @return array<string, mixed>|null The row, or null when the condition was false
+     */
+    public function insertWhenReturning(array $data, string $condition, array $bindings = [], array $update = [], array $columns = ['*']): ?array
+    {
+        $this->refuseClauses('insertWhenReturning', 'takes its condition as an argument');
+
+        return $this->db->insertWhenReturning($this->table, $data, $condition, $bindings, $update, $columns);
     }
 
     /**
@@ -1091,14 +1111,65 @@ class QueryBuilder
      */
     public function insertIgnore(array $data): int
     {
+        $this->refuseClauses('insertIgnore', 'inserts one row');
+
+        return $this->db->insertIgnore($this->table, $data);
+    }
+
+    /**
+     * Insert a row, or change the row it collides with on any unique key or the primary key, in
+     * one statement: `INSERT INTO t (...) VALUES (...) ON DUPLICATE KEY UPDATE col = ?, ...` (see
+     * InternalMethods::upsert()). MariaDB has no conflict target: a collision on any unique key
+     * counts. The update is rendered in the order of $update and applied from left to right; a
+     * value may be Database::raw() with bindings, Database::value('col') is the value the row
+     * would have been inserted with. Clauses set on the builder throw, as for insertIgnore().
+     *
+     * @param array<string, mixed> $row Column => value pairs of the row
+     * @param array<string, mixed> $update Column => value pairs to set on a duplicate, in this order
+     *
+     * @throws QueryException When builder clauses are set, $row or $update is empty, the connection counts matched rows (ATTR_FOUND_ROWS), or the query fails
+     *
+     * @return int 1 inserted, 2 updated, 0 the existing row already held those values
+     */
+    public function upsert(array $row, array $update): int
+    {
+        $this->refuseClauses('upsert', 'inserts or changes one row');
+
+        return $this->db->upsert($this->table, $row, $update);
+    }
+
+    /**
+     * upsert() that returns the row after the statement (`... RETURNING <columns>`): the inserted
+     * row, or the existing one after the update - also when it already held those values.
+     *
+     * @param array<string, mixed> $row Column => value pairs of the row
+     * @param array<string, mixed> $update Column => value pairs to set on a duplicate, in this order
+     * @param list<string|RawExpression> $columns What to return: column names, '*', or expressions without bindings (Database::raw('n * 2 AS twice'))
+     *
+     * @throws QueryException When builder clauses are set, $row, $update or $columns is empty, a column is an expression with bindings, or the query fails
+     *
+     * @return array<string, mixed> The row
+     */
+    public function upsertReturning(array $row, array $update, array $columns = ['*']): array
+    {
+        $this->refuseClauses('upsertReturning', 'inserts or changes one row');
+
+        return $this->db->upsertReturning($this->table, $row, $update, $columns);
+    }
+
+    /**
+     * The builder's clauses are not part of a single-row insert: refused instead of ignored.
+     *
+     * @throws QueryException When a clause other than select() is set
+     */
+    private function refuseClauses(string $method, string $what): void
+    {
         if ($this->hasClauses()) {
             throw new QueryException(
                 message: 'Insert failed',
-                debugMessage: 'insertIgnore() inserts one row; where()/whereRaw(), joins, groupBy()/having(), orderBy(), limit()/offset(), distinct() and locks set on the builder are not part of the statement.'
+                debugMessage: sprintf('%s() %s; where()/whereRaw(), joins, groupBy()/having(), orderBy(), limit()/offset(), distinct() and locks set on the builder are not part of the statement.', $method, $what)
             );
         }
-
-        return $this->db->insertIgnore($this->table, $data);
     }
 
     /**

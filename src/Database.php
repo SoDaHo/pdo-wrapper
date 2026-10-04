@@ -145,6 +145,19 @@ class Database
     }
 
     /**
+     * The value a row would have been inserted with, inside the update of upsert(),
+     * upsertReturning() and insertWhen() with $update: `VALUE(`col`)`.
+     *
+     * @example
+     * $db->table('counters')->upsert(['key' => 'a', 'n' => 5], ['n' => Database::raw('n + VALUE(n)')]);
+     * $db->table('settings')->upsert(['key' => 'a', 'value' => 'x'], ['value' => Database::value('value')]);
+     */
+    public static function value(string $column): RawExpression
+    {
+        return new RawExpression('VALUE(`' . str_replace('`', '``', $column) . '`)');
+    }
+
+    /**
      * A value inside a JSON column, as text: `JSON_UNQUOTE(JSON_EXTRACT(`payload`, '$.net'))`, for
      * where*(), select() (named with ->as()), groupBy() and orderBy() - in having() use the
      * alias. ->orColumn('ip')

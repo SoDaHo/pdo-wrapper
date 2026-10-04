@@ -2081,22 +2081,108 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
     }
 
     /**
-     * Insert a row only when a condition holds, in one statement.
+     * Insert a row only when a condition holds, in one statement (see InternalMethods::insertWhen()).
      *
      * Renders `INSERT INTO table (...) SELECT ?, ?, ... FROM DUAL WHERE (condition)` (MariaDB needs
-     * `FROM DUAL` before a WHERE without a table). The row's values are bound first, then the
-     * condition's bindings (see InternalMethods::insertWhen()).
+     * `FROM DUAL` before a WHERE without a table), with $update followed by
+     * `ON DUPLICATE KEY UPDATE ...`. Bound in that order: the row's values, the condition's
+     * bindings, the update's values.
      *
      * @param string $table Table name (supports schema.table format)
      * @param array<string, mixed> $data Column => value pairs of the row
      * @param string $condition Trusted condition SQL with ? placeholders (never built from user input)
      * @param array<array-key, mixed> $bindings Values for the condition's placeholders, in order
+     * @param array<string, mixed> $update Column => value pairs to set on a duplicate, in this order
      *
      * @throws QueryException When $data or the condition is empty, a binding is a RawExpression, or the query fails
      *
-     * @return int Inserted rows: 1 or 0
+     * @return int Inserted rows, 1 or 0; with $update MariaDB's count (1 inserted, 2 updated, 0 neither)
      */
-    public function insertWhen(string $table, array $data, string $condition, array $bindings = []): int
+    public function insertWhen(string $table, array $data, string $condition, array $bindings = [], array $update = []): int
+    {
+        [$sql, $params] = $this->conditionalInsert('insertWhen', $table, $data, $condition, $bindings, $update);
+
+        return $this->execute($sql, $params);
+    }
+
+    /**
+     * insertWhen() with `RETURNING` (see InternalMethods::insertWhenReturning()).
+     *
+     * @param string $table Table name (supports schema.table format)
+     * @param array<string, mixed> $data Column => value pairs of the row
+     * @param string $condition Trusted condition SQL with ? placeholders (never built from user input)
+     * @param array<array-key, mixed> $bindings Values for the condition's placeholders, in order
+     * @param array<string, mixed> $update Column => value pairs to set on a duplicate, in this order
+     * @param list<string|RawExpression> $columns What to return: column names, '*', or expressions without bindings
+     *
+     * @throws QueryException When $data, the condition or $columns is empty, a binding is a RawExpression, a column is an expression with bindings, or the query fails
+     *
+     * @return array<string, mixed>|null The row, or null when the condition was false
+     */
+    public function insertWhenReturning(string $table, array $data, string $condition, array $bindings = [], array $update = [], array $columns = ['*']): ?array
+    {
+        [$sql, $params] = $this->conditionalInsert('insertWhenReturning', $table, $data, $condition, $bindings, $update);
+
+        return $this->returnedRow($sql . $this->returningClause('insertWhenReturning', $columns), $params);
+    }
+
+    /**
+     * Insert a row, or change the row it collides with (see InternalMethods::upsert()).
+     *
+     * @param string $table Table name (supports schema.table format)
+     * @param array<string, mixed> $row Column => value pairs of the row
+     * @param array<string, mixed> $update Column => value pairs to set on a duplicate, in this order
+     *
+     * @throws QueryException When $row or $update is empty, or the query fails
+     *
+     * @return int 1 inserted, 2 updated, 0 unchanged
+     */
+    public function upsert(string $table, array $row, array $update): int
+    {
+        [$sql, $params] = $this->upsertStatement('upsert', $table, $row, $update);
+
+        return $this->execute($sql, $params);
+    }
+
+    /**
+     * upsert() with `RETURNING` (see InternalMethods::upsertReturning()).
+     *
+     * @param string $table Table name (supports schema.table format)
+     * @param array<string, mixed> $row Column => value pairs of the row
+     * @param array<string, mixed> $update Column => value pairs to set on a duplicate, in this order
+     * @param list<string|RawExpression> $columns What to return: column names, '*', or expressions without bindings
+     *
+     * @throws QueryException When $row, $update or $columns is empty, a column is an expression with bindings, the server returns no row, or the query fails
+     *
+     * @return array<string, mixed> The row
+     */
+    public function upsertReturning(string $table, array $row, array $update, array $columns = ['*']): array
+    {
+        [$sql, $params] = $this->upsertStatement('upsertReturning', $table, $row, $update);
+        $returned = $this->returnedRow($sql . $this->returningClause('upsertReturning', $columns), $params);
+        if ($returned === null) {
+            // MariaDB returns the row after every upsert (measured); nothing back is not "no row"
+            throw new QueryException(
+                message: 'Insert failed',
+                debugMessage: sprintf('upsertReturning() got no row back | SQL: %s', $sql)
+            );
+        }
+
+        return $returned;
+    }
+
+    /**
+     * The statement of insertWhen() and insertWhenReturning(), and its params in SQL order.
+     *
+     * @param array<string, mixed> $data
+     * @param array<array-key, mixed> $bindings
+     * @param array<string, mixed> $update
+     *
+     * @throws QueryException When $data or the condition is empty, or a binding is a RawExpression
+     *
+     * @return array{0: string, 1: array<int, mixed>}
+     */
+    private function conditionalInsert(string $method, string $table, array $data, string $condition, array $bindings, array $update): array
     {
         if (empty($data)) {
             throw new QueryException(
@@ -2107,20 +2193,19 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
         if (trim($condition) === '') {
             throw new QueryException(
                 message: 'Insert failed',
-                debugMessage: 'insertWhen() needs a condition'
+                debugMessage: sprintf('%s() needs a condition', $method)
             );
         }
         foreach ($bindings as $binding) {
             if ($binding instanceof RawExpression) {
                 throw new QueryException(
                     message: 'Insert failed',
-                    debugMessage: 'insertWhen() binds the condition values; write a raw expression into the condition instead'
+                    debugMessage: sprintf('%s() binds the condition values; write a raw expression into the condition instead', $method)
                 );
             }
         }
 
         [$columns, $values, $params] = $this->buildInsertParts($data);
-
         $sql = sprintf(
             'INSERT INTO %s (%s) SELECT %s FROM DUAL WHERE (%s)',
             $this->quoteIdentifier($table),
@@ -2128,8 +2213,98 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
             $values,
             trim($condition)
         );
+        $params = [...$params, ...array_values($bindings)];
+        if ($update !== []) {
+            [$set, $setParams] = $this->buildSetClause($update);
+            $sql .= ' ON DUPLICATE KEY UPDATE ' . $set;
+            $params = [...$params, ...$setParams];
+        }
 
-        return $this->execute($sql, [...$params, ...array_values($bindings)]);
+        return [$sql, $params];
+    }
+
+    /**
+     * The statement of upsert() and upsertReturning(), and its params in SQL order.
+     *
+     * @param array<string, mixed> $row
+     * @param array<string, mixed> $update
+     *
+     * @throws QueryException When $row or $update is empty
+     *
+     * @return array{0: string, 1: array<int, mixed>}
+     */
+    private function upsertStatement(string $method, string $table, array $row, array $update): array
+    {
+        if (empty($row)) {
+            throw new QueryException(
+                message: 'Insert failed',
+                debugMessage: 'Cannot insert empty data'
+            );
+        }
+        if (empty($update)) {
+            throw new QueryException(
+                message: 'Insert failed',
+                debugMessage: sprintf('%s() needs the columns to change on a duplicate ($update); to keep the existing row, use insertIgnore()', $method)
+            );
+        }
+
+        [$columns, $values, $params] = $this->buildInsertParts($row);
+        [$set, $setParams] = $this->buildSetClause($update);
+
+        return [
+            sprintf('INSERT INTO %s (%s) VALUES (%s) ON DUPLICATE KEY UPDATE %s', $this->quoteIdentifier($table), $columns, $values, $set),
+            [...$params, ...$setParams],
+        ];
+    }
+
+    /**
+     * ` RETURNING <columns>`: a name quoted, '*' as it is, an expression without bindings as it is.
+     *
+     * @param array<array-key, string|RawExpression> $columns
+     *
+     * @throws QueryException When $columns is empty or holds an expression with bindings
+     */
+    private function returningClause(string $method, array $columns): string
+    {
+        if ($columns === []) {
+            throw new QueryException(
+                message: 'Insert failed',
+                debugMessage: sprintf("%s() needs the columns to return: names, '*', or expressions", $method)
+            );
+        }
+        $list = [];
+        foreach ($columns as $column) {
+            if ($column instanceof RawExpression && $column->bindings !== []) {
+                throw new QueryException(
+                    message: 'Insert failed',
+                    debugMessage: sprintf('%s() returns expressions without bindings only: their values would stand after the statement\'s own', $method)
+                );
+            }
+            $list[] = match (true) {
+                $column instanceof RawExpression => (string) $column,
+                $column === '*' => '*',
+                default => $this->quoteIdentifier($column),
+            };
+        }
+
+        return ' RETURNING ' . implode(', ', $list);
+    }
+
+    /**
+     * The one row a RETURNING statement returns, or null when it returns none.
+     *
+     * @param array<int, mixed> $params
+     *
+     * @throws QueryException When the query fails
+     *
+     * @return array<string, mixed>|null
+     */
+    private function returnedRow(string $sql, array $params): ?array
+    {
+        /** @var array<string, mixed>|false $returned */
+        $returned = $this->query($sql, $params)->fetch(PDO::FETCH_ASSOC);
+
+        return $returned !== false ? $returned : null;
     }
 
     /**

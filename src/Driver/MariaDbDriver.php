@@ -243,6 +243,57 @@ class MariaDbDriver extends AbstractDriver
     }
 
     /**
+     * Insert a row, or change the row it collides with (see InternalMethods::upsert()).
+     *
+     * On a connection that counts matched rows (ATTR_FOUND_ROWS) the server reports 1 for an
+     * unchanged existing row, as for an inserted one (measured on 10.11, 11.4 and 12.3): the
+     * statement is not sent there. upsertReturning() is not affected.
+     *
+     * @param array<string, mixed> $row Column => value pairs of the row
+     * @param array<string, mixed> $update Column => value pairs to set on a duplicate, in this order
+     *
+     * @throws QueryException When the connection was opened with ATTR_FOUND_ROWS, $row or $update is empty, or the query fails
+     */
+    public function upsert(string $table, array $row, array $update): int
+    {
+        $this->refuseACountOfMatchedRows('upsert()');
+
+        return parent::upsert($table, $row, $update);
+    }
+
+    /**
+     * Insert a row only when a condition holds (see InternalMethods::insertWhen()). With $update,
+     * not on a connection that counts matched rows (see upsert()).
+     *
+     * @param array<string, mixed> $data Column => value pairs of the row
+     * @param array<array-key, mixed> $bindings Values for the condition's placeholders, in order
+     * @param array<string, mixed> $update Column => value pairs to set on a duplicate, in this order
+     *
+     * @throws QueryException When $update is given on a connection opened with ATTR_FOUND_ROWS, $data or the condition is empty, a binding is a RawExpression, or the query fails
+     */
+    public function insertWhen(string $table, array $data, string $condition, array $bindings = [], array $update = []): int
+    {
+        if ($update !== []) {
+            $this->refuseACountOfMatchedRows('insertWhen() with $update');
+        }
+
+        return parent::insertWhen($table, $data, $condition, $bindings, $update);
+    }
+
+    /**
+     * @throws QueryException When the connection was opened with the driver's ATTR_FOUND_ROWS option
+     */
+    private function refuseACountOfMatchedRows(string $what): void
+    {
+        if ($this->countsFoundRows) {
+            throw new QueryException(
+                message: 'Insert failed',
+                debugMessage: sprintf('%s cannot tell an inserted row from an unchanged existing one on a connection opened with ATTR_FOUND_ROWS: the server reports 1 affected row for both. Use the RETURNING form instead.', $what)
+            );
+        }
+    }
+
+    /**
      * Error 1062 (ER_DUP_ENTRY): duplicate entry for a unique key or the primary key.
      */
     protected function isUniqueViolation(PDOException $failure): bool
