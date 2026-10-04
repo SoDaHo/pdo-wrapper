@@ -54,7 +54,7 @@ $db = Database::mariadb([
 
 ### What Comes Back
 
-The PHP type of a fetched value is pinned, the same on MariaDB 10.11, 11.4 and 12.3, with native and with emulated prepares (measured with PHP 8.5 and mysqlnd, on 64-bit PHP; on a 32-bit build a `BIGINT` outside -2^31 .. 2^31 - 1 cannot arrive as `int`):
+The PHP type of a fetched value is pinned, the same on MariaDB 10.11, 11.4 and 12.3, with native and with emulated prepares (measured with PHP 8.5 and mysqlnd, on 64-bit PHP; on a 32-bit build an integer outside -2^31 .. 2^31 - 1 - a `BIGINT`, an `INT UNSIGNED` - cannot arrive as `int`):
 
 | Column or expression | PHP type |
 |---|---|

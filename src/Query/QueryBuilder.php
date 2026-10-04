@@ -920,8 +920,8 @@ class QueryBuilder
      * @param string $column Column to check
      *
      * @return mixed Minimum value in the driver's native type (MariaDB returns integers for
-     *               integer columns), or null without a value (no rows, or a having() without
-     *               groupBy() that filtered out the one group)
+     *               integer columns), or null without a value (no rows, only NULL, or a having()
+     *               without groupBy() that filtered out the one group)
      */
     public function min(string $column): mixed
     {
@@ -934,8 +934,8 @@ class QueryBuilder
      * @param string $column Column to check
      *
      * @return mixed Maximum value in the driver's native type (MariaDB returns integers for
-     *               integer columns), or null without a value (no rows, or a having() without
-     *               groupBy() that filtered out the one group)
+     *               integer columns), or null without a value (no rows, only NULL, or a having()
+     *               without groupBy() that filtered out the one group)
      */
     public function max(string $column): mixed
     {
