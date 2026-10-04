@@ -205,6 +205,40 @@ class SchemaTest extends ContractTestCase
         }
     }
 
+    /**
+     * Names that differ in accents or a trailing space only are names of their own (the server
+     * takes them, measured): never merged, ordered by their bytes where the server's order has
+     * them equal; a UNIQUE named `PRÍMARY` is no primary key.
+     */
+    public function testNamesThatDifferInAccentsStaySeparate(): void
+    {
+        try {
+            $this->db->execute('CREATE TABLE meta_accent (id INT PRIMARY KEY, a INT, b INT, c INT, pid BIGINT, qid BIGINT, UNIQUE KEY `é` (b), UNIQUE KEY e (a), UNIQUE KEY `PRÍMARY` (c), CONSTRAINT `chk_é` CHECK (a > 0), CONSTRAINT `chk_e ` CHECK (b > 0), CONSTRAINT chk_e CHECK (c > 0), CONSTRAINT `fk_é` FOREIGN KEY (qid) REFERENCES meta_parent (id), CONSTRAINT fk_e FOREIGN KEY (pid) REFERENCES meta_parent (id))');
+
+            $this->assertSame([
+                ['name' => 'PRIMARY', 'columns' => ['id'], 'unique' => true, 'primary' => true],
+                ['name' => 'e', 'columns' => ['a'], 'unique' => true, 'primary' => false],
+                ['name' => 'é', 'columns' => ['b'], 'unique' => true, 'primary' => false],
+                ['name' => 'fk_e', 'columns' => ['pid'], 'unique' => false, 'primary' => false],
+                ['name' => 'fk_é', 'columns' => ['qid'], 'unique' => false, 'primary' => false],
+                ['name' => 'PRÍMARY', 'columns' => ['c'], 'unique' => true, 'primary' => false],
+            ], $this->schema()->indexes('meta_accent'));
+            $this->assertSame([
+                ['name' => 'PRIMARY', 'type' => 'PRIMARY KEY'],
+                ['name' => 'chk_e', 'type' => 'CHECK'],
+                ['name' => 'chk_e ', 'type' => 'CHECK'],
+                ['name' => 'chk_é', 'type' => 'CHECK'],
+                ['name' => 'e', 'type' => 'UNIQUE'],
+                ['name' => 'é', 'type' => 'UNIQUE'],
+                ['name' => 'fk_e', 'type' => 'FOREIGN KEY'],
+                ['name' => 'fk_é', 'type' => 'FOREIGN KEY'],
+                ['name' => 'PRÍMARY', 'type' => 'UNIQUE'],
+            ], $this->schema()->constraints('meta_accent'));
+        } finally {
+            $this->db->execute('DROP TABLE IF EXISTS meta_accent');
+        }
+    }
+
     public function testAnUnknownTableThrows(): void
     {
         $this->db->execute('CREATE SEQUENCE meta_sequence');
@@ -261,7 +295,7 @@ class SchemaTest extends ContractTestCase
                 $delete->columns('meta_parent');
                 $this->fail('Expected QueryException was not thrown');
             } catch (QueryException $e) {
-                $this->assertSame('columns(): the current database shows no column of table "meta_parent" (no SELECT, INSERT, UPDATE or REFERENCES privilege on one)', $e->getDebugMessage());
+                $this->assertSame('columns(): the current database shows no column of table "meta_parent" (no SELECT, INSERT, UPDATE or REFERENCES privilege on one, or the table was dropped meanwhile)', $e->getDebugMessage());
             }
         } finally {
             $this->db->execute("DROP USER IF EXISTS 'pdo_wrapper_schema'@'%'");

@@ -18,15 +18,20 @@ use Sodaho\PdoWrapper\Exception\QueryException;
  * shadows a base table in this session leaves the base table described here, measured).
  *
  * information_schema shows what the user has privileges on (measured, the same on 10.11, 11.4 and
- * 12.3); a user with a privilege on the whole database sees everything. With less: a table
- * without any privilege is no table here; columns() shows the columns with SELECT, INSERT, UPDATE
- * or REFERENCES (on the table or the column) and throws when that leaves none; an index, and a
- * key in constraints(), shows with any privilege on the table, else only when every one of its
- * columns has one; a CHECK constraint shows only with a privilege on the database.
+ * 12.3); a user with SELECT, INSERT, UPDATE or REFERENCES on the whole database sees everything.
+ * With less: a table without any privilege is no table here; columns() shows the columns with
+ * SELECT, INSERT, UPDATE or REFERENCES (on the database, the table or the column) and throws when
+ * that leaves none; an index, and a key in constraints(), shows with any privilege on the table,
+ * else only when every one of its columns has one; a CHECK constraint shows only with a
+ * privilege on the database.
+ *
+ * Names are ordered as the server orders them (utf8mb3_general_ci: without case or accents, `_`
+ * after the letters), names equal there by their bytes. They are never compared there: `e` and
+ * `é` are two indexes, a UNIQUE named `PRÍMARY` is no primary key (measured).
  *
  * It is no snapshot: a table another connection changes at that moment can show either state, or
- * a mix - the table found, its rows from after the change (none after a DROP, a view's columns
- * where a view replaced it).
+ * a mix - the table found, its rows from after the change (none after a DROP: columns() throws,
+ * indexes() and constraints() return none; a view's columns where a view replaced it).
  */
 final class Schema
 {
@@ -39,8 +44,9 @@ final class Schema
 
     /**
      * The tables of the current database, in the server's order of names (utf8mb3_general_ci:
-     * without case or accents, `_` after the letters; where two names differ in case only -
-     * lower_case_table_names=0 - by their bytes, so for ASCII names the upper case first).
+     * without case or accents, `_` after the letters; where two names differ in case or accents
+     * only - case with lower_case_table_names=0 - by their bytes, so for ASCII names the upper case
+     * first).
      *
      * @return list<string>
      */
@@ -77,7 +83,8 @@ final class Schema
      *
      *
      * @throws QueryException When the current database has no such table, or shows none of its
-     *                        columns (no privilege on one - a table has at least one column)
+     *                        columns (no privilege on one - a table has at least one column - or
+     *                        the table was dropped meanwhile)
      *
      * @return list<array{name: string, type: string, nullable: bool, default: string|null, extra: string}>
      */
@@ -96,7 +103,7 @@ final class Schema
         if ($columns === []) {
             throw new QueryException(
                 message: 'Query failed',
-                debugMessage: sprintf('columns(): the current database shows no column of table "%s" (no SELECT, INSERT, UPDATE or REFERENCES privilege on one)', $table)
+                debugMessage: sprintf('columns(): the current database shows no column of table "%s" (no SELECT, INSERT, UPDATE or REFERENCES privilege on one, or the table was dropped meanwhile)', $table)
             );
         }
 
@@ -104,7 +111,7 @@ final class Schema
     }
 
     /**
-     * The indexes of a table - the primary key first, then by name (without case) -, each with
+     * The indexes of a table - the primary key first, then by name -, each with
      * its columns in index order. A UNIQUE without a name of its own is named after its first
      * column. Not shown: a prefix length (`KEY (s(10))` is on `s`), a descending part, whether
      * the index is ignored, its type (FULLTEXT, SPATIAL).
@@ -118,7 +125,7 @@ final class Schema
     {
         /** @var array<string, array{name: string, columns: list<string>, unique: bool, primary: bool}> $indexes */
         $indexes = [];
-        foreach ($this->ofTable('indexes', $table, 5, '5, 2, 6', "SELECT 1, INDEX_NAME, COLUMN_NAME, NON_UNIQUE, INDEX_NAME <> 'PRIMARY', SEQ_IN_INDEX FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?") as $row) {
+        foreach ($this->ofTable('indexes', $table, 6, '5, 2, 6, 7', "SELECT 1, INDEX_NAME, COLUMN_NAME, NON_UNIQUE, BINARY INDEX_NAME <> 'PRIMARY', BINARY INDEX_NAME, SEQ_IN_INDEX FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?") as $row) {
             $name = (string) $row[0];
             $indexes[$name] ??= ['name' => $name, 'columns' => [], 'unique' => $row[2] === 0, 'primary' => $name === 'PRIMARY'];
             $indexes[$name]['columns'][] = (string) $row[1];
@@ -128,8 +135,8 @@ final class Schema
     }
 
     /**
-     * The constraints of a table - the primary key first, then by name (without case) -, with
-     * their type: `PRIMARY KEY`, `UNIQUE`,
+     * The constraints of a table - the primary key first, then by name, then by type (a column's
+     * CHECK and a UNIQUE on it can share a name) -, with their type: `PRIMARY KEY`, `UNIQUE`,
      * `FOREIGN KEY` or `CHECK` (a JSON column brings a CHECK of its own name).
      *
      * Read from KEY_COLUMN_USAGE and CHECK_CONSTRAINTS, not TABLE_CONSTRAINTS: that view shows
@@ -143,17 +150,19 @@ final class Schema
      */
     public function constraints(string $table): array
     {
-        // one row per key, not per column; 'PRIMARY' is no other key's name (1280, measured)
-        $type = "CASE WHEN REFERENCED_TABLE_NAME IS NOT NULL THEN 'FOREIGN KEY' WHEN CONSTRAINT_NAME = 'PRIMARY' THEN 'PRIMARY KEY' ELSE 'UNIQUE' END";
+        // a key by its first column: one row per key, no name compared; a key shows with all its
+        // columns or not at all (measured). Only the primary key is named 'PRIMARY' in its bytes
+        // (1280 for any other key, measured; `PRÍMARY` is a name of its own)
+        $type = "CASE WHEN REFERENCED_TABLE_NAME IS NOT NULL THEN 'FOREIGN KEY' WHEN BINARY CONSTRAINT_NAME = 'PRIMARY' THEN 'PRIMARY KEY' ELSE 'UNIQUE' END";
         $constraints = [];
         foreach ($this->ofTable(
             'constraints',
             $table,
-            3,
-            '4, 2, 3',
-            sprintf("SELECT DISTINCT 1, CONSTRAINT_NAME, %1\$s, %1\$s <> 'PRIMARY KEY' FROM information_schema.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?", $type),
+            4,
+            '4, 2, 5, 3',
+            sprintf("SELECT 1, CONSTRAINT_NAME, %1\$s, %1\$s <> 'PRIMARY KEY', BINARY CONSTRAINT_NAME FROM information_schema.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND ORDINAL_POSITION = 1", $type),
             // CHECK_CONSTRAINTS has no TABLE_SCHEMA; CONSTRAINT_SCHEMA narrows its scan (EXPLAIN, measured)
-            "SELECT 1, CONSTRAINT_NAME, 'CHECK', 1 FROM information_schema.CHECK_CONSTRAINTS WHERE CONSTRAINT_SCHEMA = DATABASE() AND TABLE_NAME = ?"
+            "SELECT 1, CONSTRAINT_NAME, 'CHECK', 1, BINARY CONSTRAINT_NAME FROM information_schema.CHECK_CONSTRAINTS WHERE CONSTRAINT_SCHEMA = DATABASE() AND TABLE_NAME = ?"
         ) as $row) {
             $constraints[] = ['name' => (string) $row[0], 'type' => (string) $row[1]];
         }
