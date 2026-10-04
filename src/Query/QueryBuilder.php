@@ -1065,7 +1065,7 @@ class QueryBuilder
      * @param array<array-key, mixed> $bindings Values for the condition, bound after the row's values
      * @param array<string, mixed> $update Column => value pairs to set on a duplicate, in this order, bound last
      *
-     * @throws QueryException When a builder clause is set, $data or the condition is empty, a binding is a RawExpression, $update is given on a connection with ATTR_FOUND_ROWS, or the query fails
+     * @throws QueryException When a builder clause is set, $data or the condition is empty, a binding is a RawExpression, $update is given on a connection with ATTR_FOUND_ROWS or a persistent one, or the query fails
      *
      * @return int Inserted rows, 1 or 0; with $update MariaDB's count (1 inserted, 2 updated, 0 neither - insertWhenReturning() tells "condition false" from "unchanged")
      */
@@ -1086,7 +1086,7 @@ class QueryBuilder
      * @param array<string, mixed> $update Column => value pairs to set on a duplicate, in this order, bound last
      * @param list<string|RawExpression> $columns What to return: column names, '*', or expressions without bindings (Database::raw('n * 2 AS twice'))
      *
-     * @throws QueryException As insertWhen() (not for ATTR_FOUND_ROWS), and when $columns is empty or holds an expression with bindings
+     * @throws QueryException As insertWhen() (not for ATTR_FOUND_ROWS or a persistent connection), and when $columns is empty or holds an expression with bindings
      *
      * @return array<string, mixed>|null The row, or null when the condition was false
      */
@@ -1106,7 +1106,7 @@ class QueryBuilder
      *
      * @param array<string, mixed> $data Column => value pairs of the row
      *
-     * @throws QueryException When builder clauses are set, $data is empty or the query fails for another reason than a duplicate
+     * @throws QueryException When builder clauses are set, $data is empty, the connection counts matched rows (ATTR_FOUND_ROWS) or may (a persistent one), or the query fails for another reason than a duplicate
      *
      * @return int Inserted rows: 1 or 0
      */
@@ -1128,7 +1128,7 @@ class QueryBuilder
      * @param array<string, mixed> $row Column => value pairs of the row
      * @param array<string, mixed> $update Column => value pairs to set on a duplicate, in this order
      *
-     * @throws QueryException When builder clauses are set, $row or $update is empty, the connection counts matched rows (ATTR_FOUND_ROWS), or the query fails
+     * @throws QueryException When builder clauses are set, $row or $update is empty, the connection counts matched rows (ATTR_FOUND_ROWS) or may (a persistent one), or the query fails
      *
      * @return int 1 inserted, 2 updated, 0 the existing row already held those values
      */

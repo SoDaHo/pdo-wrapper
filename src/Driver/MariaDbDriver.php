@@ -354,7 +354,7 @@ class MariaDbDriver extends AbstractDriver
      *
      * @param string $name The lock's name, without the prefix (see namedLock())
      *
-     * @throws QueryException When the name is empty or the query fails
+     * @throws QueryException When the name is empty or holds a NUL byte, the query fails, or a listener replaced the connection while the statement ran
      *
      * @return bool True when released; false when this connection did not hold it - another one
      *              does, or nobody does (released before, given up with a connection)
@@ -369,7 +369,7 @@ class MariaDbDriver extends AbstractDriver
      *
      * @param string $name The lock's name, without the prefix (see namedLock())
      *
-     * @throws QueryException When the name is empty or the query fails
+     * @throws QueryException When the name is empty or holds a NUL byte, the query fails, or a listener replaced the connection while the statement ran
      */
     public function isNamedLockHeld(string $name): bool
     {
@@ -403,7 +403,7 @@ class MariaDbDriver extends AbstractDriver
     /**
      * The name of a named lock on the server: prefixed with the configured database.
      *
-     * @throws QueryException When the name is empty
+     * @throws QueryException When the name is empty or holds a NUL byte
      */
     private function lockName(string $method, string $name): string
     {

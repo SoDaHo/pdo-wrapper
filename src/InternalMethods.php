@@ -80,7 +80,7 @@ interface InternalMethods
      * @param array<string, mixed> $update Column => value pairs to set on a duplicate, in this order
      * @param list<string|Query\RawExpression> $columns What to return: column names, '*', or expressions without bindings (Database::raw('n * 2 AS twice'))
      *
-     * @throws Exception\QueryException As insertWhen() (not for ATTR_FOUND_ROWS), and when $columns is empty or holds an expression with bindings
+     * @throws Exception\QueryException As insertWhen() (not for ATTR_FOUND_ROWS or a persistent connection), and when $columns is empty or holds an expression with bindings
      *
      * @return array<string, mixed>|null The row, or null when the condition was false
      */
