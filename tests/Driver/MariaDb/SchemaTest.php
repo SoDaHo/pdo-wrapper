@@ -4,9 +4,12 @@ declare(strict_types=1);
 
 namespace Sodaho\PdoWrapper\Tests\Driver\MariaDb;
 
+use Sodaho\PdoWrapper\Database;
 use Sodaho\PdoWrapper\Driver\MariaDbDriver;
 use Sodaho\PdoWrapper\Exception\QueryException;
+use Sodaho\PdoWrapper\Schema\Schema;
 use Sodaho\PdoWrapper\Tests\Contract\ContractTestCase;
+use Sodaho\PdoWrapper\Tests\Support\TestEnvironment;
 
 /**
  * schema(): the tables of the current database, their columns, indexes and constraints, as
@@ -36,7 +39,7 @@ class SchemaTest extends ContractTestCase
         $this->db->execute('DROP TABLE IF EXISTS meta_parent');
     }
 
-    private function schema(): \Sodaho\PdoWrapper\Schema\Schema
+    private function schema(): Schema
     {
         $this->assertInstanceOf(MariaDbDriver::class, $this->db);
 
@@ -56,7 +59,8 @@ class SchemaTest extends ContractTestCase
 
     /**
      * Table names that differ in case only (lower_case_table_names=0, Linux): two tables, listed
-     * upper case first, never mixed - hasTable() and columns() take the name as written.
+     * upper case first, never mixed - hasTable(), columns() and constraints() take the name as
+     * written.
      */
     public function testTableNamesThatDifferInCase(): void
     {
@@ -66,13 +70,15 @@ class SchemaTest extends ContractTestCase
         $this->db->execute('DROP TABLE IF EXISTS Meta_Case');
         $this->db->execute('DROP TABLE IF EXISTS meta_case');
         try {
-            $this->db->execute('CREATE TABLE meta_case (id INT PRIMARY KEY, a INT)');
-            $this->db->execute('CREATE TABLE Meta_Case (ID INT PRIMARY KEY, b INT)');
+            $this->db->execute('CREATE TABLE meta_case (id INT PRIMARY KEY, a INT CHECK (a > 0))');
+            $this->db->execute('CREATE TABLE Meta_Case (ID INT PRIMARY KEY, b INT UNIQUE)');
 
             $this->assertSame(['Meta_Case', 'meta_case'], array_values(array_filter($this->schema()->tables(), static fn (string $table): bool => strtolower($table) === 'meta_case')));
             $this->assertFalse($this->schema()->hasTable('META_CASE'));
             $this->assertSame(['id', 'a'], array_column($this->schema()->columns('meta_case'), 'name'));
             $this->assertSame(['ID', 'b'], array_column($this->schema()->columns('Meta_Case'), 'name'));
+            $this->assertSame([['name' => 'PRIMARY', 'type' => 'PRIMARY KEY'], ['name' => 'a', 'type' => 'CHECK']], $this->schema()->constraints('meta_case'));
+            $this->assertSame([['name' => 'PRIMARY', 'type' => 'PRIMARY KEY'], ['name' => 'b', 'type' => 'UNIQUE']], $this->schema()->constraints('Meta_Case'));
         } finally {
             $this->db->execute('DROP TABLE IF EXISTS Meta_Case');
             $this->db->execute('DROP TABLE IF EXISTS meta_case');
@@ -111,7 +117,7 @@ class SchemaTest extends ContractTestCase
     {
         $this->db->execute('CREATE DATABASE IF NOT EXISTS pdo_wrapper_schema_other');
         try {
-            $this->db->execute('CREATE TABLE pdo_wrapper_schema_other.meta_parent (other_id INT PRIMARY KEY, other_col INT, UNIQUE KEY other_unique (other_col))');
+            $this->db->execute('CREATE TABLE pdo_wrapper_schema_other.meta_parent (other_id INT PRIMARY KEY, other_col INT, UNIQUE KEY other_unique (other_col), CONSTRAINT other_check CHECK (other_col > 0))');
 
             $this->assertSame(['id', 'email', 'n', 's', 'z', 'created_at', 'j', 'v'], array_column($this->schema()->columns('meta_parent'), 'name'));
             $this->assertSame(['PRIMARY', 'email', 'idx_multi'], array_column($this->schema()->indexes('meta_parent'), 'name'));
@@ -174,17 +180,103 @@ class SchemaTest extends ContractTestCase
         ], $this->schema()->constraints('meta_child'));
     }
 
+    /**
+     * Index and constraint names in the server's order, without case; a key over two columns is one
+     * constraint; a column's CHECK and a UNIQUE may share a name, and a foreign key the name of the
+     * UNIQUE index it uses - the type orders those.
+     */
+    public function testIndexAndConstraintNamesOrderWithoutCase(): void
+    {
+        try {
+            $this->db->execute('CREATE TABLE meta_order (id INT PRIMARY KEY, a INT CHECK (a > 0), b INT, pid BIGINT, KEY Zeta (b), KEY idx (a), UNIQUE KEY Beta (a, b), UNIQUE KEY a (a), UNIQUE KEY x (pid), CONSTRAINT x FOREIGN KEY (pid) REFERENCES meta_parent (id), CONSTRAINT Alpha CHECK (b > 0))');
+
+            $this->assertSame(['PRIMARY', 'a', 'Beta', 'idx', 'x', 'Zeta'], array_column($this->schema()->indexes('meta_order'), 'name'));
+            $this->assertSame([
+                ['name' => 'PRIMARY', 'type' => 'PRIMARY KEY'],
+                ['name' => 'a', 'type' => 'CHECK'],
+                ['name' => 'a', 'type' => 'UNIQUE'],
+                ['name' => 'Alpha', 'type' => 'CHECK'],
+                ['name' => 'Beta', 'type' => 'UNIQUE'],
+                ['name' => 'x', 'type' => 'FOREIGN KEY'],
+                ['name' => 'x', 'type' => 'UNIQUE'],
+            ], $this->schema()->constraints('meta_order'));
+        } finally {
+            $this->db->execute('DROP TABLE IF EXISTS meta_order');
+        }
+    }
+
     public function testAnUnknownTableThrows(): void
     {
-        foreach (['columns', 'indexes', 'constraints'] as $method) {
-            foreach (['no_such_table', 'meta_view'] as $table) {
-                try {
-                    $this->schema()->{$method}($table);
-                    $this->fail("Expected QueryException: {$method}({$table})");
-                } catch (QueryException $e) {
-                    $this->assertSame(sprintf('%s(): the current database has no table "%s"', $method, $table), $e->getDebugMessage());
+        $this->db->execute('CREATE SEQUENCE meta_sequence');
+        try {
+            foreach (['columns', 'indexes', 'constraints'] as $method) {
+                foreach (['no_such_table', 'meta_view', 'meta_sequence'] as $table) {
+                    try {
+                        $this->schema()->{$method}($table);
+                        $this->fail("Expected QueryException: {$method}({$table})");
+                    } catch (QueryException $e) {
+                        $this->assertSame(sprintf('%s(): the current database has no table "%s"', $method, $table), $e->getDebugMessage());
+                    }
                 }
             }
+        } finally {
+            $this->db->execute('DROP SEQUENCE IF EXISTS meta_sequence');
         }
+    }
+
+    /**
+     * What a user with fewer privileges sees (measured the same on 10.11, 11.4 and 12.3): with
+     * SELECT on the database all of it - TABLE_CONSTRAINTS would show no constraint -; with SELECT
+     * on the table no CHECK; with one column only that column and the index and key on it alone;
+     * with DELETE no column, which columns() reports instead of returning none.
+     */
+    public function testWhatTheUsersPrivilegesShow(): void
+    {
+        $database = (string) $this->db->query('SELECT DATABASE()')->fetchColumn();
+        try {
+            $this->db->execute("DROP USER IF EXISTS 'pdo_wrapper_schema'@'%'");
+        } catch (QueryException $e) {
+            $this->markTestSkipped('the test user may not manage users: ' . $e->getDebugMessage());
+        }
+        try {
+            $everything = $this->schemaAs(sprintf('SELECT ON `%s`.*', $database));
+            $this->assertSame($this->schema()->columns('meta_parent'), $everything->columns('meta_parent'));
+            $this->assertSame($this->schema()->indexes('meta_parent'), $everything->indexes('meta_parent'));
+            $this->assertSame($this->schema()->constraints('meta_parent'), $everything->constraints('meta_parent'));
+            $this->assertSame($this->schema()->constraints('meta_child'), $everything->constraints('meta_child'));
+
+            $table = $this->schemaAs(sprintf('SELECT ON `%s`.meta_parent', $database));
+            $this->assertSame(['PRIMARY', 'email', 'idx_multi'], array_column($table->indexes('meta_parent'), 'name'));
+            $this->assertSame([['name' => 'PRIMARY', 'type' => 'PRIMARY KEY'], ['name' => 'email', 'type' => 'UNIQUE']], $table->constraints('meta_parent'), 'no CHECK');
+            $this->assertFalse($table->hasTable('meta_child'));
+
+            $column = $this->schemaAs(sprintf('SELECT (email, n) ON `%s`.meta_parent', $database));
+            $this->assertSame(['email', 'n'], array_column($column->columns('meta_parent'), 'name'));
+            $this->assertSame(['email'], array_column($column->indexes('meta_parent'), 'name'), 'idx_multi is on n and s');
+            $this->assertSame([['name' => 'email', 'type' => 'UNIQUE']], $column->constraints('meta_parent'));
+
+            $delete = $this->schemaAs(sprintf('DELETE ON `%s`.meta_parent', $database));
+            $this->assertSame(['PRIMARY', 'email', 'idx_multi'], array_column($delete->indexes('meta_parent'), 'name'));
+            try {
+                $delete->columns('meta_parent');
+                $this->fail('Expected QueryException was not thrown');
+            } catch (QueryException $e) {
+                $this->assertSame('columns(): the current database shows no column of table "meta_parent" (no SELECT, INSERT, UPDATE or REFERENCES privilege on one)', $e->getDebugMessage());
+            }
+        } finally {
+            $this->db->execute("DROP USER IF EXISTS 'pdo_wrapper_schema'@'%'");
+        }
+    }
+
+    /**
+     * schema() on a new connection of a user with just this privilege.
+     */
+    private function schemaAs(string $grant): Schema
+    {
+        $this->db->execute("DROP USER IF EXISTS 'pdo_wrapper_schema'@'%'");
+        $this->db->execute("CREATE USER 'pdo_wrapper_schema'@'%' IDENTIFIED BY 'schema'");
+        $this->db->execute(sprintf("GRANT %s TO 'pdo_wrapper_schema'@'%%'", $grant));
+
+        return Database::mariadb(['username' => 'pdo_wrapper_schema', 'password' => 'schema'] + TestEnvironment::mariadb())->schema();
     }
 }
