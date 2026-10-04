@@ -175,7 +175,6 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      * The configured class of the PDO object the driver creates, or a ConnectionException: the
      * name is used with new, where anything but a class that can stand in for PDO would end in an
      * Error - or in an object the driver cannot use. The message names the key, never the value.
-     * Public for Database::connect() and fromEnv(), which check the key of a SQLite config with it.
      *
      * @internal
      *
@@ -212,7 +211,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      * and a resource as "Resource id #n"): pass an enum's value, a formatted date, an encoded array.
      * So is a RawExpression: bound, it would arrive as its own text; write it into the SQL.
      *
-     * After a failure that ended the open transaction on the server for certain (a MySQL/MariaDB
+     * After a failure that ended the open transaction on the server for certain (a MariaDB
      * deadlock, see transactionIsOver()) nothing is sent until that transaction is ended here -
      * by rollback(), or by a refused commit() that tells 'lost'; for a transaction begun on raw PDO
      * also once PDO reports none: the statement throws, with that failure as previous, and fires
@@ -236,8 +235,8 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
             $afterExecute = $this->afterExecute[2];
         }
 
-        // The server has thrown the open transaction away (a MySQL/MariaDB deadlock): what would be sent
-        // now would run outside of it and be committed on its own. PostgreSQL refuses by itself.
+        // The server has thrown the open transaction away (a MariaDB deadlock): what would be sent
+        // now would run outside of it and be committed on its own.
         if ($this->suspectFailure !== null && $this->deadTransactionPending()) {
             throw new QueryException(
                 message: 'Query failed',
@@ -365,8 +364,8 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
 
     /**
      * Whether the failure is a violated UNIQUE constraint or primary key (a duplicate row); the
-     * statement then fails with a UniqueViolationException. The drivers of this library know
-     * their database's code for it; the default knows none.
+     * statement then fails with a UniqueViolationException. MariaDbDriver knows MariaDB's code
+     * for it; the default knows none.
      */
     protected function isUniqueViolation(PDOException $failure): bool
     {
@@ -466,10 +465,9 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
 
     /**
      * Which statement failure commit() shall ask transactionEndedBy() about: one that may have
-     * ended the open transaction on the server although PDO still reports it. PostgreSQL aborts
-     * the transaction on every error, MySQL/MariaDB roll it back on a deadlock (and on a lock wait
-     * timeout when configured so); the server would then answer COMMIT with success for a
-     * transaction that no longer holds the work.
+     * ended the open transaction on the server although PDO still reports it. MariaDB rolls it
+     * back on a deadlock (and on a lock wait timeout when configured so); the server would then
+     * answer COMMIT with success for a transaction that no longer holds the work.
      *
      * @param PDOException|null $remembered What is remembered so far in this transaction
      * @param PDOException $failure The failure that just happened
@@ -514,12 +512,12 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
 
     /**
      * Whether the remembered failure has ended the transaction on the server for certain, known
-     * from the failure alone (no statement is sent to find out): a MySQL/MariaDB deadlock. Until
+     * from the failure alone (no statement is sent to find out): a MariaDB deadlock. Until
      * that transaction is ended here (see deadTransactionPending()), query() sends nothing more -
      * every statement throws - and beginTransaction() refuses; no hook fires for the refused
      * statement (the failure itself was told to the 'error' hook).
      * False where the server only undid the statement or may have (a lock wait timeout), and where
-     * the server refuses further statements by itself (PostgreSQL).
+     * the server refuses further statements by itself.
      */
     protected function transactionIsOver(PDOException $failure): bool
     {
@@ -532,7 +530,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      * on raw PDO while no 'lost' is pending - and that failure does not settle the matter by
      * itself (transactionIsOver()): make PDO know whether the transaction still exists, and say whether
      * its report can be relied on now. For a driver whose client learns nothing about the
-     * transaction from a failed statement (MySQL/MariaDB: a statement with an implicit commit
+     * transaction from a failed statement (MariaDB: a statement with an implicit commit
      * commits the open transaction even when it fails, and the server's error carries no status)
      * - on raw PDO, so that no hook sees it. rollback() reads PDO afterwards: no transaction any
      * more means 'lost'. False - the driver could not find out - means 'lost' as well: the
@@ -545,8 +543,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
 
     /**
      * Asked by commit() about the failure failureToRemember() kept: why the transaction cannot be
-     * committed any more, or null when it still can (a savepoint caught the failure, the server
-     * only undid the statement). Where the failure itself does not settle it, ask the server.
+     * committed any more, or null when it still can (the server only undid the statement). Where the failure itself does not settle it, ask the server.
      */
     protected function transactionEndedBy(PDOException $failure): ?string
     {
@@ -596,12 +593,11 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
 
     /**
      * Bind the parameters and execute the prepared statement: PDOStatement::execute($params), every
-     * value bound as text, a boolean as '1' or '0'. PDO alone sends false as '', which MySQL in strict
-     * mode and PostgreSQL reject for a numeric or boolean column. Text rather than a typed binding:
-     * PARAM_INT makes MySQL compare a text column numerically ('abc' = 0 is true), and PARAM_BOOL
-     * reaches PostgreSQL as 't'/'f', which an integer column rejects (measured on MySQL 8.0,
-     * MariaDB 11.4 and PostgreSQL 15). A driver overrides this when its database needs typed bindings;
-     * what query() lets through to it is decided by unbindableParameter().
+     * value bound as text, a boolean as '1' or '0'. PDO alone sends false as '', which MariaDB in
+     * strict mode rejects for a numeric column. Text rather than a typed binding: PARAM_INT makes
+     * MariaDB compare a text column numerically, 'abc' = 0 is true (measured on MariaDB 11.4). A
+     * driver overrides this when its database needs typed bindings; what query() lets through to
+     * it is decided by unbindableParameter().
      *
      * @param array<int|string, mixed> $params Positional (0-based) or named parameters
      *
@@ -694,7 +690,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
     /**
      * Get the last inserted ID.
      *
-     * @param string|null $name Sequence name (PostgreSQL) or null
+     * @param string|null $name Ignored by MariaDB (PDO's sequence name)
      *
      * @throws QueryException If PDO fails to retrieve the ID
      *
@@ -705,7 +701,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
         try {
             $id = $this->pdo->lastInsertId($name);
             if ($id === false) {
-                // Non-exception error mode: a failed sequence lookup aborts a PostgreSQL transaction all the same
+                // Non-exception error mode: remembered all the same, like the thrown failure below
                 $this->noteStatementFailure($this->silentFailure('PDO::lastInsertId() returned false', $this->pdo->errorInfo()));
             }
 
@@ -865,7 +861,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      * asked for. A listener that ended it would leave that work outside of any transaction, or
      * inside one somebody began afterwards - the call fails instead. Ended through this driver
      * (commit(), rollback()), its end has been told; ended behind the driver's back (an implicit
-     * commit by a DDL statement on MySQL/MariaDB, raw PDO), it is told as 'lost' by the caller's
+     * commit by a DDL statement on MariaDB, raw PDO), it is told as 'lost' by the caller's
      * catch, with the exception thrown here. An unreadable state is not "gone".
      *
      * @throws TransactionException When the transaction with that number is no longer open
@@ -873,7 +869,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
     private function failIfNoLongerOpen(int $number): void
     {
         // Before PDO is read: after a statement of the listener that failed, PDO may report a
-        // transaction the server has ended (on MySQL/MariaDB a failing DDL statement commits it)
+        // transaction the server has ended (on MariaDB a failing DDL statement commits it)
         $known = $this->askAfterAFailedStatement();
 
         if (!$this->stillTheTransaction($number)) {
@@ -1153,9 +1149,8 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
     /**
      * A failed or refused commit leaves the transaction to the caller - unless nothing is left:
      * when PDO reports no transaction any more (the server ended it and a later statement or the
-     * driver's question told PDO; a COMMIT the server answered with a rollback, as PostgreSQL does
-     * for a deferred constraint; a COMMIT or DDL statement on raw PDO), no rollback() could end it,
-     * and its end would never be told. It ends here as 'lost', with the failure as error;
+     * driver's question told PDO; a COMMIT or DDL statement on raw PDO), no rollback() could end
+     * it, and its end would never be told. It ends here as 'lost', with the failure as error;
      * transaction() then finds nothing left to end.
      */
     private function endFailedCommitIfGone(CommitFailedException $failure, bool $wasOpen, int $ended, int $number): void
@@ -1274,7 +1269,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      * a listener left open is rolled back before the next listener runs (best effort) - directly
      * on PDO, because dispatching transaction.rollback here would tell rollback listeners that
      * the committed transaction was rolled back. If that rollback fails or leaves the connection
-     * in a transaction (MySQL completion_type=CHAIN opens the next one), or inTransaction() itself
+     * in a transaction (completion_type=CHAIN opens the next one), or inTransaction() itself
      * fails, the connection state is unknown: the remaining listeners are skipped and the
      * transaction may still be open. A left-open transaction begun through this driver gets its
      * own 'transaction.end' ('rolled_back', or 'lost' when the cleanup failed or the state could not
@@ -1346,7 +1341,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
                         self::TRANSACTION_LOST,
                         new TransactionException(
                             message: 'Transaction ended outside this library',
-                            debugMessage: 'A transaction.commit listener began a transaction through this driver, and PDO reported none after the listener: it was committed or rolled back on raw PDO, or by an implicit commit (a DDL statement on MySQL/MariaDB).'
+                            debugMessage: 'A transaction.commit listener began a transaction through this driver, and PDO reported none after the listener: it was committed or rolled back on raw PDO, or by an implicit commit (a DDL statement).'
                         ),
                         $this->transactionAtHand(),
                     ];
@@ -1366,7 +1361,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
                         debugMessage: 'PDO::rollBack() returned false'
                     );
                 } elseif ($this->pdo->inTransaction()) {
-                    // e.g. MySQL completion_type=CHAIN: the rollback opened the next transaction
+                    // e.g. completion_type=CHAIN: the rollback opened the next transaction
                     $cleanupError = new TransactionException(
                         message: 'Failed to rollback transaction',
                         debugMessage: 'connection still in a transaction after PDO::rollBack()'
@@ -1406,8 +1401,8 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
 
     /**
      * The failure to report when PDO says the connection is in a transaction right after a COMMIT
-     * or ROLLBACK went through: the session chains transactions (MySQL/MariaDB
-     * completion_type=CHAIN), so everything that follows would run in a transaction nobody began
+     * or ROLLBACK went through: the session chains transactions
+     * (completion_type=CHAIN), so everything that follows would run in a transaction nobody began
      * and nobody commits. Null when PDO reports none; an unreadable state is not judged here.
      */
     private function chainedTransaction(string $statement): ?TransactionException
@@ -1423,7 +1418,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
         return new TransactionException(
             message: 'Connection is in a new transaction',
             debugMessage: sprintf(
-                'PDO reports a transaction right after %s: the session chains transactions (MySQL/MariaDB completion_type=CHAIN), which this library does not support. Roll the new transaction back and set completion_type to NO_CHAIN.',
+                'PDO reports a transaction right after %s: the session chains transactions (completion_type=CHAIN), which this library does not support. Roll the new transaction back and set completion_type to NO_CHAIN.',
                 $statement
             )
         );
@@ -1462,7 +1457,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      * 'transaction.end' reports 'lost' with the remembered failure as error, and its listeners'
      * failures reach only the 'error' hook (as on every 'lost'). The same holds after any other
      * failed statement when the driver, asked before the ROLLBACK (refreshTransactionState()),
-     * finds the transaction gone: on MySQL/MariaDB a statement with an implicit commit that failed
+     * finds the transaction gone: on MariaDB a statement with an implicit commit that failed
      * has committed it, and the rows written before it are in the database. When the driver
      * cannot find out, the ROLLBACK is sent all the same, but 'lost' is told and no rollback
      * listener runs: it confirms nothing. A transaction PDO reports right after the ROLLBACK is a
@@ -1493,7 +1488,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
         // without the client knowing: a ROLLBACK that "succeeds" then would be taken for the
         // confirmation that nothing is committed. The driver gets to ask (refreshTransactionState());
         // when PDO reports no transaction afterwards, the end is told as 'lost' - no rollback is
-        // confirmed, and on MySQL/MariaDB what a statement with an implicit commit committed on its
+        // confirmed, and on MariaDB what a statement with an implicit commit committed on its
         // way to failing is in the database. When PDO reports none already, nothing is asked: the
         // ROLLBACK fails as before.
         $unconfirmed = null;
@@ -1654,19 +1649,18 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      *   the callback did not run; after a throwing listener a rollback is attempted (best effort);
      *   the exception is re-thrown, a PDOException from the listener as TransactionException;
      * - the callback threw: rollback attempted, the callback's exception is re-thrown
-     *   (best effort: if the rollback fails, the transaction may still be open). Measured on MySQL 8.0
-     *   and MariaDB 11.4 with mysqlnd: after a deadlock (the server rolled the transaction back) and
+     *   (best effort: if the rollback fails, the transaction may still be open). Measured on
+     *   MariaDB 11.4 with mysqlnd: after a deadlock (the server rolled the transaction back) and
      *   after a lock wait timeout (the server rolled back only the statement) PDO still reports the
      *   transaction, so the rollback is sent, the transaction.rollback listeners run and
      *   transaction.end reports 'rolled_back'; after a lost connection the rollback fails, no
      *   rollback listener runs, PDO still reported the transaction, and transaction.end reports 'lost';
      * - the callback swallowed a statement error that ended the transaction on the server
-     *   (PostgreSQL: any error no savepoint caught; MySQL/MariaDB: a deadlock, or a lock wait
-     *   timeout under innodb_rollback_on_timeout): the commit is refused before it is sent and the
-     *   CommitFailedException is thrown, instead of a COMMIT the server answers with success. While
-     *   PDO still reports the transaction the rollback follows and transaction.end reports
-     *   'rolled_back'; on MySQL/MariaDB, once PDO knows that the transaction is gone - from a
-     *   statement on raw PDO after a deadlock, or from the question to the server after another
+     *   (a deadlock, or a lock wait timeout under innodb_rollback_on_timeout): the commit is
+     *   refused before it is sent and the CommitFailedException is thrown, instead of a COMMIT the
+     *   server answers with success. While PDO still reports the transaction the rollback follows
+     *   and transaction.end reports 'rolled_back'; once PDO knows that the transaction is gone - from
+     *   a statement on raw PDO after a deadlock, or from the question to the server after another
      *   failure (the lock wait timeout: statements the callback ran after it were committed on
      *   their own) - nothing is left to roll back and transaction.end reports 'lost'. Through
      *   this library nothing is sent between a deadlock and the rollback;
@@ -1675,9 +1669,8 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      *   succeeded (nothing was committed) and 'lost' when it failed too (the commit may or may not
      *   have taken effect), with the commit's exception as error. When PDO reports no transaction
      *   after the failed commit, transaction.end reports 'lost' as well, fail-closed: that is what
-     *   PostgreSQL leaves behind when COMMIT fails on a deferred constraint (the server rolled back),
-     *   but also what a callback leaves behind that committed itself with a raw COMMIT or a MySQL DDL
-     *   statement (the data is committed, PDO::commit() then fails with "no active transaction").
+     *   a callback leaves behind that committed itself with a raw COMMIT or a DDL statement (the
+     *   data is committed, PDO::commit() then fails with "no active transaction").
      *   In both commit cases the exception's $outcome is the outcome transaction.end reported:
      *   only 'rolled_back' says that nothing is committed;
      * - the callback ended the transaction itself through this driver (commit() or rollback()), or a
@@ -1783,8 +1776,8 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
 
             throw $e;
         } catch (Throwable $e) {
-            // The commit itself failed; some drivers (e.g. SQLite) keep the transaction open. While
-            // the transaction still owes its end, rollbackQuietly() tells one - and whoever tells it
+            // The commit itself failed; the transaction may still be open. While the
+            // transaction still owes its end, rollbackQuietly() tells one - and whoever tells it
             // takes the failed commit and writes the outcome into it. When the failed or refused
             // commit found the transaction gone, it has told the end itself (endFailedCommitIfGone()):
             // nothing is left to end, and a transaction PDO reports now is one an end listener began.
@@ -1919,11 +1912,10 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      *
      * What belonged to the old session is gone: settings made with SQL (SET SESSION ...; give them
      * to the connection as options instead - Pdo\Mysql::ATTR_INIT_COMMAND runs on every connect),
-     * temporary tables, an in-memory SQLite database - and what was done to the old PDO object
-     * after the driver created it: attributes set with getPdo()->setAttribute(), functions added
-     * with Pdo\Sqlite::createFunction(), a PDO object a subclass put in its place. getPdo() returns
-     * the new PDO object; a reference to the old one keeps the old connection open until it is
-     * dropped. A persistent connection (PDO::ATTR_PERSISTENT) cannot be discarded: PDO would hand
+     * temporary tables - and what was done to the old PDO object after the driver created it:
+     * attributes set with getPdo()->setAttribute(), a PDO object a subclass put in its place.
+     * getPdo() returns the new PDO object; a reference to the old one keeps the old connection
+     * open until it is dropped. A persistent connection (PDO::ATTR_PERSISTENT) cannot be discarded: PDO would hand
      * the same one back. The driver keeps nothing of the old connection (but see the error handler
      * below); others may: a PDOStatement of it; an exception whose trace holds one, directly or
      * through another exception, while arguments are kept - a failed statement's exception, the
@@ -2072,7 +2064,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
             return 0; // a PDO driver that has no ID to report
         }
 
-        // Not (int): the cast cuts what does not fit. MySQL/MariaDB report a BIGINT UNSIGNED ID above
+        // Not (int): the cast cuts what does not fit. MariaDB reports a BIGINT UNSIGNED ID above
         // PHP_INT_MAX as it is, and a negative ID written into an AUTO_INCREMENT column as a number
         // of that size.
         $id = filter_var($lastId, FILTER_VALIDATE_INT);
@@ -2383,10 +2375,10 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      * Quote an identifier (table/column name).
      *
      * Handles schema.table and table.column format:
-     * - "users" -> "users"
-     * - "public.users" -> "public"."users"
+     * - users -> `users`
+     * - shop.users -> `shop`.`users`
      *
-     * Override in driver for DB-specific quoting (e.g., backticks for MySQL).
+     * Identifiers are quoted with backticks (MariaDB); a backtick inside a name is doubled.
      *
      * @param string $identifier Table or column name
      *

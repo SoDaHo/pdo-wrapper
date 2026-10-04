@@ -21,7 +21,7 @@ interface DatabaseInterface
      * @param string $sql SQL query with placeholders
      * @param array<int|string, mixed> $params Parameters to bind
      *
-     * @throws Exception\QueryException When the statement fails (also when PDO reports that without an exception), when a parameter is not null, a scalar or a Stringable object or is a Query\RawExpression (the statement is not sent), when the server has thrown the open transaction away (after a MySQL/MariaDB deadlock nothing is sent until that transaction is ended: by rollback(), by a refused commit() that tells 'lost', and for a transaction begun on raw PDO also once PDO reports none), or when a 'query' listener threw a PDOException ('Query hook failed': the statement did run)
+     * @throws Exception\QueryException When the statement fails (also when PDO reports that without an exception), when a parameter is not null, a scalar or a Stringable object or is a Query\RawExpression (the statement is not sent), when the server has thrown the open transaction away (after a deadlock or a 1020 - see MariaDbDriver - nothing is sent until that transaction is ended: by rollback(), by a refused commit() that tells 'lost', and for a transaction begun on raw PDO also once PDO reports none), or when a 'query' listener threw a PDOException ('Query hook failed': the statement did run)
      */
     public function query(string $sql, array $params = []): PDOStatement;
 
@@ -59,10 +59,8 @@ interface DatabaseInterface
 
     /**
      * Current date and time of the database in local time at statement time, to the second, as a
-     * raw SQL expression for insert()/update()/where() values: MySQL `NOW()`, PostgreSQL
-     * `CAST(statement_timestamp() AS TIMESTAMP(0))`, SQLite `datetime('now', 'localtime')`.
-     * "Local" is the session's or server's time zone (SQLite: the operating system's), not PHP's
-     * date.timezone. A zoneless value: meant for DATETIME / TIMESTAMP WITHOUT TIME ZONE / TEXT columns.
+     * raw SQL expression for insert()/update()/where() values: `NOW()`. "Local" is the session's
+     * or server's time zone, not PHP's date.timezone. A zoneless value: meant for DATETIME columns.
      */
     public function now(): Query\RawExpression;
 
@@ -75,13 +73,13 @@ interface DatabaseInterface
      * transaction itself: one it began afterwards is left open, with its end owed. A listener that
      * ended the transaction it was told about without throwing makes the call fail as well, and no
      * further listener runs: the caller would go on outside of the transaction it asked for (an
-     * end behind this library's back - a DDL statement on MySQL/MariaDB, raw PDO - is told as
+     * end behind this library's back - a DDL statement on MariaDB, raw PDO - is told as
      * 'lost' first). A transaction begun through
      * this library that PDO no longer reports (an implicit commit by a DDL statement, ended by the
-     * server or on raw PDO) is told as 'transaction.end' 'lost' first - except after a MySQL/MariaDB
+     * server or on raw PDO) is told as 'transaction.end' 'lost' first - except after a MariaDB
      * deadlock: then beginTransaction() refuses, and rollback() tells that end.
      *
-     * @throws Exception\TransactionException When the transaction cannot be started (including PDO reporting the failure without throwing), when a transaction begun through this library was rolled back by the server (a MySQL/MariaDB deadlock) and has not been ended with rollback() yet, a listener threw a PDOException, or a listener ended the transaction it was told about
+     * @throws Exception\TransactionException When the transaction cannot be started (including PDO reporting the failure without throwing), when a transaction begun through this library was rolled back by the server (a deadlock or a 1020) and has not been ended with rollback() yet, a listener threw a PDOException, or a listener ended the transaction it was told about
      * @throws \Throwable Re-throws any other exception of a 'transaction.begin' listener
      */
     public function beginTransaction(): void;
@@ -110,14 +108,13 @@ interface DatabaseInterface
      * leaves as the handler's exception instead (see Traits\HasHooks).
      *
      * The commit is refused (CommitFailedException, no COMMIT sent) when a statement failed inside
-     * the transaction in a way that ended it on the server: any statement error on PostgreSQL that
-     * no savepoint caught, a deadlock on MySQL/MariaDB (or, with autocommit on, a lock wait
-     * timeout under innodb_rollback_on_timeout). The server would answer that COMMIT with success. While PDO
-     * still reports the transaction, nothing fires and it stays refused until rollback(); when
-     * PDO reports none any more (MySQL/MariaDB: a statement on raw PDO, or the question to the
-     * server before the commit, told it), nothing is left to roll back and the refusal tells
-     * 'transaction.end' 'lost'. When the connection is in a transaction
-     * right after the COMMIT (MySQL/MariaDB completion_type=CHAIN, not supported), the commit
+     * the transaction in a way that ended it on the server: a deadlock on MariaDB (or, with
+     * autocommit on, a lock wait timeout under innodb_rollback_on_timeout). The server would
+     * answer that COMMIT with success. While PDO still reports the transaction, nothing fires and
+     * it stays refused until rollback(); when PDO reports none any more (a statement on raw PDO,
+     * or the question to the server before the commit, told it), nothing is left to roll back
+     * and the refusal tells 'transaction.end' 'lost'. When the connection is in a transaction
+     * right after the COMMIT (completion_type=CHAIN, not supported), the commit
      * listeners are skipped and a CommitHookException reports it. See Traits\HasHooks.
      *
      * @throws Exception\CommitFailedException When the commit itself failed (it may or may not have taken effect), or was refused because the server had already ended the transaction (nothing of that transaction is committed; statements run on raw PDO after its end are). A TransactionException
@@ -131,17 +128,17 @@ interface DatabaseInterface
      * After a confirmed rollback the 'transaction.rollback' listeners run, then 'transaction.end'
      * with outcome 'rolled_back' (error null; not when a 'lost' was already reported for this
      * transaction). Not confirmed, and told as 'lost' without rollback listeners: after a statement
-     * failed inside the transaction, MySQL/MariaDB are asked whether it still exists before the
+     * failed inside the transaction, MariaDB is asked whether it still exists before the
      * ROLLBACK is sent (a statement with an implicit commit commits it even when it fails) - when
      * it is gone, nothing is sent; when the question fails, the ROLLBACK is sent all the same but
      * proves nothing (the end listeners' failures on such a 'lost' reach only the 'error' hook). A rollback listener's exception takes precedence and passes through unchanged
      * (a PDOException as TransactionException); the end listeners' failures then reach only the
-     * 'error' hook. A failed rollback fires nothing. After a MySQL/MariaDB deadlock rollback() also
+     * 'error' hook. A failed rollback fires nothing. After a MariaDB deadlock rollback() also
      * ends a transaction begun through this library that PDO no longer reports (a statement on raw
      * PDO told it): nothing is sent, no rollback listener runs, and 'transaction.end' reports 'lost'
      * with the deadlock as error (its listeners' failures then reach only the 'error' hook).
      * When the connection is in a transaction right
-     * after the ROLLBACK (MySQL/MariaDB completion_type=CHAIN, not supported), that is reported as
+     * after the ROLLBACK (completion_type=CHAIN, not supported), that is reported as
      * TransactionException after the listeners ran, unless a rollback listener threw.
      *
      * @throws Exception\TransactionException On failure, when the connection is in a new, chained transaction afterwards, or when a transaction.end listener failed after a confirmed rollback and no rollback listener did (the first failure; all of them reach the 'error' hook)
@@ -159,19 +156,18 @@ interface DatabaseInterface
      *   the callback did not run; after a throwing listener a rollback is attempted (best effort);
      *   the exception is re-thrown, a PDOException from the listener as TransactionException;
      * - the callback threw: rollback attempted, the callback's exception is re-thrown
-     *   (best effort: if the rollback fails, the transaction may still be open). Measured on MySQL 8.0
-     *   and MariaDB 11.4 with mysqlnd: after a deadlock (the server rolled the transaction back) and
+     *   (best effort: if the rollback fails, the transaction may still be open). Measured on
+     *   MariaDB 11.4 with mysqlnd: after a deadlock (the server rolled the transaction back) and
      *   after a lock wait timeout (the server rolled back only the statement) PDO still reports the
      *   transaction, so the rollback is sent, the transaction.rollback listeners run and
      *   transaction.end reports 'rolled_back'; after a lost connection the rollback fails, no
      *   rollback listener runs, PDO still reported the transaction, and transaction.end reports 'lost';
      * - the callback swallowed a statement error that ended the transaction on the server
-     *   (PostgreSQL: any error no savepoint caught; MySQL/MariaDB: a deadlock, or a lock wait
-     *   timeout under innodb_rollback_on_timeout): the commit is refused before it is sent and the
-     *   CommitFailedException is thrown, instead of a COMMIT the server answers with success. While
-     *   PDO still reports the transaction the rollback follows and transaction.end reports
-     *   'rolled_back'; on MySQL/MariaDB, once PDO knows that the transaction is gone - from a
-     *   statement on raw PDO after a deadlock, or from the question to the server after another
+     *   (a deadlock, or a lock wait timeout under innodb_rollback_on_timeout): the commit is
+     *   refused before it is sent and the CommitFailedException is thrown, instead of a COMMIT the
+     *   server answers with success. While PDO still reports the transaction the rollback follows
+     *   and transaction.end reports 'rolled_back'; once PDO knows that the transaction is gone - from
+     *   a statement on raw PDO after a deadlock, or from the question to the server after another
      *   failure (the lock wait timeout: statements the callback ran after it were committed on
      *   their own) - nothing is left to roll back and transaction.end reports 'lost'. Through
      *   this library nothing is sent between a deadlock and the rollback;
@@ -180,9 +176,8 @@ interface DatabaseInterface
      *   succeeded (nothing was committed) and 'lost' when it failed too (the commit may or may not
      *   have taken effect), with the commit's exception as error. When PDO reports no transaction
      *   after the failed commit, transaction.end reports 'lost' as well, fail-closed: that is what
-     *   PostgreSQL leaves behind when COMMIT fails on a deferred constraint (the server rolled back),
-     *   but also what a callback leaves behind that committed itself with a raw COMMIT or a MySQL DDL
-     *   statement (the data is committed, PDO::commit() then fails with "no active transaction").
+     *   a callback leaves behind that committed itself with a raw COMMIT or a DDL statement (the
+     *   data is committed, PDO::commit() then fails with "no active transaction").
      *   In both commit cases the exception's $outcome is the outcome transaction.end reported:
      *   only 'rolled_back' says that nothing is committed;
      * - the callback ended the transaction itself through this library (commit() or rollback()), or a
@@ -269,17 +264,16 @@ interface DatabaseInterface
      *                                  a QueryException after the insert when the ID the database reports is no integer of PHP
      *
      * @return int Last insert ID, 0 when the database generated none (a table without
-     *             AUTO_INCREMENT, a PostgreSQL table without the {table}_id_seq sequence)
+     *             AUTO_INCREMENT)
      */
     public function insert(string $table, array $data): int;
 
     /**
      * Update rows matching WHERE conditions.
      *
-     * The assignments are written in the order of $data. MySQL/MariaDB evaluate them left to
-     * right (a later one sees the value an earlier one set), PostgreSQL and SQLite compute all of
-     * them from the row as it was. The conditions are equalities joined with AND; for NULL tests,
-     * comparisons, IN or LIKE use the query builder (table()).
+     * The assignments are written in the order of $data. MariaDB evaluates them left to right (a
+     * later one sees the value an earlier one set). The conditions are equalities joined with AND;
+     * for NULL tests, comparisons, IN or LIKE use the query builder (table()).
      *
      * @param string $table Table name
      * @param array<string, mixed> $data Column => value pairs to update
@@ -287,7 +281,7 @@ interface DatabaseInterface
      *
      * @throws Exception\QueryException When $where is empty (safety), a condition value is null, or the query fails (an Exception\UniqueViolationException for a duplicate key)
      *
-     * @return int Number of affected rows as the database counts them: MySQL/MariaDB count the rows actually changed, PostgreSQL and SQLite the rows matched
+     * @return int Number of affected rows as the database counts them: MariaDB counts the rows actually changed
      */
     public function update(string $table, array $data, array $where): int;
 

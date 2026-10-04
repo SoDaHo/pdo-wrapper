@@ -10,7 +10,7 @@ use Throwable;
  * Thrown when the transaction was committed, but a 'transaction.commit' or 'transaction.end'
  * listener failed, the connection state could not be verified or cleaned up after a commit
  * listener, or the connection was in a new transaction right after the COMMIT (a session that
- * chains transactions, MySQL/MariaDB completion_type=CHAIN: no commit listener ran, the first
+ * chains transactions, completion_type=CHAIN: no commit listener ran, the first
  * failure says so).
  *
  * The data is committed; the committed transaction cannot be rolled back (a transaction a commit
@@ -35,8 +35,8 @@ class CommitHookException extends DatabaseException
      * @param list<Throwable> $failures All failures in listener order
      * @param bool $connectionInTransaction True when the connection is, or may still be, in a transaction:
      *                                      one a commit listener left open whose rollback failed or did not
-     *                                      end it, one the session chained to the COMMIT (MySQL
-     *                                      completion_type=CHAIN), or the connection state could not be
+     *                                      end it, one the session chained to the COMMIT
+     *                                      (completion_type=CHAIN), or the connection state could not be
      *                                      read (reported as true, fail-closed). Do not run
      *                                      further statements as if the connection were in autocommit then:
      *                                      check inTransaction() and roll back, or discard the connection.

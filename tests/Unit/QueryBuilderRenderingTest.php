@@ -98,6 +98,16 @@ class QueryBuilderRenderingTest extends TestCase
         $this->assertSame('SELECT * FROM `users` LIMIT 10 OFFSET 5', $sql);
     }
 
+    public function testNowAndUtcNowAreMariaDbsFunctions(): void
+    {
+        $db = new class () extends AbstractDriver {
+        };
+
+        $this->assertSame('NOW()', (string) $db->now());
+        $this->assertSame('UTC_TIMESTAMP()', (string) $db->utcNow());
+        $this->assertSame('SELECT * FROM `users` WHERE `created_at` < NOW()', $db->table('users')->where('created_at', '<', $db->now())->toSql()[0]);
+    }
+
     public function testRowLocks(): void
     {
         [$sql] = $this->builder()->where('id', 1)->limit(1)->lockForUpdate()->toSql();

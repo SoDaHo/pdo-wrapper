@@ -12,13 +12,12 @@ use Throwable;
  *
  * What the database said stands in two properties, as PDO reports it: $sqlState and $driverCode.
  * getCode() is always 0: PHP's exception code is an integer and cannot hold an SQLSTATE such as
- * '42S02', and one number that means the SQLSTATE on one database and something else on the
- * next would invite comparisons that silently fail.
+ * '42S02'.
  */
 class DatabaseException extends Exception
 {
     /**
-     * The SQLSTATE of the database failure behind this exception - '42S02', '23505', 'HY000' -
+     * The SQLSTATE of the database failure behind this exception - '42S02', '23000', 'HY000' -
      * or null when no database failure stands behind it (a refused argument) and where this
      * library puts the exception around what a listener threw after the operation went through
      * ('Query hook failed', CommitHookException, a failing rollback or end listener): the codes say
@@ -32,10 +31,8 @@ class DatabaseException extends Exception
     public readonly ?string $sqlState;
 
     /**
-     * The driver's own error code for that failure, or null: on MySQL/MariaDB the server's error
-     * number (1062 duplicate entry, 1146 no such table, 1213 deadlock), on SQLite the result code
-     * (19 constraint, 1 generic). PostgreSQL has none of its own - PDO reports 7 for every failure;
-     * use $sqlState there.
+     * The driver's own error code for that failure, or null: MariaDB's error number (1062
+     * duplicate entry, 1146 no such table, 1213 deadlock).
      */
     public readonly ?int $driverCode;
 

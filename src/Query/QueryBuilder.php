@@ -29,8 +29,8 @@ class QueryBuilder
     /**
      * Escape character of every LIKE the builder renders, the one Database::escapeLike() writes.
      * It is bound (`LIKE ? ESCAPE ?`), never written into the SQL: a backslash literal means
-     * different things depending on the engine and its SQL mode (MySQL's NO_BACKSLASH_ESCAPES),
-     * a bound value means the same everywhere.
+     * different things depending on the SQL mode (NO_BACKSLASH_ESCAPES), a bound value means the
+     * same everywhere.
      */
     private const LIKE_ESCAPE = '\\';
 
@@ -129,11 +129,10 @@ class QueryBuilder
     /**
      * Lock the selected rows for update (SELECT ... FOR UPDATE) until the transaction ends.
      *
-     * MySQL/MariaDB and PostgreSQL render the clause; SQLite has no row locks and omits it (its
-     * write lock covers the whole database file). Aggregates (count() etc.) drop the lock, as
-     * PostgreSQL rejects FOR UPDATE with aggregates; exists() keeps it. Not allowed together with
-     * distinct(), groupBy() or having() (QueryException). Use inside a transaction, otherwise the
-     * lock ends with the statement.
+     * Aggregates (count() etc.) drop the lock - an aggregate returns no row a caller could go on
+     * to change; exists() keeps it. Not allowed together with distinct(), groupBy() or having()
+     * (QueryException): such a result is not the rows the lock would hold. Use inside a
+     * transaction, otherwise the lock ends with the statement.
      */
     public function lockForUpdate(): self
     {
@@ -143,7 +142,7 @@ class QueryBuilder
 
     /**
      * Lock the selected rows against updates by others while allowing concurrent reads:
-     * MySQL/MariaDB `LOCK IN SHARE MODE`, PostgreSQL `FOR SHARE`, SQLite omitted (see lockForUpdate()).
+     * `LOCK IN SHARE MODE` (see lockForUpdate()).
      */
     public function sharedLock(): self
     {
@@ -572,7 +571,7 @@ class QueryBuilder
      *
      * @param int $limit Maximum number of rows (0 or more)
      *
-     * @throws QueryException When $limit is negative (SQLite would read it as "no limit", the others reject it)
+     * @throws QueryException When $limit is negative (MariaDB rejects it)
      */
     public function limit(int $limit): self
     {
@@ -592,7 +591,7 @@ class QueryBuilder
      *
      * @param int $offset Number of rows to skip (0 or more)
      *
-     * @throws QueryException When $offset is negative (SQLite would read it as 0, the others reject it)
+     * @throws QueryException When $offset is negative (MariaDB rejects it)
      */
     public function offset(int $offset): self
     {
@@ -725,8 +724,8 @@ class QueryBuilder
     {
         $this->assertLockIsPortable();
 
-        // HAVING without GROUP BY needs an aggregate projection (SQLite rejects "SELECT 1 ... HAVING",
-        // PostgreSQL would judge an empty overall group): keep the COUNT(*) evaluation there.
+        // HAVING without GROUP BY makes the whole set one group (see count()): keep the COUNT(*)
+        // evaluation there.
         if (!empty($this->having) && empty($this->groupBy)) {
             return $this->count() > 0;
         }
@@ -769,12 +768,10 @@ class QueryBuilder
 
     /**
      * The alias of a select() entry as a comparison key, or null: a trailing `AS name`. In a raw
-     * expression the name may be bare, double-quoted or backtick-quoted: a quoted one is
-     * case-sensitive on PostgreSQL, so only bare names are folded to lower case. In a string
-     * entry quoteIdentifier() renders the alias quoted: MySQL/MariaDB and SQLite compare column
-     * names without case all the same (folded), PostgreSQL and ANSI SQL tell "Total" from "total"
-     * - there a name with an upper-case letter gets the key of a quoted name, and one without is
-     * the name a bare alias folds to.
+     * expression the name may be bare, double-quoted or backtick-quoted: a bare name is folded to
+     * lower case, a quoted one keeps its quote character and its case. In a string entry
+     * quoteIdentifier() renders the alias quoted, and its key is folded like a column name
+     * (quotedNameKey()).
      */
     private function aliasKey(string|RawExpression $entry): ?string
     {
@@ -837,18 +834,17 @@ class QueryBuilder
      * Get the count of matching records.
      *
      * With distinct(): the number of distinct rows of the selected columns (or COUNT(DISTINCT col)
-     * for a column). The select() must yield unique output names (MySQL rejects repeated ones in the
+     * for a column). The select() must yield unique output names (MariaDB rejects repeated ones in the
      * counted derived table): two entries with the same column name or alias, a wildcard next to other
      * entries, or a bare "*" over a join throw a QueryException; alias the columns. A single "table.*"
      * is allowed, raw() entries are not inspected.
      *
      * With groupBy(): the number of groups, having() included; the column argument is irrelevant then.
      * Only aliased select() entries ("col as x", raw('COUNT(*) AS n'); scalar or aggregate expressions,
-     * one per alias) stay in the counted query, so groupBy() may refer to an alias, and having() where
-     * the database allows it (MySQL/MariaDB and SQLite; PostgreSQL rejects select aliases in HAVING).
+     * one per alias) stay in the counted query, so groupBy() and having() may refer to an alias
+     * (MariaDB accepts select aliases in HAVING).
      * having() without groupBy() makes the whole set one group: count() is its row count and distinct()
-     * only applies to count('column') then (a non-aggregated select() is rejected by every driver in
-     * that case).
+     * only applies to count('column') then.
      *
      * @param string $column Column to count (default: *)
      *
@@ -864,22 +860,19 @@ class QueryBuilder
      * Get the sum of a column, as the database delivers it.
      *
      * Not converted: a float would lose what the database computed exactly - a sum of BIGINT
-     * values above 2^53, a DECIMAL sum. MySQL/MariaDB send the sum of integer and DECIMAL columns
-     * as a numeric string ('75', '0.3000'); PostgreSQL sends an integer for a sum of INT columns
-     * and a numeric string for BIGINT and NUMERIC sums; SQLite sends an integer, or a float once
-     * a value is no integer (it has no decimal type). A FLOAT/DOUBLE column gives a float on
-     * every database. Cast where a number is wanted: (int), (float), or pass the string to an
-     * arbitrary-precision library.
+     * values above 2^53, a DECIMAL sum. MariaDB sends the sum of integer and DECIMAL columns as a
+     * numeric string ('75', '0.3000'), and a float for a FLOAT/DOUBLE column. Cast where a number
+     * is wanted: (int), (float), or pass the string to an arbitrary-precision library.
      *
      * With distinct(): SUM(DISTINCT col). With groupBy() the value is ambiguous (one per group) and a
      * QueryException is thrown; the same holds for avg(), min() and max().
      *
      * @param string $column Column to sum
      *
-     * @return int|float|string|null The sum in the driver's native type, or null without a value
-     *                               (no rows, or only NULL)
+     * @return float|string|null The sum as MariaDB delivers it, or null without a value (no rows,
+     *                           or only NULL)
      */
-    public function sum(string $column): int|float|string|null
+    public function sum(string $column): float|string|null
     {
         return self::numberAsDelivered($this->aggregate('SUM', $column));
     }
@@ -887,27 +880,27 @@ class QueryBuilder
     /**
      * Get the average of a column, as the database delivers it.
      *
-     * MySQL/MariaDB and PostgreSQL send a numeric string whose number of decimals is the
-     * database's ('1.5000', '1.5000000000000000') and a float for a FLOAT/DOUBLE column; SQLite
-     * always sends a float. See sum().
+     * MariaDB sends a numeric string whose number of decimals is the database's ('1.5000') and a
+     * float for a FLOAT/DOUBLE column. See sum().
      *
      * @param string $column Column to average
      *
-     * @return int|float|string|null The average in the driver's native type, or null without a
-     *                               value (no rows, or only NULL)
+     * @return float|string|null The average as MariaDB delivers it, or null without a value (no
+     *                           rows, or only NULL)
      */
-    public function avg(string $column): int|float|string|null
+    public function avg(string $column): float|string|null
     {
         return self::numberAsDelivered($this->aggregate('AVG', $column));
     }
 
     /**
-     * What a driver returns for a numeric aggregate: an integer, a float or a numeric string -
-     * handed on as it is. Null for SQL NULL (no rows, or only NULL).
+     * What MariaDB returns for SUM() and AVG(): a numeric string (they are DECIMAL for integer and
+     * DECIMAL columns) or a float (for FLOAT and DOUBLE) - handed on as it is. Null for SQL NULL
+     * (no rows, or only NULL).
      */
-    private static function numberAsDelivered(mixed $value): int|float|string|null
+    private static function numberAsDelivered(mixed $value): float|string|null
     {
-        return is_int($value) || is_float($value) || is_string($value) ? $value : null;
+        return is_float($value) || is_string($value) ? $value : null;
     }
 
     /**
@@ -915,9 +908,8 @@ class QueryBuilder
      *
      * @param string $column Column to check
      *
-     * @return mixed Minimum value in the driver's native type (PostgreSQL returns numeric and
-     *               date/time values as strings, MySQL and SQLite return integers for integer
-     *               columns), or null if no rows
+     * @return mixed Minimum value in the driver's native type (MariaDB returns integers for
+     *               integer columns), or null if no rows
      */
     public function min(string $column): mixed
     {
@@ -929,9 +921,8 @@ class QueryBuilder
      *
      * @param string $column Column to check
      *
-     * @return mixed Maximum value in the driver's native type (PostgreSQL returns numeric and
-     *               date/time values as strings, MySQL and SQLite return integers for integer
-     *               columns), or null if no rows
+     * @return mixed Maximum value in the driver's native type (MariaDB returns integers for
+     *               integer columns), or null if no rows
      */
     public function max(string $column): mixed
     {
@@ -949,14 +940,14 @@ class QueryBuilder
         $query->limit = null;
         $query->offset = null;
         $query->orderBy = [];
-        $query->lock = null; // PostgreSQL rejects FOR UPDATE with aggregates
+        $query->lock = null; // an aggregate returns no row a caller could go on to change
 
         if (!empty($this->groupBy)) {
             // One value per group is ambiguous for sum()/avg()/min()/max(); count() means "how many groups"
             // (having() applies): one row per group of the grouped select, counted in a derived table.
             // Only aliased select() entries stay in the inner select (one per alias), so that having() and
             // groupBy() can refer to the aliases; everything else is dropped: it does not affect the number
-            // of groups, and unaliased or repeated entries could repeat column names, which MySQL rejects
+            // of groups, and unaliased or repeated entries could repeat column names, which MariaDB rejects
             // in a derived table. DISTINCT is dropped too: it could merge groups with equal projections.
             if ($function !== 'COUNT') {
                 throw new QueryException(
@@ -974,7 +965,7 @@ class QueryBuilder
         } elseif ($this->distinct && $column === '*' && empty($this->having)) {
             // count() of the distinct rows: count the distinct select itself (with having() but no
             // groupBy() the whole set is one group: that case takes the plain aggregate path below).
-            // The derived table needs unique output names (MySQL rejects repeated ones): what is
+            // The derived table needs unique output names (MariaDB rejects repeated ones): what is
             // statically visible is checked, raw entries are not inspected.
             $conflict = $this->distinctOutputNameConflict();
             if ($conflict !== null) {
@@ -1335,8 +1326,8 @@ class QueryBuilder
 
         $sql .= $this->orderByClause();
 
-        // LIMIT / OFFSET (typed as ?int, enforced by PHP's type system); MySQL and SQLite need a
-        // LIMIT before an OFFSET, so an offset() without limit() gets MariaDB's "no limit" value
+        // LIMIT / OFFSET (typed as ?int, enforced by PHP's type system); MariaDB needs a LIMIT
+        // before an OFFSET, so an offset() without limit() gets its "no limit" value
         if ($this->limit !== null) {
             $sql .= ' LIMIT ' . $this->limit;
         } elseif ($this->offset !== null) {
@@ -1373,7 +1364,8 @@ class QueryBuilder
     }
 
     /**
-     * PostgreSQL rejects row locks with DISTINCT, GROUP BY and HAVING; keep the builder portable.
+     * A row lock is refused with DISTINCT, GROUP BY and HAVING: such a result is not the rows the
+     * lock would hold.
      *
      * @throws QueryException When a row lock is combined with distinct(), groupBy() or having()
      */
@@ -1382,7 +1374,7 @@ class QueryBuilder
         if ($this->lock !== null && ($this->distinct || !empty($this->groupBy) || !empty($this->having))) {
             throw new QueryException(
                 message: 'Query failed',
-                debugMessage: 'lockForUpdate()/sharedLock() cannot be combined with distinct(), groupBy() or having() (not portable across databases). Lock the rows with a plain select first.'
+                debugMessage: 'lockForUpdate()/sharedLock() cannot be combined with distinct(), groupBy() or having() (such a result is not the rows the lock would hold). Lock the rows with a plain select first.'
             );
         }
     }
@@ -1573,8 +1565,7 @@ class QueryBuilder
      *
      * The alias is quoted like every other name: it is then the same name wherever the builder
      * refers to it (orderBy(), groupBy(), a column of an aliased table - all rendered quoted), a
-     * reserved word is a valid alias, and the result key is the alias as written on every
-     * database (PostgreSQL folds a bare alias to lower case).
+     * reserved word is a valid alias, and the result key is the alias as written.
      */
     private function quoteIdentifier(string $identifier): string
     {
@@ -1586,7 +1577,7 @@ class QueryBuilder
         // Escape character: double the quote char (standard SQL escaping)
         $escape = self::QUOTE . self::QUOTE;
 
-        // Handle table.column format; "users.*" keeps its wildcard: "users".*
+        // Handle table.column format; "users.*" keeps its wildcard: `users`.*
         if (str_contains($identifier, '.')) {
             $parts = explode('.', $identifier);
             return implode('.', array_map(

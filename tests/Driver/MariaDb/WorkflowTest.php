@@ -177,7 +177,7 @@ class WorkflowTest extends ContractTestCase
     public function testDatabaseQualifiedTableName(): void
     {
         // MySQL tables can be accessed with database.table syntax
-        $id = $this->db->insert('pdo_wrapper_test.users', [
+        $id = $this->db->insert(TestEnvironment::mariadb()['database'] . '.users', [
             'email' => 'dbqualified@test.com',
             'name' => 'DB Qualified Test',
         ]);
@@ -185,21 +185,21 @@ class WorkflowTest extends ContractTestCase
         $this->assertNotEmpty($id);
 
         // findOne with database prefix
-        $user = $this->db->findOne('pdo_wrapper_test.users', ['id' => $id]);
+        $user = $this->db->findOne(TestEnvironment::mariadb()['database'] . '.users', ['id' => $id]);
         $this->assertNotNull($user);
         $this->assertSame('DB Qualified Test', $user['name']);
 
         // update with database prefix
-        $affected = $this->db->update('pdo_wrapper_test.users', ['name' => 'Updated'], ['id' => $id]);
+        $affected = $this->db->update(TestEnvironment::mariadb()['database'] . '.users', ['name' => 'Updated'], ['id' => $id]);
         $this->assertSame(1, $affected);
 
         // findAll with database prefix
-        $users = $this->db->findAll('pdo_wrapper_test.users', ['id' => $id]);
+        $users = $this->db->findAll(TestEnvironment::mariadb()['database'] . '.users', ['id' => $id]);
         $this->assertCount(1, $users);
         $this->assertSame('Updated', $users[0]['name']);
 
         // delete with database prefix
-        $deleted = $this->db->delete('pdo_wrapper_test.users', ['id' => $id]);
+        $deleted = $this->db->delete(TestEnvironment::mariadb()['database'] . '.users', ['id' => $id]);
         $this->assertSame(1, $deleted);
     }
 
@@ -214,7 +214,7 @@ class WorkflowTest extends ContractTestCase
         ]);
 
         // Query using database.table
-        $result = $this->db->table('pdo_wrapper_test.users')
+        $result = $this->db->table(TestEnvironment::mariadb()['database'] . '.users')
             ->where('id', $id)
             ->first();
 

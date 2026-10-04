@@ -36,16 +36,16 @@ use Sodaho\PdoWrapper\Exception\DatabaseException;
  * listed as failures (see AbstractDriver) - and an end listener's as described below.
  * 'transaction.rollback' listeners run only after a rollback this library performed and that
  * succeeded (rollback(), or the automatic rollback in transaction()/updateMultiple()). Measured on
- * MySQL 8.0 and MariaDB 11.4 with mysqlnd: after a deadlock (transaction rolled back by the server)
+ * MariaDB 11.4 with mysqlnd: after a deadlock (transaction rolled back by the server)
  * and after a lock wait timeout (only the statement rolled back) PDO still reports the transaction,
  * the library's ROLLBACK succeeds and the listeners run; after a lost connection the rollback fails,
  * no 'transaction.rollback' listener runs, and 'transaction.end' reports 'lost'. Before a ROLLBACK
  * that follows a failed statement, a driver may be asked whether the transaction still exists
- * (AbstractDriver::refreshTransactionState()). MySQL/MariaDB are: a statement with an implicit
+ * (AbstractDriver::refreshTransactionState()). The MariaDB driver is: a statement with an implicit
  * commit (most DDL: CREATE TABLE, ALTER TABLE - not CREATE TEMPORARY TABLE) commits the open
  * transaction even when it fails itself (CREATE TABLE for a table that exists), and does not
  * tell the client - PDO keeps reporting the transaction, and the ROLLBACK would go through over
- * committed rows (measured on MySQL 8.0, MariaDB 10.11 and 11.4). One no-op statement on raw PDO
+ * committed rows (measured on MariaDB 10.11 and 11.4). One no-op statement on raw PDO
  * makes the server say; when the transaction is gone, nothing is sent, no rollback listener runs
  * and 'transaction.end' reports 'lost' (error: the exception that ended the transaction, on a
  * manual rollback() the remembered statement failure). A lock wait timeout under
@@ -72,11 +72,10 @@ use Sodaho\PdoWrapper\Exception\DatabaseException;
  * - 'lost': the transaction ended without a commit by this library and no rollback could be
  *   confirmed: the rollback failed (lost connection), PDO no longer reported the transaction, the
  *   connection state could not be read, the raw cleanup of a commit listener's transaction did not
- *   end it (MySQL completion_type=CHAIN), or the commit failed and so did the rollback after it (or
+ *   end it (completion_type=CHAIN), or the commit failed and so did the rollback after it (or
  *   PDO reported no transaction after the failed commit) - then the data may be committed,
- *   fail-closed, and error is the commit's exception: PostgreSQL leaves that state behind when COMMIT
- *   fails on a deferred constraint (the server rolled back), but so does a callback that committed
- *   itself with a raw COMMIT or a MySQL DDL statement (the data is committed). The connection may be
+ *   fail-closed, and error is the commit's exception: a callback that committed itself with a raw
+ *   COMMIT or a DDL statement leaves that state behind (the data is committed). The connection may be
  *   gone: listeners must not expect queries to work. If the transaction may in fact still be open
  *   (the rollback failed, the raw cleanup of a commit listener's transaction did not end it, or the
  *   state could not be read), end it with rollback() or discard the connection: that rollback() (or
@@ -124,9 +123,9 @@ use Sodaho\PdoWrapper\Exception\DatabaseException;
  * the caller - and with it the callback of transaction() and the batch of updateMultiple() -
  * would go on outside of the transaction that was asked for, or inside one somebody began
  * afterwards. An end behind this library's back (an implicit commit by a DDL statement on
- * MySQL/MariaDB, raw PDO) is told as 'lost' with that exception as error before it is thrown.
+ * MariaDB, raw PDO) is told as 'lost' with that exception as error before it is thrown.
  * After a statement of the listener that failed, the driver is asked before PDO's report is
- * trusted (refreshTransactionState(), as before a ROLLBACK): on MySQL/MariaDB a DDL statement
+ * trusted (refreshTransactionState(), as before a ROLLBACK): on MariaDB a DDL statement
  * commits the transaction even when it fails. Gone: 'lost', as above - also when the listener
  * let the failure escape. Not to be found out: the begin fails, a ROLLBACK cleans up, 'lost'
  * (when that ROLLBACK fails too, the transaction may still be open: its later rollback() tells
@@ -160,28 +159,28 @@ use Sodaho\PdoWrapper\Exception\DatabaseException;
  * COMMIT to fail names a PDO class whose commit() fails ('pdoClass'): the methods here then take
  * the path they take for a real failure.
  *
- * A transaction the server has ended although PDO still reports it: on PostgreSQL every statement
- * error aborts the transaction unless a savepoint catches it; on MySQL/MariaDB a deadlock rolls
- * it back (and a lock wait timeout under innodb_rollback_on_timeout). In both cases the server
- * would answer the COMMIT with success. After a statement failed inside the transaction, commit()
+ * A transaction the server has ended although PDO still reports it: on MariaDB a deadlock rolls
+ * it back, and so does error 1020 under innodb_snapshot_isolation (both called "deadlock" below),
+ * and a lock wait timeout under innodb_rollback_on_timeout. The server would then
+ * answer the COMMIT with success. After a statement failed inside the transaction, commit()
  * therefore refuses with a CommitFailedException ('Failed to commit transaction', previous: the
- * statement failure that ended it) instead of sending the COMMIT: after a MySQL/MariaDB deadlock
- * always; otherwise after asking the server with one probe statement on raw PDO, sent only then
- * (PostgreSQL: is the transaction aborted; MySQL/MariaDB: does it still exist). What follows:
- * - PDO still reports the transaction (PostgreSQL always; MySQL/MariaDB unless raw PDO or the
- *   probe told it otherwise): the refusal fires nothing, the transaction is the caller's to roll
- *   back, and a manual commit() stays refused until rollback(). In transaction()/updateMultiple()
+ * statement failure that ended it) instead of sending the COMMIT: after a deadlock always;
+ * otherwise after asking the server with one probe statement on raw PDO, sent only then (does
+ * the transaction still exist). What follows:
+ * - PDO still reports the transaction (neither raw PDO nor the probe told it otherwise): the
+ *   refusal fires nothing, the transaction is the caller's to roll back, and a manual commit()
+ *   stays refused until rollback(). In transaction()/updateMultiple()
  *   the rollback follows and 'transaction.end' reports 'rolled_back' with that exception.
- * - PDO reports no transaction any more (MySQL/MariaDB once a statement on raw PDO, or the probe,
- *   told it): nothing is left to roll back, so the refusal itself tells the end as 'lost' with
+ * - PDO reports no transaction any more (once a statement on raw PDO, or the probe, told it):
+ *   nothing is left to roll back, so the refusal itself tells the end as 'lost' with
  *   that exception - also on a manual commit(), the one failed commit that fires an event. What
  *   ran after the server ended the transaction - on raw PDO after a deadlock, through this
  *   library after a lock wait timeout that ended it - ran outside of it and stays committed,
  *   which is exactly what 'lost' warns of.
- * After a MySQL/MariaDB deadlock this library accepts nothing on that connection but the end of
+ * After a MariaDB deadlock this library accepts nothing on that connection but the end of
  * the transaction: a statement would run outside of it and be committed on its own, so query()
  * throws a QueryException instead (previous: the deadlock; neither 'query' nor 'error' fires for
- * it) - as PostgreSQL does by itself in an aborted transaction - and beginTransaction() refuses.
+ * it), and beginTransaction() refuses.
  * That holds for a listener's statements too: an 'error' listener that writes to the database
  * needs its own connection. rollback() is the way out, for a transaction begun through this
  * library also when PDO no longer reports it (a statement on raw PDO told it): nothing is sent
@@ -191,9 +190,9 @@ use Sodaho\PdoWrapper\Exception\DatabaseException;
  * A commit that fails once it was sent (PDO::commit() throws or returns false) is a
  * CommitFailedException as well, and follows the same two cases: while PDO still reports the
  * transaction it fires nothing and the transaction is the caller's to roll back
- * (transaction()/updateMultiple() do that); when PDO reports none any more - PostgreSQL after a
- * COMMIT rejected by a deferred constraint, a commit after a raw COMMIT or a MySQL DDL statement -
- * the failed commit itself tells the end as 'lost', at once, on a manual commit() too.
+ * (transaction()/updateMultiple() do that); when PDO reports none any more - a commit after a raw
+ * COMMIT or a DDL statement - the failed commit itself tells the end as 'lost', at once, on a
+ * manual commit() too.
  * CommitFailedException::$outcome is set in two places only. transaction()/updateMultiple() set
  * it for the commit they run themselves: the outcome they tell with it as error, before the end
  * listeners run - 'rolled_back' (the rollback is confirmed, nothing is committed) or 'lost' -
@@ -230,12 +229,11 @@ use Sodaho\PdoWrapper\Exception\DatabaseException;
  * next transaction: that one is found in its place, and its rollback is told as 'rolled_back'
  * although a failing DDL statement committed what came before it.
  * So a callback that swallows such an error and returns no longer gets a 'committed'. Not seen:
- * statements that failed on raw PDO (getPdo()) - on PostgreSQL the next statement through this
- * library fails as a consequence and is remembered in their place - and rows that fail while a
- * result is fetched. After a deadlock, end the transaction through this library (rollback()): a
- * transaction begun on raw PDO after a raw rollback would have its statements and its commit
- * refused for the old deadlock until rollback() is called. With MySQL/MariaDB
- * autocommit switched off, a swallowed failure other than a deadlock that ended the transaction
+ * statements that failed on raw PDO (getPdo()), and rows that fail while a result is fetched.
+ * After a deadlock, end the transaction through this library (rollback()): a transaction begun
+ * on raw PDO after a raw rollback would have its statements and its commit refused for the old
+ * deadlock until rollback() is called. With autocommit switched off, a swallowed failure other
+ * than a deadlock that ended the transaction
  * (the lock wait timeout above) is not told apart from a statement-only failure once a later
  * statement has opened the next transaction: that commit goes through.
  * With PDO::ERRMODE_WARNING and an error handler that throws, a failed statement still arrives as
@@ -243,7 +241,7 @@ use Sodaho\PdoWrapper\Exception\DatabaseException;
  * ROLLBACK arrives as the handler's exception (not as TransactionException or
  * CommitFailedException, and without an outcome).
  *
- * A session that chains transactions (MySQL/MariaDB completion_type=CHAIN) is not supported and
+ * A session that chains transactions (completion_type=CHAIN) is not supported and
  * is reported, because the caller would continue inside a transaction nobody commits. When PDO
  * reports a transaction right after a COMMIT: CommitHookException with a TransactionException
  * 'Connection is in a new transaction' as first failure, every commit listener skipped and listed,

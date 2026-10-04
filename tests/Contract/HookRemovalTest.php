@@ -103,6 +103,22 @@ class HookRemovalTest extends ContractTestCase
             }
         }
 
+        // [object, 'method'] pairs: the same method of another object that looks the same is another callback
+        $make = static fn (): object => new class () {
+            public function hear(): void
+            {
+            }
+        };
+        $registered = $make();
+        $this->db->on('query', [$registered, 'hear']);
+        try {
+            $this->db->off('query', [$make(), 'hear']);
+            $this->fail('Expected DatabaseException: another object');
+        } catch (DatabaseException $e) {
+            $this->assertSame('Unknown hook listener', $e->getMessage());
+        }
+        $this->db->off('query', [$registered, 'hear']);
+
         $equal = static function (): void {
         };
         $this->db->on('query', $equal);

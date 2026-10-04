@@ -15,23 +15,11 @@ use Throwable;
 class UniqueViolationException extends QueryException
 {
     /**
-     * @param string|null $constraint Name of the violated key or constraint as the database reports
-     *                                it: the index name on MySQL/MariaDB (`PRIMARY` for the primary
-     *                                key), the constraint name on PostgreSQL (`users_email_key`,
-     *                                `users_pkey`). Null where the database names none (SQLite
-     *                                reports columns only) or the name could not be read: it is
-     *                                taken from the server's English error message, so a server
-     *                                set to another message language yields null. MySQL since
-     *                                8.0.19 prints `table.key`, MariaDB and older MySQL versions
-     *                                `key`: all yield the key. Where the table is in front, a
-     *                                table or key name that contains a dot itself makes the
-     *                                printed name ambiguous: null rather than a wrong name; so
-     *                                does a dot wherever the server's version cannot be read. The
-     *                                server is told by its version string: behind a proxy (or on
-     *                                a MySQL-compatible server) whose version does not match
-     *                                its message format, an older version in front of a newer
-     *                                MySQL yields `table.key` for every key, and a newer one in
-     *                                front of MariaDB or an older MySQL cuts a key name with a dot.
+     * @param string|null $constraint Name of the violated key as MariaDB reports it: the index
+     *                                name (`PRIMARY` for the primary key), without its table, a
+     *                                name with a dot included. Null where the name could not be
+     *                                read: it is taken from the server's English error message,
+     *                                so a server set to another message language yields null.
      */
     public function __construct(
         string $message = 'Query failed',

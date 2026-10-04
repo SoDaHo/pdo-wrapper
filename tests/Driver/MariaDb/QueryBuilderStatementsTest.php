@@ -25,11 +25,13 @@ class QueryBuilderStatementsTest extends ContractTestCase
         $this->create('users', ['a' => 'int', 'b' => 'int']);
         $this->db->insert('users', ['a' => 1, 'b' => 2]);
 
-        try {
-            $this->db->table('users')->select(['a as X', 'b as x'])->distinct()->count();
-            $this->fail('Expected QueryException: X and x are one name');
-        } catch (QueryException $e) {
-            $this->assertStringContainsString('names: "x" appears twice as an output name', (string) $e->getDebugMessage());
+        foreach ([[['a as X', 'b as x'], 'x'], [['a', 'b as A'], 'a'], [['A', 'users.a'], 'a']] as [$columns, $name]) {
+            try {
+                $this->db->table('users')->select($columns)->distinct()->count();
+                $this->fail('Expected QueryException: one name - ' . implode(', ', $columns));
+            } catch (QueryException $e) {
+                $this->assertStringContainsString(sprintf('names: "%s" appears twice as an output name', $name), (string) $e->getDebugMessage());
+            }
         }
     }
 
@@ -113,6 +115,26 @@ class QueryBuilderStatementsTest extends ContractTestCase
         $rendered->clear();
         $this->db->table('users')->where('id', '>', 0)->orderBy('id', ' desc')->limit(1)->delete();
         $this->assertSame(['DELETE FROM `users` WHERE `id` > ? ORDER BY `id` DESC LIMIT 1'], $rendered->all(), 'surrounding whitespace and case are tolerated');
+    }
+
+    /**
+     * increment() and decrement(): the column first, then $extra, in the order given; the step
+     * is bound where it stands, the WHERE values after the SET values.
+     */
+    public function testIncrementSetsTheColumnFirstThenTheExtraValues(): void
+    {
+        $this->create('counters', ['id' => 'key', 'attempts' => 'int NOT NULL', 'note' => 'text', 'seen' => 'int']);
+        $this->db->insert('counters', ['id' => 1, 'attempts' => 0, 'note' => 'a', 'seen' => 0]);
+        $rendered = new Recorder(static fn (array $context): array => [(string) $context['sql'], $context['params']]);
+        $this->db->on('query', $rendered);
+
+        $this->db->table('counters')->where('id', 1)->increment('attempts', 2, ['note' => 'b', 'seen' => 1]);
+        $this->db->table('counters')->where('id', 1)->decrement('attempts', 1.5);
+
+        $this->assertSame([
+            ['UPDATE `counters` SET `attempts` = `attempts` + ?, `note` = ?, `seen` = ? WHERE `id` = ?', [2, 'b', 1, 1]],
+            ['UPDATE `counters` SET `attempts` = `attempts` - ? WHERE `id` = ?', [1.5, 1]],
+        ], $rendered->all());
     }
 
     /**

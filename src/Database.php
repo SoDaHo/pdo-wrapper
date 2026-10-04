@@ -191,12 +191,9 @@ class Database
             // The process environment only (local_only): without it getenv() asks the SAPI first, and
             // under PHP-FPM that is the request - its FastCGI parameters, every request header among
             // them as HTTP_*
-            $value = getenv($key, true);
-            if ($value === false) {
-                return null;
-            }
+            $value = getenv($key, true); // false when it is not set
         }
 
-        return $value === '' ? null : $value;
+        return $value === false || $value === '' ? null : $value;
     }
 }
