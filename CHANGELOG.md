@@ -29,7 +29,7 @@
 ### Added
 - `Database::json($column, $path)`: a value inside a JSON column as text (`JSON_UNQUOTE(JSON_EXTRACT(...))`, the path checked and written in), with `->as($alias)` and `->orColumn($column)`; every `where*()` method takes it - or another expression without bindings - as its column.
 - `upsert($row, $update)` and `upsertReturning($row, $update, $columns)` on the query builder (`ON DUPLICATE KEY UPDATE`, the update in its order, `RETURNING`); `insertWhen()` takes an `$update`, `insertWhenReturning()` returns the row or null; `Database::value($column)` for `VALUE(col)`.
-- `MariaDbDriver::schema()`: the tables of the current database (`tables()`, `hasTable()`), their columns, indexes and constraints (`columns()`, `indexes()`, `constraints()`), read from `information_schema`; read only.
+- `MariaDbDriver::schema()`: the tables of the current database (`tables()`, `hasTable()`; base and system-versioned tables), their columns, indexes and constraints (`columns()`, `indexes()`, `constraints()`), read from `information_schema` in one statement each; read only.
 - Named locks on `MariaDbDriver`: `namedLock($name, $timeout = 0)`, `releaseNamedLock($name)`, `isNamedLockHeld($name)` (`GET_LOCK()`, the name prefixed with the database, a second hold refused with `NamedLockReentryException`, a name with a NUL byte refused, a `reconnect()` while the statement runs refused).
 - `off($event, $callback)` on `DatabaseInterface`: removes a listener; an unknown event or a callback that is not registered throws.
 - `reconnect()` on `DatabaseInterface`.

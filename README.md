@@ -730,14 +730,14 @@ A session that chains transactions (`completion_type=CHAIN`) is not supported: e
 
 ```php
 $schema = $db->schema();
-$schema->tables();                 // ['sessions', 'users'] - base tables, no views
+$schema->tables();                 // ['sessions', 'users'] - base and system-versioned tables
 $schema->hasTable('users');        // true
 $schema->columns('users');         // [['name' => 'id', 'type' => 'bigint(20)', 'nullable' => false, 'default' => null, 'extra' => 'auto_increment'], ...]
 $schema->indexes('users');         // [['name' => 'PRIMARY', 'columns' => ['id'], 'unique' => true, 'primary' => true], ...]
 $schema->constraints('users');     // [['name' => 'PRIMARY', 'type' => 'PRIMARY KEY'], ['name' => 'email', 'type' => 'UNIQUE'], ...]
 ```
 
-Columns come in their order; `type` and `default` are as MariaDB writes them: the default as SQL - `NULL`, a quoted string (`'it''s'`), a number, an expression (`current_timestamp()`) - and `null` when the column has none. A `JSON` column is `longtext` with a `CHECK` constraint of its name. Indexes and constraints list the primary key first, then by name. `columns()`, `indexes()` and `constraints()` throw a `QueryException` for a table the current database does not have (a view included).
+A table is a base table or a system-versioned one - not a view, a sequence or a temporary table (a temporary table that shadows a base table in the session leaves the base table described). Tables come in the server's order of names (`utf8mb3_general_ci`: without case, `_` after the letters). Columns come in their order; `type` and `default` are as MariaDB writes them: the default as SQL - `NULL`, a quoted string (`'it''s'`), a number, an expression (`current_timestamp()`) - and `null` when the column has none. A `JSON` column is `longtext` with a `CHECK` constraint of its name. Indexes and constraints list the primary key first, then by name; an index shows its columns, not a prefix length (`KEY (s(10))` is on `s`), a descending part or its type. `columns()`, `indexes()` and `constraints()` throw a `QueryException` for a table the current database does not have (a view included). What the user has no privileges on, `information_schema` does not show: such a table is no table here, such columns are left out.
 
 ## Named Locks
 
