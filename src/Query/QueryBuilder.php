@@ -7,6 +7,7 @@ namespace Sodaho\PdoWrapper\Query;
 use PDO;
 use Sodaho\PdoWrapper\DatabaseInterface;
 use Sodaho\PdoWrapper\Exception\QueryException;
+use Sodaho\PdoWrapper\InternalMethods;
 
 /**
  * Fluent query builder for constructing SQL queries.
@@ -36,7 +37,7 @@ class QueryBuilder
     /** Identifiers are quoted with backticks (MariaDB) */
     private const QUOTE = '`';
 
-    private DatabaseInterface $db;
+    private DatabaseInterface&InternalMethods $db;
     private string $table;
 
     /** @var array<int, string|RawExpression> */
@@ -68,10 +69,10 @@ class QueryBuilder
     /**
      * Create a new query builder instance.
      *
-     * @param DatabaseInterface $db Database connection
+     * @param DatabaseInterface&InternalMethods $db Database connection (a driver of this library)
      * @param string $table Table name
      */
-    public function __construct(DatabaseInterface $db, string $table)
+    public function __construct(DatabaseInterface&InternalMethods $db, string $table)
     {
         $this->db = $db;
         $this->table = $table;

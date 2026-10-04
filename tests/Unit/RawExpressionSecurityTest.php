@@ -6,7 +6,7 @@ namespace Sodaho\PdoWrapper\Tests\Unit;
 
 use PHPUnit\Framework\TestCase;
 use Sodaho\PdoWrapper\Database;
-use Sodaho\PdoWrapper\DatabaseInterface;
+use Sodaho\PdoWrapper\Driver\AbstractDriver;
 use Sodaho\PdoWrapper\Query\QueryBuilder;
 use Sodaho\PdoWrapper\Query\RawExpression;
 
@@ -15,14 +15,17 @@ use Sodaho\PdoWrapper\Query\RawExpression;
  * Verifies that the new explicit raw() approach is secure by default.
  *
  * Only the SQL the builder renders is checked, so no database is needed: the builder is the one
- * the MariaDB driver creates (backticks, MySQL dialect), on a database it never reaches.
+ * a driver creates (backticks), on a connection it never opens.
  */
 class RawExpressionSecurityTest extends TestCase
 {
-    /** What MariaDbDriver::table('users') builds */
+    /** What a driver's table('users') builds, on a connection that is never opened */
     private function users(): QueryBuilder
     {
-        return new QueryBuilder($this->createStub(DatabaseInterface::class), 'users');
+        $db = new class () extends AbstractDriver {
+        };
+
+        return $db->table('users');
     }
 
     /**

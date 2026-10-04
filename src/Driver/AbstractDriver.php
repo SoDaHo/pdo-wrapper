@@ -18,6 +18,7 @@ use Sodaho\PdoWrapper\Exception\ConnectionException;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Exception\TransactionException;
 use Sodaho\PdoWrapper\Exception\UniqueViolationException;
+use Sodaho\PdoWrapper\InternalMethods;
 use Sodaho\PdoWrapper\Query\RawExpression;
 use Sodaho\PdoWrapper\Traits\HasHooks;
 use Stringable;
@@ -30,7 +31,7 @@ use WeakReference;
  * Provides PDO wrapper functionality, CRUD helpers, transactions,
  * and hooks. Extend this class for database-specific drivers.
  */
-abstract class AbstractDriver implements DatabaseInterface
+abstract class AbstractDriver implements DatabaseInterface, InternalMethods
 {
     use HasHooks;
 

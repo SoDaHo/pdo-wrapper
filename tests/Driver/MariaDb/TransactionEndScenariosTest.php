@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Sodaho\PdoWrapper\Tests\Driver\MariaDb;
 
 use Sodaho\PdoWrapper\DatabaseInterface;
+use Sodaho\PdoWrapper\Driver\AbstractDriver;
 use Sodaho\PdoWrapper\Exception\CommitFailedException;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Exception\TransactionException;
@@ -626,7 +627,7 @@ class TransactionEndScenariosTest extends TransactionEndTestCase
         $this->ends = [];
 
         try {
-            $this->db->transaction(static function (DatabaseInterface $db): void {
+            $this->db->transaction(static function (AbstractDriver $db): void {
                 $db->insert(self::TABLE, ['id' => 2, 'name' => 'before the DDL']);
                 $db->execute('CREATE TABLE end_scenarios_ddl (id INT PRIMARY KEY)'); // implicit COMMIT
                 $db->updateMultiple(self::TABLE, [['id' => 1, 'name' => 'in its own transaction']]);

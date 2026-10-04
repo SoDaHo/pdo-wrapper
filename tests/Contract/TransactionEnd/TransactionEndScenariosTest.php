@@ -9,6 +9,7 @@ use Closure;
 use LogicException;
 use RuntimeException;
 use Sodaho\PdoWrapper\DatabaseInterface;
+use Sodaho\PdoWrapper\Driver\AbstractDriver;
 use Sodaho\PdoWrapper\Exception\CommitFailedException;
 use Sodaho\PdoWrapper\Exception\CommitHookException;
 use Sodaho\PdoWrapper\Exception\QueryException;
@@ -251,7 +252,7 @@ class TransactionEndScenariosTest extends TransactionEndTestCase
         $this->events = [];
         $this->ends = [];
 
-        $this->db->transaction(static function (DatabaseInterface $db): void {
+        $this->db->transaction(static function (AbstractDriver $db): void {
             $db->updateMultiple(self::TABLE, [['id' => 1, 'name' => 'A']]);
             $db->insert(self::TABLE, ['id' => 2, 'name' => 'b']);
         });

@@ -6,7 +6,7 @@ namespace Sodaho\PdoWrapper\Tests\Unit;
 
 use PHPUnit\Framework\TestCase;
 use Sodaho\PdoWrapper\Database;
-use Sodaho\PdoWrapper\DatabaseInterface;
+use Sodaho\PdoWrapper\Driver\AbstractDriver;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Query\QueryBuilder;
 use Sodaho\PdoWrapper\Tests\Support\Untyped;
@@ -14,16 +14,19 @@ use Sodaho\PdoWrapper\Tests\Support\Untyped;
 /**
  * Edge case tests for bugs found by code review, as far as the builder alone decides them: the
  * SQL it renders and the input it rejects, without a database. The builder is the one the
- * MariaDB driver creates (backticks, MySQL dialect); it reaches its database only to execute,
+ * MariaDB driver creates (backticks); it reaches its database only to execute,
  * which no test here does. The edge cases that run against a database are in
  * tests/Contract/EdgeCases.
  */
 class EdgeCaseRenderingTest extends TestCase
 {
-    /** What MariaDbDriver::table() builds, on a database that is never reached */
+    /** What a driver's table() builds, on a connection that is never opened */
     private function table(string $table): QueryBuilder
     {
-        return new QueryBuilder($this->createStub(DatabaseInterface::class), $table);
+        $db = new class () extends AbstractDriver {
+        };
+
+        return $db->table($table);
     }
 
     // =========================================================================
