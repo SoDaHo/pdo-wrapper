@@ -19,6 +19,7 @@ use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Exception\TransactionException;
 use Sodaho\PdoWrapper\Exception\UniqueViolationException;
 use Sodaho\PdoWrapper\InternalMethods;
+use Sodaho\PdoWrapper\Query\FloatText;
 use Sodaho\PdoWrapper\Query\RawExpression;
 use Sodaho\PdoWrapper\Traits\HasHooks;
 use Stringable;
@@ -590,8 +591,10 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
 
     /**
      * Bind the parameters and execute the prepared statement: PDOStatement::execute($params), every
-     * value bound as text, a boolean as '1' or '0'. PDO alone sends false as '', which MariaDB in
-     * strict mode rejects for a numeric column. Text rather than a typed binding: PARAM_INT makes
+     * value bound as text, a boolean as '1' or '0', a finite float as its exact text (FloatText).
+     * PDO alone sends false as '', which MariaDB in strict mode rejects for a numeric column, and a
+     * float with PHP's `precision` setting, which cuts after 14 digits (0.1234567890123456 stored as
+     * 0.12345678901235, 9007199254740994.0 as 9007199254741000 - measured). Text rather than a typed binding: PARAM_INT makes
      * MariaDB compare a text column numerically, 'abc' = 0 is true (measured on MariaDB 11.4). A
      * driver overrides this when its database needs typed bindings; what query() lets through to
      * it is decided by unbindableParameter().
@@ -605,7 +608,11 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
         // A new array, not an in-place rewrite: a reference inside $params would otherwise be written through
         $bound = [];
         foreach ($params as $key => $value) {
-            $bound[$key] = is_bool($value) ? ($value ? '1' : '0') : $value;
+            $bound[$key] = match (true) {
+                is_bool($value) => $value ? '1' : '0',
+                is_float($value) && is_finite($value) => FloatText::of($value),
+                default => $value,
+            };
         }
 
         return $stmt->execute($bound);
