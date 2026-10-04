@@ -19,6 +19,7 @@
 - `whereIn()` with an empty list matches no row (`1 = 0`) instead of throwing; `whereNotIn()` with an empty list still throws.
 - `AbstractDriver::now()` / `utcNow()` are `NOW()` / `UTC_TIMESTAMP()` (were `CURRENT_TIMESTAMP` for a custom driver); `UniqueViolationException::$constraint` is the key name as MariaDB prints it.
 - A float is bound as the shortest text that reads back as the same float, not with PHP's `precision` setting (14 digits): `0.1234567890123456` is no longer stored as `0.12345678901235`, `9007199254740994.0` in a `BIGINT` no longer as `9007199254741000`; a computed float no longer equals the `DECIMAL` it was rounded into before.
+- A `port` given as a string with a line break after the digits (`"3306\n"`) is refused like any other value that is no whole number; it passed before. `fromEnv()` still trims `DB_PORT`.
 - `sum()` / `avg()` return `float|string|null` (was `int|float|string|null`): MariaDB delivers a numeric string for integer and `DECIMAL` columns, a float for `FLOAT`/`DOUBLE`; another type throws.
 - Aggregates keep a row lock: `lockForUpdate()->count()` renders `SELECT COUNT(*) ... FOR UPDATE` and locks what it reads (the lock was dropped, for PostgreSQL, which refuses it), so "count, then insert" in one transaction is not overtaken. A lock with `distinct()`, `groupBy()` or `having()` throws for aggregates as for `get()`.
 - Aliases are compared without case also when a `Database::raw()` entry quotes them (`` AS `N` ``), as MariaDB does.

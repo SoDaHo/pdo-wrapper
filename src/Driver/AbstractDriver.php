@@ -159,7 +159,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      */
     protected static function validPort(mixed $port): int
     {
-        if (is_string($port) && preg_match('/^[0-9]+$/', $port) === 1) {
+        if (is_string($port) && preg_match('/^[0-9]+\z/', $port) === 1) { // \z: no line break after it
             $port = (int) $port;
         }
         if (!is_int($port) || $port < 1 || $port > 65535) {

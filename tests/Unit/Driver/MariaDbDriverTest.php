@@ -59,7 +59,7 @@ class MariaDbDriverTest extends TestCase
     {
         $base = ['host' => '127.0.0.1', 'database' => 'app', 'username' => 'root', 'password' => 'x'];
 
-        foreach (['abc', '3306;host=evil', '', 0, -1, 65536, 3306.5, true] as $port) {
+        foreach (['abc', '3306;host=evil', '', 0, -1, 65536, 3306.5, true, "3306\n"] as $port) {
             try {
                 Untyped::create(MariaDbDriver::class, ['port' => $port] + $base); // not all of them are a port by type
                 $this->fail('Expected ConnectionException for port ' . var_export($port, true));
