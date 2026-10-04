@@ -7,6 +7,7 @@ namespace Sodaho\PdoWrapper\Driver;
 use PDO;
 use PDOException;
 use Sodaho\PdoWrapper\Exception\ConnectionException;
+use Sodaho\PdoWrapper\Exception\NamedLockReentryException;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Throwable;
 
@@ -299,12 +300,14 @@ class MariaDbDriver extends AbstractDriver
      *
      * MariaDB lets a connection take a lock it holds a second time and counts the holds - one
      * release would then leave the lock held. This method refuses that instead: taking a lock this
-     * connection already holds throws (ask isNamedLockHeld() first where that can happen).
+     * connection already holds throws a NamedLockReentryException, a QueryException of its own
+     * class (ask isNamedLockHeld() first where that can happen).
      *
      * @param string $name The lock's name, without the prefix
      * @param int $timeout Seconds to wait while another connection holds it (0: do not wait)
      *
-     * @throws QueryException When the name is empty, the timeout negative, this connection holds the lock already, or the server answers NULL (an error such as a killed thread)
+     * @throws NamedLockReentryException When this connection holds the lock already
+     * @throws QueryException When the name is empty, the timeout negative, or the server answers NULL (an error such as a killed thread)
      *
      * @return bool True when taken, false when another connection held it beyond the timeout
      */
@@ -324,9 +327,10 @@ class MariaDbDriver extends AbstractDriver
         return match ($taken) {
             1 => true,
             0 => false,
-            -1 => throw new QueryException(
+            -1 => throw new NamedLockReentryException(
                 message: 'Query failed',
-                debugMessage: sprintf('namedLock(): this connection holds "%s" already; MariaDB would count a second hold, and one release would not free it. Release it first, or ask isNamedLockHeld().', $name)
+                debugMessage: sprintf('namedLock(): this connection holds "%s" already; MariaDB would count a second hold, and one release would not free it. Release it first, or ask isNamedLockHeld().', $name),
+                lockName: $name
             ),
             default => throw new QueryException(
                 message: 'Query failed',

@@ -6,6 +6,7 @@ namespace Sodaho\PdoWrapper\Tests\Driver\MariaDb;
 
 use PDO;
 use Sodaho\PdoWrapper\Driver\MariaDbDriver;
+use Sodaho\PdoWrapper\Exception\NamedLockReentryException;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Tests\Contract\ContractTestCase;
 use Sodaho\PdoWrapper\Tests\Support\TestEnvironment;
@@ -79,8 +80,11 @@ class NamedLockTest extends ContractTestCase
 
         try {
             $this->first->namedLock('job');
-            $this->fail('Expected QueryException');
-        } catch (QueryException $e) {
+            $this->fail('Expected NamedLockReentryException');
+        } catch (NamedLockReentryException $e) {
+            $this->assertInstanceOf(QueryException::class, $e, 'existing catch blocks keep working');
+            $this->assertSame('Query failed', $e->getMessage());
+            $this->assertSame('job', $e->lockName);
             $this->assertSame('namedLock(): this connection holds "job" already; MariaDB would count a second hold, and one release would not free it. Release it first, or ask isNamedLockHeld().', $e->getDebugMessage());
         }
         $this->assertTrue($this->first->releaseNamedLock('job'));

@@ -26,7 +26,7 @@
 ### Added
 - `Database::json($column, $path)`: a value inside a JSON column as text (`JSON_UNQUOTE(JSON_EXTRACT(...))`, the path checked and written in), with `->as($alias)` and `->orColumn($column)`; every `where*()` method takes it - or another expression without bindings - as its column.
 - `upsert($row, $update)` and `upsertReturning($row, $update, $columns)` on the query builder (`ON DUPLICATE KEY UPDATE`, the update in its order, `RETURNING`); `insertWhen()` takes an `$update`, `insertWhenReturning()` returns the row or null; `Database::value($column)` for `VALUE(col)`.
-- Named locks on `MariaDbDriver`: `namedLock($name, $timeout = 0)`, `releaseNamedLock($name)`, `isNamedLockHeld($name)` (`GET_LOCK()`, the name prefixed with the database, a second hold refused).
+- Named locks on `MariaDbDriver`: `namedLock($name, $timeout = 0)`, `releaseNamedLock($name)`, `isNamedLockHeld($name)` (`GET_LOCK()`, the name prefixed with the database, a second hold refused with `NamedLockReentryException`).
 - `off($event, $callback)` on `DatabaseInterface`: removes a listener; an unknown event or a callback that is not registered throws.
 - `reconnect()` on `DatabaseInterface`.
 - `increment()` / `decrement()` on the query builder: `UPDATE ... SET col = col + CAST(? AS SIGNED)` (a float step: its shortest exact decimal text as `DECIMAL(65,30)`), exact also for a `BIGINT` beyond 2^53 and a long `DECIMAL`, with further columns in the same statement (not the column itself, in any case; with them, names beyond ASCII are refused).
