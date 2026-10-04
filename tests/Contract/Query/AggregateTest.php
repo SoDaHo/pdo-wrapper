@@ -6,6 +6,7 @@ namespace Sodaho\PdoWrapper\Tests\Contract\Query;
 
 use Sodaho\PdoWrapper\Database;
 use Sodaho\PdoWrapper\Exception\QueryException;
+use Sodaho\PdoWrapper\Query\QueryBuilder;
 use Sodaho\PdoWrapper\Tests\Contract\ContractTestCase;
 
 /**
@@ -28,6 +29,22 @@ class AggregateTest extends ContractTestCase
         $this->db->insert('orders', ['user_id' => 1, 'status' => 'paid']);
         $this->db->insert('orders', ['user_id' => 1, 'status' => 'open']);
         $this->db->insert('orders', ['user_id' => 2, 'status' => 'paid']);
+    }
+
+    /**
+     * having() without groupBy() makes the whole set one group: when it filters that group out,
+     * the aggregate has no row - no value, and count() 0.
+     */
+    public function testAHavingThatFiltersTheOneGroupGivesNoValue(): void
+    {
+        $filtered = fn (): QueryBuilder => $this->db->table('users')->having(Database::raw('COUNT(*)'), '>', Database::raw('5'));
+
+        $this->assertNull($filtered()->sum('score'));
+        $this->assertNull($filtered()->avg('score'));
+        $this->assertNull($filtered()->min('score'));
+        $this->assertNull($filtered()->max('score'));
+        $this->assertSame(0, $filtered()->count());
+        $this->assertNotNull($this->db->table('users')->having(Database::raw('COUNT(*)'), '>', Database::raw('4'))->sum('score'), 'the one group of five rows stays');
     }
 
     public function testCountWithGroupByKeepsAliasedSelectEntries(): void

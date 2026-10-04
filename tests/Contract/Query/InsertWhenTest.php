@@ -86,9 +86,7 @@ class InsertWhenTest extends ContractTestCase
         $this->assertSame(1, $this->db->insertWhen('codes', ['user_id' => 7, 'code' => 'third'], $condition, [7]), 'the open code was used');
 
         $this->assertSame(['first', 'other', 'third'], array_column($this->db->table('codes')->orderBy('id')->get(), 'code'));
-        $this->assertStringStartsWith('INSERT INTO ', $this->queries[0]['sql']);
-        $this->assertStringContainsString(') SELECT ?, ? ', $this->queries[0]['sql']);
-        $this->assertStringEndsWith(' WHERE (NOT EXISTS (SELECT 1 FROM codes WHERE user_id = ? AND used_at IS NULL))', $this->queries[0]['sql']);
+        // The statement itself: tests/Driver/MariaDb/Query/InsertWhenTest
         $this->assertSame([7, 'first', 7], $this->queries[0]['params'], 'row values first, then the condition bindings');
     }
 
@@ -112,10 +110,8 @@ class InsertWhenTest extends ContractTestCase
         );
 
         $this->assertSame(1, $inserted);
-        $this->assertStringStartsWith('INSERT INTO ', $this->queries[0]['sql']);
-        $this->assertStringContainsString(") SELECT ?, CONCAT('raw', '-code'), " . $this->db->now() . ' ', $this->queries[0]['sql'], "the driver's now() inlined as it is");
-        $this->assertStringEndsWith(' WHERE (? > ?)', $this->queries[0]['sql']);
-        $this->assertSame([9, 2, 1], $this->queries[0]['params']);
+        // The statement itself: tests/Driver/MariaDb/Query/InsertWhenTest
+        $this->assertSame([9, 2, 1], $this->queries[0]['params'], 'the inlined values bind nothing');
         $row = $this->db->table('codes')->where('user_id', 9)->first();
         $this->assertSame('raw-code', $row['code'] ?? null);
         $this->assertMatchesRegularExpression('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', (string) ($row['created_at'] ?? ''));

@@ -1000,10 +1000,11 @@ class QueryBuilder
         }
 
         // By position, not by the name "aggregate": PDO::ATTR_CASE may rename the result's keys.
-        // An aggregate always returns one row; false (no row) cannot be a value here.
-        $value = $this->db->query($sql, $params)->fetchColumn();
+        // The whole row, not fetchColumn(), whose false for "no row" could pass for a value. No
+        // row: a having() without groupBy() filtered out the one group - no value.
+        $row = $this->db->query($sql, $params)->fetch(PDO::FETCH_NUM);
 
-        return $value === false ? null : $value;
+        return is_array($row) ? $row[0] : null;
     }
 
     // =========================================================================
@@ -1093,18 +1094,24 @@ class QueryBuilder
      * The amount is bound as text, like every value, and cast so that the server adds it exactly:
      * a text operand would make MariaDB add in DOUBLE, and a BIGINT above 2^53 or a DECIMAL with
      * more than about 15 digits would come back rounded (measured on 10.11, 11.4 and 12.3). An
-     * int is cast to SIGNED (integer arithmetic; on a DECIMAL column, DECIMAL arithmetic), a float
-     * to DECIMAL(65,30) - exact in the digits PHP writes for it. A float the cast would change is
-     * refused: INF and NAN, a magnitude from 1e35 (beyond the 35 integer digits), and a magnitude
-     * below 1e-13 other than 0 (the up to 17 significant digits PHP writes for a float could reach
-     * past the 30th decimal place). update() with Database::raw() adds it as you write it.
+     * int is cast to SIGNED (integer arithmetic; on a DECIMAL column, DECIMAL arithmetic). A float
+     * is bound as the shortest decimal text that reads back as the same float (0.1, not PHP's
+     * `precision` setting, which cuts after 14 digits) and cast to DECIMAL(65,30); a float whose
+     * text has more than 35 integer or 30 fraction digits, INF and NAN are refused. A column that
+     * is NULL stays NULL (NULL + 1 is NULL) and does not count as changed.
+     *
+     * With $extra, the column must not be set again there - also not in another case or as
+     * "table.column": MariaDB takes those for the same column, and the second assignment would
+     * silently replace the step. Names with characters beyond ASCII are refused then: MariaDB folds
+     * their case by rules that differ between versions, so a match could not be ruled out.
      *
      * @param string $column Column to add to
      * @param int|float $by What is added (bound)
      * @param array<string, mixed> $extra Further column => value pairs to set
      *
      * @throws QueryException As update(), when $extra sets the column itself (in any case, or as
-     *                        "table.column"), and for a float the cast would change
+     *                        "table.column") or a name with $extra holds characters beyond ASCII,
+     *                        and for a float DECIMAL(65,30) cannot hold
      *
      * @return int Number of affected rows
      */
@@ -1119,8 +1126,9 @@ class QueryBuilder
      *
      * @param array<string, mixed> $extra Further column => value pairs to set
      *
-     * @throws QueryException As update(), when $extra sets the column itself, and for a float the
-     *                        cast would change (see increment())
+     * @throws QueryException As update(), when $extra sets the column itself or a name with $extra
+     *                        holds characters beyond ASCII, and for a float DECIMAL(65,30) cannot
+     *                        hold (see increment())
      *
      * @return int Number of affected rows
      */
@@ -1140,6 +1148,12 @@ class QueryBuilder
         // MariaDB takes "Attempts" and "t.attempts" for the column "attempts": a second assignment
         // to it would silently replace the step
         foreach (array_keys($extra) as $key) {
+            if (preg_match('/[^\x00-\x7F]/', $column . $key) === 1) {
+                throw new QueryException(
+                    message: 'Update failed',
+                    debugMessage: sprintf('%s() with $extra compares the column names itself, and "%s" or "%s" holds characters beyond ASCII, whose case MariaDB folds by rules of its own: whether they name the same column cannot be ruled out. Set the extra columns with a separate update().', $method, $column, $key)
+                );
+            }
             if ($this->columnNameKey($key) === $this->columnNameKey($column)) {
                 throw new QueryException(
                     message: 'Update failed',
@@ -1147,15 +1161,50 @@ class QueryBuilder
                 );
             }
         }
-        if (is_float($by) && $by !== 0.0 && !(abs($by) >= 1e-13 && abs($by) < 1e35)) {
-            throw new QueryException(
-                message: 'Update failed',
-                debugMessage: sprintf('%s() adds a float as DECIMAL(65,30), which would change %s: only 0 and magnitudes from 1e-13 below 1e35 keep the digits PHP writes for a float. Use update() with Database::raw() for it.', $method, var_export($by, true))
-            );
+        if (is_float($by)) {
+            $text = self::decimalText($by);
+            if ($text === null) {
+                throw new QueryException(
+                    message: 'Update failed',
+                    debugMessage: sprintf('%s() adds a float as DECIMAL(65,30), which cannot hold %s: more than 35 integer or 30 fraction digits, or no finite number. Use update() with Database::raw() for it.', $method, var_export($by, true))
+                );
+            }
+            $step = new RawExpression(sprintf('%s %s CAST(? AS DECIMAL(65,30))', $this->quoteIdentifier($column), $sign), [$text]);
+        } else {
+            $step = new RawExpression(sprintf('%s %s CAST(? AS SIGNED)', $this->quoteIdentifier($column), $sign), [$by]);
         }
-        $cast = is_int($by) ? 'SIGNED' : 'DECIMAL(65,30)';
 
-        return $this->update([$column => new RawExpression(sprintf('%s %s CAST(? AS %s)', $this->quoteIdentifier($column), $sign, $cast), [$by])] + $extra);
+        return $this->update([$column => $step] + $extra);
+    }
+
+    /**
+     * The float as the shortest decimal text that reads back as the same float - what it was
+     * written as (0.1, not 0.1000000000000000055...), whatever PHP's `precision` setting says -,
+     * without an exponent; null when DECIMAL(65,30) cannot hold that text (more than 35 integer or
+     * 30 fraction digits) or the float is INF or NAN.
+     */
+    private static function decimalText(float $value): ?string
+    {
+        if (!is_finite($value)) {
+            return null;
+        }
+        // %e writes "." whatever the locale; 17 significant digits always read back
+        for ($digits = 1; $digits < 17; $digits++) {
+            if ((float) sprintf('%.' . ($digits - 1) . 'e', $value) === $value) {
+                break;
+            }
+        }
+        [$mantissa, $exponent] = explode('e', sprintf('%.' . ($digits - 1) . 'e', $value));
+        $significant = str_replace(['-', '.'], '', $mantissa);
+        $point = (int) $exponent + 1; // how many of the digits stand before the decimal point
+        $integer = $point <= 0 ? '0' : str_pad(substr($significant, 0, $point), $point, '0');
+        // No trailing zero: the shortest text that reads back never ends in one
+        $fraction = $point <= 0 ? str_repeat('0', -$point) . $significant : substr($significant, $point);
+        if (strlen($integer) > 35 || strlen($fraction) > 30) {
+            return null;
+        }
+
+        return ($value < 0 ? '-' : '') . $integer . ($fraction === '' ? '' : '.' . $fraction);
     }
 
     /**

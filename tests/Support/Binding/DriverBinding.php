@@ -14,6 +14,12 @@ use Sodaho\PdoWrapper\Driver\AbstractDriver;
  * database, and how to write its tables. A driver of this library provides one binding and
  * passes tests/Contract with it; nothing in those tests names an engine or writes DDL itself.
  *
+ * The PHP types of the values are part of the contract (the library pins them, see the README,
+ * "What Comes Back"): a driver delivers `id`, `key`, `int` and `bigint` as int, `double` as float,
+ * `decimal` as a string with its 4 decimal places, `text`, `blob` and `timestamp` as string, and
+ * NULL as null. What differs between databases - aggregates, error codes - comes from the methods
+ * below.
+ *
  * Columns are given as a type word, optionally followed by standard SQL that every engine reads
  * the same way (`NOT NULL`, `UNIQUE`, `DEFAULT 1`, `REFERENCES users(id)`):
  * - `id`: an integer primary key the database numbers itself (64 bit)
@@ -66,22 +72,22 @@ interface DriverBinding
      * What sum() and avg() deliver for 1 + 2 in an `int` column, twice 2^53 + 1 in a `bigint`
      * column, 0.1 + 0.2 in a `decimal` column and 0.5 + 0.25 in a `double` column.
      *
-     * @return array<string, array{int|float|string, int|float|string}> [sum, avg] by column: small, big, price, ratio
+     * @return array<string, array{float|string, float|string}> [sum, avg] by column: small, big, price, ratio
      */
     public function deliveredAggregates(): array;
 
     /**
      * What a SUM() over an `int` column delivers - through sum() or as a column of a row - when its
-     * values add up to $sum: the integer, or the string or float the driver makes of it.
+     * values add up to $sum: the string or float the driver makes of it (sum() refuses an int).
      */
-    public function deliveredIntSum(int $sum): int|float|string;
+    public function deliveredIntSum(int $sum): float|string;
 
     /**
      * What an AVG() over an `int` column delivers - through avg() or as a column of a row - when its
      * values average $average (a value a float holds exactly): the float, or the string the driver
      * makes of it, with the database's number of decimals.
      */
-    public function deliveredIntAvg(float $average): int|float|string;
+    public function deliveredIntAvg(float $average): float|string;
 
     /**
      * The name a duplicate key reports for a column declared `UNIQUE` (email) and for the primary key.

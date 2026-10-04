@@ -102,5 +102,11 @@ class IncrementTest extends ContractTestCase
         $this->assertSame('12345678901234568.6234', $row()['exact']);
         $this->db->table('amounts')->where('id', 1)->decrement('exact', 0.0001);
         $this->assertSame('12345678901234568.6233', $row()['exact']);
+
+        // A float step as the float it is, also where it has more digits than PHP's precision setting writes
+        $this->db->table('amounts')->where('id', 1)->increment('big', 9007199254740994.0);
+        $this->assertSame(18014398509481985, Fetched::int($row()['big']));
+        $this->db->table('amounts')->where('id', 1)->decrement('exact', 0.1234567890123456);
+        $this->assertSame('12345678901234568.4998', $row()['exact'], 'rounded to the column\'s 4 places by the server');
     }
 }

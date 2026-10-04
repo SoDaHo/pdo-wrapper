@@ -144,46 +144,74 @@ class QueryBuilderStatementsTest extends ContractTestCase
 
         $this->assertSame([
             ['UPDATE `counters` SET `attempts` = `attempts` + CAST(? AS SIGNED), `note` = ?, `seen` = ? WHERE `id` = ?', [2, 'b', 1, 1]],
-            ['UPDATE `counters` SET `attempts` = `attempts` - CAST(? AS DECIMAL(65,30)) WHERE `id` = ?', [1.5, 1]],
+            ['UPDATE `counters` SET `attempts` = `attempts` - CAST(? AS DECIMAL(65,30)) WHERE `id` = ?', ['1.5', 1]],
         ], $rendered->all());
     }
 
     /**
-     * A float the DECIMAL(65,30) cast would change is refused before anything is sent: INF, NAN,
-     * magnitudes from 1e35 (beyond the integer digits) and below 1e-13 (the digits PHP writes
-     * could reach past the 30th place; a tiny step on a DOUBLE column would silently be lost).
-     * 0, negative steps and the bounds themselves are added.
+     * A float step is bound as the shortest decimal text that reads back as the same float, not
+     * as PHP's `precision` setting writes it (14 digits); a float whose text DECIMAL(65,30) cannot
+     * hold - more than 35 integer or 30 fraction digits, INF, NAN - is refused before anything is
+     * sent. 0, negative steps and the limits themselves are added.
      */
-    public function testAFloatStepTheCastCannotHoldIsRefused(): void
+    public function testAFloatStepIsBoundAsItsExactText(): void
     {
         $this->create('counters', ['id' => 'key', 'score' => 'double NOT NULL']);
         $this->db->insert('counters', ['id' => 1, 'score' => 0.5]);
-        $rendered = new Recorder(static fn (array $context): string => (string) $context['sql']);
-        $this->db->on('query', $rendered);
+        $sent = new Recorder(static fn (array $context): array => [(string) $context['sql'], $context['params']]);
+        $this->db->on('query', $sent);
 
-        foreach ([INF, -INF, NAN, 9.99e-14, -1e-14, 1e35, -1e35] as $step) {
+        foreach ([INF, -INF, NAN, 1.2345678901234567e-15, -1e-31, 1e35, -1.5e35] as $step) {
             foreach (['increment', 'decrement'] as $method) {
                 try {
                     $this->db->table('counters')->where('id', 1)->{$method}('score', $step);
                     $this->fail(sprintf('Expected QueryException: %s(%s)', $method, var_export($step, true)));
                 } catch (QueryException $e) {
                     $this->assertSame('Update failed', $e->getMessage());
-                    $this->assertSame(sprintf('%s() adds a float as DECIMAL(65,30), which would change %s: only 0 and magnitudes from 1e-13 below 1e35 keep the digits PHP writes for a float. Use update() with Database::raw() for it.', $method, var_export($step, true)), $e->getDebugMessage());
+                    $this->assertSame(sprintf('%s() adds a float as DECIMAL(65,30), which cannot hold %s: more than 35 integer or 30 fraction digits, or no finite number. Use update() with Database::raw() for it.', $method, var_export($step, true)), $e->getDebugMessage());
                 }
             }
         }
-        $this->assertSame([], $rendered->all(), 'nothing was sent');
+        $this->assertSame([], $sent->all(), 'nothing was sent');
 
         $score = fn (): mixed => $this->db->findOne('counters', ['id' => 1])['score'] ?? null;
         foreach ([0.0, -0.0] as $step) {
             $this->assertSame(0, $this->db->table('counters')->where('id', 1)->increment('score', $step), 'nothing changed');
         }
-        $this->db->table('counters')->where('id', 1)->increment('score', 1e-13);
-        $this->assertSame(0.5000000000001, $score());
-        $this->db->table('counters')->where('id', 1)->increment('score', -1e-13);
-        $this->assertSame(0.5, $score(), 'a negative step');
+        $this->db->table('counters')->where('id', 1)->increment('score', 1.2345678901234567e-14);
+        $this->db->table('counters')->where('id', 1)->increment('score', -1.2345678901234567e-14);
+        $this->assertSame(0.5, $score(), 'thirty fraction digits there and back');
+        $this->db->table('counters')->where('id', 1)->increment('score', 0.1234567890123456);
+        $this->assertSame(0.6234567890123456, $score(), 'sixteen digits, where PHP\'s precision would send fourteen');
+        $this->db->table('counters')->where('id', 1)->decrement('score', 0.6234567890123456);
         $this->db->table('counters')->where('id', 1)->increment('score', 9.9e34);
         $this->assertSame(9.9e34, $score());
+
+        $updates = array_values(array_filter($sent->all(), static fn (array $sent): bool => str_starts_with($sent[0], 'UPDATE')));
+        $this->assertSame([['0', 1], ['0', 1], ['0.000000000000012345678901234567', 1], ['-0.000000000000012345678901234567', 1], ['0.1234567890123456', 1], ['0.6234567890123456', 1], ['99000000000000000000000000000000000', 1]], array_column($updates, 1), 'the text bound for each step');
+    }
+
+    /**
+     * With $extra, a name beyond ASCII is refused: MariaDB folds the case of such names by rules
+     * that differ between versions (Ä and ä are one column; on 12.3 I and ı too), so that the
+     * step could be replaced silently. Without $extra there is nothing to compare.
+     */
+    public function testANameBeyondAsciiWithExtraIsRefused(): void
+    {
+        $this->create('counters', ['id' => 'key', 'Zähler' => 'int NOT NULL', 'note' => 'text']);
+        $this->db->insert('counters', ['id' => 1, 'Zähler' => 0, 'note' => 'a']);
+
+        foreach ([['Zähler', 'zähler'], ['Zähler', 'note'], ['note', 'Zähler']] as [$column, $key]) {
+            try {
+                $this->db->table('counters')->where('id', 1)->increment($column, 1, [$key => 9]);
+                $this->fail("Expected QueryException: {$column} with {$key}");
+            } catch (QueryException $e) {
+                $this->assertSame(sprintf('increment() with $extra compares the column names itself, and "%s" or "%s" holds characters beyond ASCII, whose case MariaDB folds by rules of its own: whether they name the same column cannot be ruled out. Set the extra columns with a separate update().', $column, $key), $e->getDebugMessage());
+            }
+        }
+
+        $this->assertSame(1, $this->db->table('counters')->where('id', 1)->increment('Zähler'));
+        $this->assertSame(1, $this->db->findOne('counters', ['id' => 1])['Zähler'] ?? null);
     }
 
     /**

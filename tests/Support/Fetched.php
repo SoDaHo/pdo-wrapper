@@ -12,8 +12,10 @@ use PHPUnit\Framework\Assert;
 final class Fetched
 {
     /**
-     * A number as an integer: the drivers deliver the same number as an integer or as a numeric
-     * string. Anything that is no number fails the test instead of being cast into one.
+     * A number as an integer, where a test does not pin the PHP type the value arrives as (an
+     * aggregate column, a count read through a raw query): an integer or a numeric string.
+     * Anything that is no number fails the test instead of being cast into one. Where the type is
+     * the library's promise (an `int` column of the binding), tests compare with assertSame().
      */
     public static function int(mixed $value): int
     {

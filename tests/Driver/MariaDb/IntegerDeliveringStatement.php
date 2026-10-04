@@ -7,8 +7,8 @@ namespace Sodaho\PdoWrapper\Tests\Driver\MariaDb;
 use PDOStatement;
 
 /**
- * A statement class (PDO::ATTR_STATEMENT_CLASS) whose fetchColumn() turns a numeric string into
- * an int, as a client that delivers other types than mysqlnd would.
+ * A statement class (PDO::ATTR_STATEMENT_CLASS) whose fetch() turns the numeric strings of a row
+ * into ints, as a client that delivers other types than mysqlnd would.
  */
 final class IntegerDeliveringStatement extends PDOStatement
 {
@@ -16,10 +16,10 @@ final class IntegerDeliveringStatement extends PDOStatement
     {
     }
 
-    public function fetchColumn(int $column = 0): mixed
+    public function fetch(int $mode = \PDO::FETCH_DEFAULT, int $cursorOrientation = \PDO::FETCH_ORI_NEXT, int $cursorOffset = 0): mixed
     {
-        $value = parent::fetchColumn($column);
+        $row = parent::fetch($mode, $cursorOrientation, $cursorOffset);
 
-        return is_string($value) && is_numeric($value) ? (int) $value : $value;
+        return is_array($row) ? array_map(static fn (mixed $value): mixed => is_string($value) && is_numeric($value) ? (int) $value : $value, $row) : $row;
     }
 }
