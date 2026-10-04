@@ -17,7 +17,9 @@ use Sodaho\PdoWrapper\Exception\DatabaseException;
  * transaction begun on raw PDO carries null for both. Every told begin is followed by exactly one
  * end with the same number - also after a throwing begin listener ('rolled_back' after the raw
  * rollback, or 'lost' when it failed; no rollback listener runs) and for a transaction a commit
- * listener began and ended on raw PDO ('lost'). A BEGIN that fails in PDO tells nothing.
+ * listener began and ended on raw PDO ('lost'). A BEGIN that fails in PDO tells nothing. The
+ * numbers are the library's: a listener that takes the payload by reference and changes them
+ * changes what the listeners after it are told, not what the library tells later.
  *
  * "Fail Hard" implementation for 'query', 'error', 'transaction.begin' and 'transaction.rollback':
  * exceptions in those hooks bubble up to the caller (a PDOException from a 'transaction.begin' or
