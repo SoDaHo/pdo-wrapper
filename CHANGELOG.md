@@ -2,6 +2,42 @@
 
 ## [Unreleased]
 
+3.0 (in the making, on branch `3.x`): MariaDB is the only database. Breaking - see "Upgrading from 2.x" below.
+
+### Removed
+- The SQLite and PostgreSQL drivers (`SqliteDriver`, `PostgresDriver`, `Database::sqlite()`, `Database::postgres()`, `DB_SQLITE_PATH`), and with them the dialect switch of the query builder (`QueryBuilder::DIALECT_*`, its third and fourth constructor argument) and the drivers' `getQuoteChar()` / `getDialect()`.
+- MySQL: a MySQL server is refused when the connection opens.
+- From `DatabaseInterface`: `insertIgnore()`, `insertWhen()`, `updateMultiple()`, `lastInsertId()`, `utcNow()` - they stay public on every driver and are declared in the `@internal` interface `InternalMethods` (the builder's `insertIgnore()` / `insertWhen()` are unchanged).
+
+### Changed
+- The driver is `MariaDbDriver`, created with `Database::mariadb()` or `connect()` / `fromEnv()` with the driver name `mariadb`. `mysql` throws, saying the driver is called `mariadb` now; so do `pgsql`, `postgres`, `postgresql` and `sqlite`.
+- When the connection opens (and at `reconnect()`): the server must be MariaDB 10.11 or later and pdo_mysql built on mysqlnd, read from the handshake without a statement; otherwise a `ConnectionException`.
+- The PHP types of fetched values are pinned (README, "What Comes Back"): `ATTR_STRINGIFY_FETCHES` is set off, and `options` that switch it on are refused.
+- Error 1020 (a row another transaction changed since this one read it, under `innodb_snapshot_isolation`, on by default since MariaDB 11.6.2) ends the transaction like a deadlock: nothing more is sent until `rollback()`, and the commit is refused.
+- `limit()` on `update()` and `delete()` needs an `orderBy()`: without one, which rows are hit would be up to the server.
+- `whereIn()` with an empty list matches no row (`1 = 0`) instead of throwing; `whereNotIn()` with an empty list still throws.
+- `AbstractDriver::now()` / `utcNow()` are `NOW()` / `UTC_TIMESTAMP()` (were `CURRENT_TIMESTAMP` for a custom driver); `UniqueViolationException::$constraint` is the key name as MariaDB prints it.
+- `sum()` / `avg()` return `float|string|null` (was `int|float|string|null`): MariaDB delivers a numeric string for integer and `DECIMAL` columns, a float for `FLOAT`/`DOUBLE`.
+
+### Added
+- `off($event, $callback)` on `DatabaseInterface`: removes a listener; an unknown event or a callback that is not registered throws.
+- `reconnect()` on `DatabaseInterface`.
+- `increment()` / `decrement()` on the query builder: `UPDATE ... SET col = col + ?`, with further columns in the same statement.
+- `orderBy()` takes an expression (`Database::raw()`, without bindings); a string stays a quoted column name.
+
+### Upgrading from 2.x
+| 2.x | 3.0 |
+|---|---|
+| `Database::mysql($config)`, `new MySqlDriver($config)` | `Database::mariadb($config)`, `new MariaDbDriver($config)` |
+| `connect(['driver' => 'mysql', ...])`, `DB_DRIVER=mysql` | `'driver' => 'mariadb'`, `DB_DRIVER=mariadb` |
+| `Database::sqlite()`, `Database::postgres()`, `DB_SQLITE_PATH` | gone: MariaDB only |
+| `$db->insertIgnore($t, $row)` on a `DatabaseInterface` | `$db->table($t)->insertIgnore($row)`, or type the driver as `MariaDbDriver` |
+| `->limit(n)->delete()` / `->limit(n)->update()` without `orderBy()` | add `->orderBy(...)` (a unique key) |
+| `whereIn('id', [])` threw | matches nothing: drop the `=== []` guard if it only avoided the exception |
+| `options` with `PDO::ATTR_STRINGIFY_FETCHES => true` | refused: cast in the application |
+| a custom driver overriding `getQuoteChar()` / `getDialect()` | gone: identifiers are quoted with backticks |
+| `new QueryBuilder($db, $table, $quote, $dialect)` | `$db->table($table)` (the constructor takes `$db` and `$table` only) |
+
 ## [2.1.0] - 2026-10-04
 
 ### Added
