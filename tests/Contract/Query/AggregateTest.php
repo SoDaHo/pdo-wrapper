@@ -40,9 +40,9 @@ class AggregateTest extends ContractTestCase
         $this->assertSame(3, $this->db->table('users')->select(['users.*'])->groupBy('country')->count(), 'wildcards are dropped');
         $this->assertSame(3, $this->db->table('users')->select([Database::raw('COUNT(*)'), Database::raw('COUNT(*)')])->groupBy('country')->count(), 'unaliased raw entries are dropped (they would repeat a column name)');
         $this->assertSame(2, $this->db->table('users')->select([Database::raw('COUNT(*) AS n'), Database::raw('MAX(score) AS N')])->groupBy('country')->having('n', '>', Database::raw('1'))->count(), 'one entry per alias');
-        $this->assertSame(2, $this->db->table('users')->select([Database::raw('COUNT(*) AS `n`')])->groupBy('country')->having('n', '>', Database::raw('1'))->count(), 'a quoted alias counts as an alias');
-        $this->assertSame(2, $this->db->table('users')->select([Database::raw('COUNT(*) AS "n"')])->groupBy('country')->having('n', '>', Database::raw('1'))->count());
-        $this->assertTrue($this->db->table('users')->select([Database::raw('COUNT(*) AS `n`')])->groupBy('country')->having('n', '>', Database::raw('1'))->exists());
+        // an alias in the database's own quote characters counts too: tests/Driver
+        $this->assertSame(2, $this->db->table('users')->select([Database::raw('COUNT(*) AS "n"')])->groupBy('country')->having('n', '>', Database::raw('1'))->count(), 'a quoted alias counts as an alias');
+        $this->assertTrue($this->db->table('users')->select([Database::raw('COUNT(*) AS n')])->groupBy('country')->having('n', '>', Database::raw('1'))->exists());
     }
 
     public function testGroupedExistsKeepsAliasedSelectEntriesForHaving(): void
@@ -125,15 +125,17 @@ class AggregateTest extends ContractTestCase
     }
 
     /**
-     * sum() and avg() hand on what the database delivers: here exact numeric strings (a database
-     * may deliver an integer or a float instead).
+     * sum() and avg() hand on what the database delivers: an integer, a float or an exact numeric
+     * string, as the binding says.
      */
     public function testOtherAggregatesRespectDistinctAndRefuseGroupBy(): void
     {
-        $this->assertSame('90', $this->db->table('users')->sum('score'));
-        $this->assertSame('60', $this->db->table('users')->distinct()->sum('score'), 'SUM(DISTINCT score): 10 + 20 + 30');
-        $this->assertSame('18.0000', $this->db->table('users')->avg('score'));
-        $this->assertSame('20.0000', $this->db->table('users')->distinct()->avg('score'), 'AVG(DISTINCT score)');
+        $binding = self::binding();
+
+        $this->assertSame($binding->deliveredIntSum(90), $this->db->table('users')->sum('score'));
+        $this->assertSame($binding->deliveredIntSum(60), $this->db->table('users')->distinct()->sum('score'), 'SUM(DISTINCT score): 10 + 20 + 30');
+        $this->assertSame($binding->deliveredIntAvg(18), $this->db->table('users')->avg('score'));
+        $this->assertSame($binding->deliveredIntAvg(20), $this->db->table('users')->distinct()->avg('score'), 'AVG(DISTINCT score)');
 
         try {
             $this->db->table('users')->groupBy('country')->sum('score');
@@ -146,8 +148,10 @@ class AggregateTest extends ContractTestCase
     public function testAggregatesLeaveTheBuilderUntouched(): void
     {
         $builder = $this->db->table('users')->select('country')->distinct()->orderBy('country')->limit(2);
+        $before = $builder->toSql();
         $builder->count();
 
-        $this->assertSame('SELECT DISTINCT `country` FROM `users` ORDER BY `country` ASC LIMIT 2', $builder->toSql()[0]);
+        $this->assertSame($before, $builder->toSql());
+        $this->assertSame(['AT', 'DE'], array_column($builder->get(), 'country'), 'DISTINCT, ORDER BY and LIMIT still apply');
     }
 }

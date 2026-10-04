@@ -43,7 +43,7 @@ class PdoClassTest extends ContractTestCase
 
     protected function setUp(): void
     {
-        foreach (['DB_DRIVER', 'DB_SQLITE_PATH', 'DB_HOST', 'DB_DATABASE', 'DB_USERNAME', 'DB_PASSWORD', 'DB_PORT'] as $key) {
+        foreach (['DB_DRIVER', 'DB_HOST', 'DB_DATABASE', 'DB_USERNAME', 'DB_PASSWORD', 'DB_PORT'] as $key) {
             $this->savedEnvironment[$key] = ['env' => $_ENV[$key] ?? null, 'process' => getenv($key)];
             unset($_ENV[$key]);
             putenv($key);

@@ -159,9 +159,8 @@ class QueryBuilderTest extends ContractTestCase
         $this->assertSame(0, $this->db->table('users')->whereIn('id', [])->update(['name' => 'changed']));
         $this->assertSame(0, $this->db->table('users')->whereIn('id', [])->delete());
         $this->assertSame(3, $this->db->table('users')->where('name', '!=', 'changed')->count(), 'nothing was changed or deleted');
-        [$sql, $params] = $this->db->table('users')->where('id', '>', 1)->whereIn('name', [])->toSql();
-        $this->assertSame('SELECT * FROM `users` WHERE `id` > ? AND (1 = 0)', $sql);
-        $this->assertSame([1], $params);
+        [, $params] = $this->db->table('users')->where('id', '>', 1)->whereIn('name', [])->toSql();
+        $this->assertSame([1], $params, 'the empty list binds nothing');
     }
 
     /**
@@ -384,11 +383,11 @@ class QueryBuilderTest extends ContractTestCase
 
         // sum() should sum all rows, not limited
         $builder = $this->db->table('users')->limit(1);
-        $this->assertSame('75', $builder->sum('age')); // 25 + 30 + 20
+        $this->assertSame(self::binding()->deliveredIntSum(75), $builder->sum('age')); // 25 + 30 + 20
 
         // avg() should average all rows
         $builder = $this->db->table('users')->limit(1);
-        $this->assertSame('25.0000', $builder->avg('age'));
+        $this->assertSame(self::binding()->deliveredIntAvg(25), $builder->avg('age'));
 
         // min/max should consider all rows
         $builder = $this->db->table('users')->limit(1)->orderBy('age', 'DESC');
@@ -428,25 +427,25 @@ class QueryBuilderTest extends ContractTestCase
     }
 
     /**
-     * The sum as the database delivers it, not converted: here an exact numeric string for the
-     * sum of an integer column (a database may deliver an integer instead).
+     * The sum as the database delivers it, not converted: for the sum of an integer column an
+     * integer or an exact numeric string, as the binding says.
      */
     public function testSum(): void
     {
         $sum = $this->db->table('users')->sum('age');
 
-        $this->assertSame('75', $sum); // 25 + 30 + 20
+        $this->assertSame(self::binding()->deliveredIntSum(75), $sum); // 25 + 30 + 20
     }
 
     /**
-     * The average as the database delivers it: here a numeric string with the database's number
-     * of decimals (a database may deliver a float instead).
+     * The average as the database delivers it: a float, or a numeric string with the database's
+     * number of decimals, as the binding says.
      */
     public function testAvg(): void
     {
         $avg = $this->db->table('users')->avg('age');
 
-        $this->assertSame('25.0000', $avg);
+        $this->assertSame(self::binding()->deliveredIntAvg(25), $avg);
     }
 
     public function testMin(): void

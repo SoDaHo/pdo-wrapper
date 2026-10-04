@@ -182,7 +182,8 @@ class ReconnectTest extends ContractTestCase
 
     /**
      * A statement that failed on the old connection is forgotten with it: it does not refuse the
-     * commit of a transaction on the new one (on PostgreSQL every failed statement would).
+     * commit of a transaction on the new one (where a failed statement aborts the transaction,
+     * every one would).
      */
     public function testAFailedStatementOfTheOldConnectionIsForgotten(): void
     {
@@ -234,7 +235,8 @@ class ReconnectTest extends ContractTestCase
     /**
      * transaction() whose ROLLBACK failed told 'lost' while the transaction might still be open.
      * reconnect() discards that connection: the end was told already, no second one is. A statement
-     * that failed in it is forgotten with it - on PostgreSQL it would refuse every later commit.
+     * that failed in it is forgotten with it - where a failed statement aborts the transaction, it
+     * would refuse every later commit.
      */
     public function testALostToldWhileTheTransactionMightStillBeOpenIsNotToldAgain(): void
     {

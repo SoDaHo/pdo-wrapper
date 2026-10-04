@@ -76,7 +76,7 @@ final class MariaDbBinding implements DriverBinding
 
     public function failureCodes(): array
     {
-        return ['unknownTable' => ['42S02', 1146], 'duplicate' => ['23000', 1062]];
+        return ['unknownTable' => ['42S02', 1146], 'duplicate' => ['23000', 1062], 'deadlock' => ['40001', 1213]];
     }
 
     public function deliveredAggregates(): array
@@ -89,6 +89,17 @@ final class MariaDbBinding implements DriverBinding
             'price' => ['0.3000', '0.15000000'],
             'ratio' => [0.75, 0.375],
         ];
+    }
+
+    public function deliveredIntSum(int $sum): string
+    {
+        return (string) $sum; // a DECIMAL without decimals
+    }
+
+    public function deliveredIntAvg(float $average): string
+    {
+        // A DECIMAL with div_precision_increment (4) decimals
+        return number_format($average, 4, '.', '');
     }
 
     public function uniqueConstraintNames(): array

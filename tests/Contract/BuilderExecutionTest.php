@@ -42,9 +42,10 @@ class BuilderExecutionTest extends ContractTestCase
     {
         $this->db->insert('users', ['name' => 'Max', 'nick' => 'max2']);
         $grouped = $this->db->table('users')->select(['name'])->groupBy('name');
+        $before = $grouped->toSql();
 
         $this->assertTrue($grouped->exists());
-        $this->assertSame('SELECT `name` FROM `users` GROUP BY `name`', $grouped->toSql()[0], 'exists() must not change the builder');
+        $this->assertSame($before, $grouped->toSql(), 'exists() must not change the builder');
         $this->assertTrue($this->db->table('users')->select(['name'])->distinct()->exists());
         // DISTINCT keeps its cardinality (two distinct names): offset(1) has a next page, offset(2) has not
         $this->assertTrue($this->db->table('users')->select(['name'])->distinct()->offset(1)->exists());

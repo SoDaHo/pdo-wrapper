@@ -103,14 +103,12 @@ class SecurityTest extends ContractTestCase
                 ->whereIn('id', $maliciousValues)
                 ->get();
 
-            // MySQL casts strings to int (returns 0 or the numeric prefix)
+            // A database may cast the strings to integers (0 or the numeric prefix)
             // Should NOT return all users
             $this->assertLessThan(2, count($result));
         } catch (\Sodaho\PdoWrapper\Exception\QueryException $e) {
-            // PostgreSQL throws error on invalid integer - this is GOOD security behavior
-            // Check the original PDO exception message
-            $originalMessage = $e->getPrevious()?->getMessage() ?? '';
-            $this->assertStringContainsString('invalid input syntax', $originalMessage);
+            // or refuse a string that is no integer - this is GOOD security behavior
+            $this->assertInvalidInteger($e);
         }
     }
 
@@ -124,9 +122,8 @@ class SecurityTest extends ContractTestCase
                 ->whereBetween('id', [$maliciousStart, $maliciousEnd])
                 ->get();
         } catch (\Sodaho\PdoWrapper\Exception\QueryException $e) {
-            // PostgreSQL throws error on invalid integer - this is GOOD security behavior
-            $originalMessage = $e->getPrevious()?->getMessage() ?? '';
-            $this->assertStringContainsString('invalid input syntax', $originalMessage);
+            // A database may refuse a string that is no integer - this is GOOD security behavior
+            $this->assertInvalidInteger($e);
         }
 
         // Secrets table should still exist regardless of how the DB handled it
@@ -198,14 +195,23 @@ class SecurityTest extends ContractTestCase
                 [$maliciousId]
             )->fetchAll(\PDO::FETCH_ASSOC);
 
-            // MySQL casts "1 OR 1=1" to int 1, may return 1 row (id=1)
+            // A database may cast "1 OR 1=1" to the integer 1 and return 1 row (id=1)
             // Should NOT return all users
             $this->assertLessThan(2, count($result));
         } catch (\Sodaho\PdoWrapper\Exception\QueryException $e) {
-            // PostgreSQL throws error on invalid integer - this is GOOD security behavior
-            $originalMessage = $e->getPrevious()?->getMessage() ?? '';
-            $this->assertStringContainsString('invalid input syntax', $originalMessage);
+            // or refuse a string that is no integer - this is GOOD security behavior
+            $this->assertInvalidInteger($e);
         }
+    }
+
+    /**
+     * The refusal of a string that is no integer: a failed query whose SQLSTATE is of class 22,
+     * data exception (standard SQL, unlike the wording of the message).
+     */
+    private function assertInvalidInteger(QueryException $e): void
+    {
+        $this->assertSame('Query failed', $e->getMessage());
+        $this->assertStringStartsWith('22', (string) $e->sqlState, 'a data exception');
     }
 
     public function testSqlInjectionInDirectQueryWithNamedParams(): void
@@ -311,17 +317,20 @@ class SecurityTest extends ContractTestCase
     // SQL INJECTION VIA IDENTIFIERS (Column/Table Names)
     // =========================================================================
 
+    /**
+     * The name is one quoted identifier (its SQL: tests/Unit/ContractQueryRenderingTest): no
+     * column of that name, and nothing of it is run.
+     */
     public function testSqlInjectionInColumnName(): void
     {
         $maliciousColumn = '"; DROP TABLE users; --';
         $query = $this->db->table('users')->where($maliciousColumn, 'test');
-        $this->assertStringContainsString(' WHERE ' . $this->quoted($maliciousColumn) . ' = ?', $query->toSql()[0], 'one quoted identifier');
 
         try {
-            // SQLite does not throw: a quoted name that is no column is read as a string there
+            // A database may read a quoted name that is no column as a string: then nothing matches
             $this->assertSame([], $query->get());
         } catch (\Sodaho\PdoWrapper\Exception\QueryException $e) {
-            // MySQL/PostgreSQL: no such column
+            // or refuse it: no such column
             $this->assertSame('Query failed', $e->getMessage());
         }
 
@@ -331,21 +340,11 @@ class SecurityTest extends ContractTestCase
     }
 
     /**
-     * The identifier as this database's driver has to write it: its quote character around it and
-     * doubled inside - the whole string is one name, whatever it contains.
+     * The name is one quoted identifier (its SQL: tests/Unit/ContractQueryRenderingTest).
      */
-    private function quoted(string $identifier): string
-    {
-        $quote = str_contains($this->db->table('users')->toSql()[0], '`') ? '`' : '"';
-
-        return $quote . str_replace($quote, $quote . $quote, $identifier) . $quote;
-    }
-
     public function testSqlInjectionInTableName(): void
     {
         $maliciousTable = 'users"; DROP TABLE secrets; --';
-
-        $this->assertSame('SELECT * FROM ' . $this->quoted($maliciousTable), $this->db->table($maliciousTable)->toSql()[0], 'one quoted identifier');
 
         try {
             $this->db->table($maliciousTable)->get();
@@ -383,17 +382,19 @@ class SecurityTest extends ContractTestCase
             ->get();
     }
 
+    /**
+     * The name is one quoted identifier (its SQL: tests/Unit/ContractQueryRenderingTest).
+     */
     public function testSqlInjectionInOrderByColumn(): void
     {
         $maliciousColumn = 'name; DROP TABLE users; --';
         $query = $this->db->table('users')->orderBy($maliciousColumn);
-        $this->assertStringContainsString(' ORDER BY ' . $this->quoted($maliciousColumn) . ' ASC', $query->toSql()[0], 'one quoted identifier');
 
         try {
-            // SQLite does not throw: a quoted name that is no column is read as a string there
+            // A database may read a quoted name that is no column as a string: then it orders nothing
             $this->assertCount(2, $query->get());
         } catch (\Sodaho\PdoWrapper\Exception\QueryException $e) {
-            // MySQL/PostgreSQL: no such column
+            // or refuse it: no such column
             $this->assertSame('Query failed', $e->getMessage());
         }
 
@@ -543,7 +544,7 @@ class SecurityTest extends ContractTestCase
                 ->get();
         }
 
-        // Test LIKE operators on string column (PostgreSQL doesn't support LIKE on integers)
+        // Test LIKE operators on string column (LIKE on an integer is the database's own matter)
         $likeOperators = ['LIKE', 'NOT LIKE'];
 
         foreach ($likeOperators as $operator) {

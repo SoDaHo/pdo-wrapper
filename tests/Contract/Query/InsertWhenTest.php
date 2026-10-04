@@ -12,8 +12,9 @@ use Sodaho\PdoWrapper\Tests\Contract\ContractTestCase;
  * insertWhen(): insert a row only when a condition holds, in one statement.
  *
  * The statement is `INSERT INTO ... SELECT <row> [FROM <dummy table>] WHERE (<condition>)`:
- * whether the SELECT names a dummy table is the dialect's matter, so the SQL is checked up to
- * that point and from the WHERE on (the whole statement per engine: tests/Driver).
+ * how the names are quoted and whether the SELECT names a dummy table is the driver's matter, so
+ * the SQL is checked from its SELECT up to that point and from the WHERE on (the whole statement:
+ * tests/Driver).
  */
 class InsertWhenTest extends ContractTestCase
 {
@@ -85,7 +86,8 @@ class InsertWhenTest extends ContractTestCase
         $this->assertSame(1, $this->db->insertWhen('codes', ['user_id' => 7, 'code' => 'third'], $condition, [7]), 'the open code was used');
 
         $this->assertSame(['first', 'other', 'third'], array_column($this->db->table('codes')->orderBy('id')->get(), 'code'));
-        $this->assertStringStartsWith('INSERT INTO `codes` (`user_id`, `code`) SELECT ?, ? ', $this->queries[0]['sql']);
+        $this->assertStringStartsWith('INSERT INTO ', $this->queries[0]['sql']);
+        $this->assertStringContainsString(') SELECT ?, ? ', $this->queries[0]['sql']);
         $this->assertStringEndsWith(' WHERE (NOT EXISTS (SELECT 1 FROM codes WHERE user_id = ? AND used_at IS NULL))', $this->queries[0]['sql']);
         $this->assertSame([7, 'first', 7], $this->queries[0]['params'], 'row values first, then the condition bindings');
     }
@@ -110,7 +112,8 @@ class InsertWhenTest extends ContractTestCase
         );
 
         $this->assertSame(1, $inserted);
-        $this->assertStringStartsWith("INSERT INTO `codes` (`user_id`, `code`, `created_at`) SELECT ?, CONCAT('raw', '-code'), " . $this->db->now() . ' ', $this->queries[0]['sql'], "the driver's now() inlined as it is");
+        $this->assertStringStartsWith('INSERT INTO ', $this->queries[0]['sql']);
+        $this->assertStringContainsString(") SELECT ?, CONCAT('raw', '-code'), " . $this->db->now() . ' ', $this->queries[0]['sql'], "the driver's now() inlined as it is");
         $this->assertStringEndsWith(' WHERE (? > ?)', $this->queries[0]['sql']);
         $this->assertSame([9, 2, 1], $this->queries[0]['params']);
         $row = $this->db->table('codes')->where('user_id', 9)->first();

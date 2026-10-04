@@ -36,24 +36,22 @@ class RawValueTest extends ContractTestCase
 
     public function testBuilderWhereInlinesRawValueAndBindsTheRest(): void
     {
-        [$sql, $params] = $this->db->table('counters')
+        [, $params] = $this->db->table('counters')
             ->where('hits', '>', Database::raw('1 + 1'))
             ->where('name', 'b')
             ->toSql();
 
-        $this->assertSame('SELECT * FROM `counters` WHERE `hits` > 1 + 1 AND `name` = ?', $sql);
         $this->assertSame(['b'], $params);
         $this->assertCount(1, $this->db->table('counters')->where('hits', '>', Database::raw('1 + 1'))->get());
     }
 
     public function testBuilderWhereInAndWhereBetweenInlineRawValues(): void
     {
-        [$sql, $params] = $this->db->table('counters')
+        [, $params] = $this->db->table('counters')
             ->whereIn('hits', [1, Database::raw('2 + 3'), 9])
             ->whereBetween('hits', [Database::raw('0'), 7])
             ->toSql();
 
-        $this->assertSame('SELECT * FROM `counters` WHERE `hits` IN (?, 2 + 3, ?) AND `hits` BETWEEN 0 AND ?', $sql);
         $this->assertSame([1, 9, 7], $params);
         $this->assertSame(2, $this->db->table('counters')->whereIn('hits', [1, Database::raw('2 + 3'), 9])->count());
         $this->assertSame(1, $this->db->table('counters')->whereBetween('hits', [Database::raw('2'), 9])->count());
@@ -74,14 +72,13 @@ class RawValueTest extends ContractTestCase
      */
     public function testMixedRawAndBoundValuesKeepParameterOrder(): void
     {
-        [$sql, $params] = $this->db->table('counters')
+        [, $params] = $this->db->table('counters')
             ->select(['name', Database::raw('SUM(hits) AS total')])
             ->where('hits', '>', Database::raw('0'))
             ->where('name', 'b')
             ->groupBy('name')
             ->having(Database::raw('SUM(hits)'), '>=', 5)
             ->toSql();
-        $this->assertSame('SELECT `name`, SUM(hits) AS total FROM `counters` WHERE `hits` > 0 AND `name` = ? GROUP BY `name` HAVING SUM(hits) >= ?', $sql);
         $this->assertSame(['b', 5], $params);
 
         $affected = $this->db->update('counters', ['hits' => Database::raw('hits + 1'), 'name' => 'z'], ['id' => 2]);
@@ -95,18 +92,16 @@ class RawValueTest extends ContractTestCase
 
     public function testRawLikePatternKeepsTheEscapeClause(): void
     {
-        [$sql, $params] = $this->db->table('counters')->whereLike('name', '100%')->toSql();
-        $this->assertSame('SELECT * FROM `counters` WHERE `name` LIKE ? ESCAPE ?', $sql);
+        [, $params] = $this->db->table('counters')->whereLike('name', '100%')->toSql();
         $this->assertSame(['100%', '\\'], $params);
 
-        [$sql, $params] = $this->db->table('counters')->where('name', 'LIKE', Database::raw("CONCAT('a', '%')"))->toSql();
-        $this->assertSame('SELECT * FROM `counters` WHERE `name` LIKE CONCAT(\'a\', \'%\') ESCAPE ?', $sql);
-        $this->assertSame(['\\'], $params);
+        [, $params] = $this->db->table('counters')->where('name', 'LIKE', Database::raw("CONCAT('a', '%')"))->toSql();
+        $this->assertSame(['\\'], $params, 'the escape character is bound for a raw pattern too');
         $this->assertSame(1, $this->db->table('counters')->where('name', 'LIKE', Database::raw("CONCAT('a', '%')"))->count());
     }
 
     /**
-     * The SUM() comes as the database delivers it: here an exact numeric string.
+     * The SUM() comes as the database delivers it: as the binding says.
      */
     public function testBuilderHavingInlinesRawValue(): void
     {
@@ -116,7 +111,7 @@ class RawValueTest extends ContractTestCase
             ->having(Database::raw('SUM(hits)'), '>', Database::raw('2 + 2'))
             ->get();
 
-        $this->assertSame([['name' => 'b', 'total' => '5']], $rows);
+        $this->assertSame([['name' => 'b', 'total' => self::binding()->deliveredIntSum(5)]], $rows);
     }
 
     /**
@@ -128,7 +123,7 @@ class RawValueTest extends ContractTestCase
             ->select([Database::raw('counters.*'), Database::raw('COUNT(*) AS n')])
             ->toSql();
 
-        $this->assertSame('SELECT counters.*, COUNT(*) AS n FROM `counters`', $sql);
+        $this->assertStringStartsWith('SELECT counters.*, COUNT(*) AS n FROM ', $sql, 'the whole statement: tests/Unit/ContractQueryRenderingTest');
         $this->assertSame([], $params);
     }
 
@@ -152,20 +147,19 @@ class RawValueTest extends ContractTestCase
 
     public function testBuilderUpdateBindsARawValuesBindingsWhereItStands(): void
     {
-        [$sql, $params] = $this->sent(fn () => $this->db->table('counters')->where('id', 1)->where('hits', '<', 100)->update([
+        [, $params] = $this->sent(fn () => $this->db->table('counters')->where('id', 1)->where('hits', '<', 100)->update([
             'name' => 'x',
             'hits' => Database::raw('hits + ? * ?', [10, 2]),
             'seen_at' => 'now',
         ]));
 
-        $this->assertSame('UPDATE `counters` SET `name` = ?, `hits` = hits + ? * ?, `seen_at` = ? WHERE `id` = ? AND `hits` < ?', $sql, 'the assignments in the order of the array');
         $this->assertSame(['x', 10, 2, 'now', 1, 100], $params, "the raw value's bindings at its place, all of SET before WHERE");
         $this->assertSame(['id' => 1, 'name' => 'x', 'hits' => 21, 'seen_at' => 'now'], $this->db->findOne('counters', ['id' => 1]));
     }
 
     public function testBuilderWhereBindsARawValuesBindingsWhereItStands(): void
     {
-        [$sql, $params] = $this->db->table('counters')
+        [, $params] = $this->db->table('counters')
             ->where('name', '!=', 'zzz')
             ->where('hits', '>', Database::raw('? + ?', [1, 1]))
             ->whereIn('hits', [1, Database::raw('? + 3', [2]), 9])
@@ -173,7 +167,6 @@ class RawValueTest extends ContractTestCase
             ->where('name', 'b')
             ->toSql();
 
-        $this->assertSame('SELECT * FROM `counters` WHERE `name` != ? AND `hits` > ? + ? AND `hits` IN (?, ? + 3, ?) AND `hits` BETWEEN ? AND ? * 2 AND `name` = ?', $sql);
         $this->assertSame(['zzz', 1, 1, 1, 2, 9, 0, 4, 'b'], $params);
         $this->assertSame(['b'], array_column($this->db->table('counters')
             ->where('hits', '>', Database::raw('? + ?', [1, 1]))
@@ -185,9 +178,8 @@ class RawValueTest extends ContractTestCase
     public function testARawLikePatternWithBindingsComesBeforeTheEscapeCharacter(): void
     {
         $query = $this->db->table('counters')->where('name', 'LIKE', Database::raw('CONCAT(?, ?)', ['a', '%']));
-        [$sql, $params] = $query->toSql();
+        [, $params] = $query->toSql();
 
-        $this->assertSame('SELECT * FROM `counters` WHERE `name` LIKE CONCAT(?, ?) ESCAPE ?', $sql);
         $this->assertSame(['a', '%', '\\'], $params);
         $this->assertSame(1, $query->count());
     }
@@ -199,27 +191,24 @@ class RawValueTest extends ContractTestCase
             ->where('hits', '>', Database::raw('?', [0]))
             ->groupBy('name')
             ->having(Database::raw('SUM(hits)'), '>', Database::raw('? + ?', [2, 2]));
-        [$sql, $params] = $query->toSql();
+        [, $params] = $query->toSql();
 
-        $this->assertSame('SELECT `name`, SUM(hits) AS total FROM `counters` WHERE `hits` > ? GROUP BY `name` HAVING SUM(hits) > ? + ?', $sql);
         $this->assertSame([0, 2, 2], $params);
-        $this->assertSame([['name' => 'b', 'total' => '5']], $query->get(), 'the SUM() as the database delivers it');
+        $this->assertSame([['name' => 'b', 'total' => self::binding()->deliveredIntSum(5)]], $query->get(), 'the SUM() as the database delivers it');
     }
 
     public function testDriverHelpersBindARawValuesBindingsWhereItStands(): void
     {
-        [$sql, $params] = $this->sent(fn () => $this->db->insert('counters', ['name' => Database::raw('UPPER(?)', ['c']), 'hits' => 3, 'seen_at' => Database::raw('CONCAT(?, ?)', ['2026', '-01'])]));
-        $this->assertSame('INSERT INTO `counters` (`name`, `hits`, `seen_at`) VALUES (UPPER(?), ?, CONCAT(?, ?))', $sql);
+        [, $params] = $this->sent(fn () => $this->db->insert('counters', ['name' => Database::raw('UPPER(?)', ['c']), 'hits' => 3, 'seen_at' => Database::raw('CONCAT(?, ?)', ['2026', '-01'])]));
         $this->assertSame(['c', 3, '2026', '-01'], $params);
         $this->assertSame(['id' => 3, 'name' => 'C', 'hits' => 3, 'seen_at' => '2026-01'], $this->db->findOne('counters', ['name' => 'C']));
 
-        [$sql, $params] = $this->sent(fn () => $this->db->update(
+        [, $params] = $this->sent(fn () => $this->db->update(
             'counters',
             ['hits' => Database::raw('hits + ?', [2]), 'seen_at' => 'then', 'name' => Database::raw('LOWER(?)', ['D'])],
             ['name' => Database::raw('UPPER(?)', ['c']), 'hits' => 3]
         ));
-        $this->assertSame('UPDATE `counters` SET `hits` = hits + ?, `seen_at` = ?, `name` = LOWER(?) WHERE `name` = UPPER(?) AND `hits` = ?', $sql, 'the assignments in the order of the array');
-        $this->assertSame([2, 'then', 'D', 'c', 3], $params);
+        $this->assertSame([2, 'then', 'D', 'c', 3], $params, 'the assignments in the order of the array, then the conditions');
         $this->assertSame(['id' => 3, 'name' => 'd', 'hits' => 5, 'seen_at' => 'then'], $this->db->findOne('counters', ['id' => 3]));
 
         $this->assertCount(1, $this->db->findAll('counters', ['hits' => Database::raw('? + ?', [2, 3]), 'name' => 'd']));
@@ -260,11 +249,14 @@ class RawValueTest extends ContractTestCase
                 return '0 + ' . $this->value;
             }
         }]));
-        $this->assertSame('UPDATE `counters` SET `hits` = (hits + ?) WHERE `hits` = 0 + 1', $sql);
+        // the whole statement, with the names quoted by the driver: tests/Driver
+        $this->assertStringContainsString(' = (hits + ?) WHERE ', $sql);
+        $this->assertStringEndsWith(' = 0 + 1', $sql);
         $this->assertSame([41], $params);
+        $this->assertSame(42, $this->db->findOne('counters', ['name' => 'a'])['hits'] ?? null);
 
         [$sql] = $this->db->table('counters')->where('hits', $shouting)->toSql();
-        $this->assertSame('SELECT * FROM `counters` WHERE `hits` = (hits + ?)', $sql);
+        $this->assertStringEndsWith(' = (hits + ?)', $sql);
     }
 
     public function testARawExpressionWithBindingsIsRefusedWhereNoValueStands(): void
@@ -293,7 +285,7 @@ class RawValueTest extends ContractTestCase
             ->groupBy(Database::raw('name'))
             ->having(Database::raw('SUM(hits)'), '>', 4)
             ->get();
-        $this->assertSame([['name' => 'b', 'total' => '5']], $rows, 'the SUM() as the database delivers it');
+        $this->assertSame([['name' => 'b', 'total' => self::binding()->deliveredIntSum(5)]], $rows, 'the SUM() as the database delivers it');
     }
 
     public function testTheBindingsOfARawExpressionAreAListOfValues(): void

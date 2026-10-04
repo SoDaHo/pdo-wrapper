@@ -21,7 +21,7 @@ use Sodaho\PdoWrapper\Tests\Support\ScenarioPdo;
  */
 class DriverHookScenariosTest extends TransactionEndTestCase
 {
-    // ---- the extension point behind the refused commit (PostgreSQL, MySQL deadlock) ---------------
+    // ---- the extension point behind the refused commit (an aborted transaction, a deadlock) -------
 
     /**
      * A driver may flag statement failures that can end a transaction on the server and confirm
@@ -279,7 +279,7 @@ class DriverHookScenariosTest extends TransactionEndTestCase
     }
 
     /**
-     * A driver that knows a failure ended the transaction for certain (MySQL/MariaDB: a deadlock)
+     * A driver that knows a failure ended the transaction for certain (a deadlock, for instance)
      * has the library accept nothing but the end of that transaction: no statement, no new
      * transaction. For a transaction this library began that holds whatever PDO reports; one begun
      * on raw PDO is only held for as long as PDO reports it.
@@ -949,7 +949,7 @@ class DriverHookScenariosTest extends TransactionEndTestCase
 
     /**
      * A statement that fails inside a 'transaction.begin' listener may have ended the transaction
-     * that was just begun without PDO knowing (MySQL/MariaDB: a failing DDL statement commits).
+     * that was just begun without PDO knowing (where a DDL statement commits, a failing one does too).
      * The driver is asked before PDO's report is trusted - after each listener, and before the
      * cleanup after a listener that threw. Gone: the begin fails and the end is 'lost'. Not to
      * be found out: the begin fails as well (the caller must not go on in what may be

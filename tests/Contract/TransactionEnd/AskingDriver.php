@@ -9,7 +9,7 @@ use Sodaho\PdoWrapper\Tests\Support\ScenarioPdo;
 
 /**
  * A driver that remembers every statement failure and is asked about the transaction
- * afterwards, as the MySQL driver asks its server: $answer says what asking finds. A failure that
+ * afterwards, as a driver may ask its server: $answer says what asking finds. A failure that
  * names "fatal_table" settles the matter by itself and is not asked about.
  */
 final class AskingDriver extends HookDriver

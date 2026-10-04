@@ -143,7 +143,7 @@ class TransactionEndScenariosTest extends TransactionEndTestCase
 
             $this->assertSame(['commit', 'end'], $this->events);
             $this->assertSame(self::COMMITTED, $this->ends[0]['outcome']);
-            $this->assertVisible([1], 'MySQL and SQLite roll back only the failed statement');
+            $this->assertVisible([1], 'the database rolls back only the failed statement');
 
             return;
         }
@@ -837,10 +837,10 @@ class TransactionEndScenariosTest extends TransactionEndTestCase
     }
 
     /**
-     * The check for a chained transaction (MySQL completion_type=CHAIN) right after COMMIT and
-     * ROLLBACK reads the connection state. A state that cannot be read is not taken for a chained
-     * transaction: after a rollback nothing is reported, after a commit the commit listeners'
-     * own state check reports it as before.
+     * The check for a chained transaction (a COMMIT or ROLLBACK that begins the next one) right
+     * after COMMIT and ROLLBACK reads the connection state. A state that cannot be read is not
+     * taken for a chained transaction: after a rollback nothing is reported, after a commit the
+     * commit listeners' own state check reports it as before.
      */
     public function testAnUnreadableStateRightAfterCommitOrRollbackIsNotTakenForAChainedTransaction(): void
     {
@@ -871,8 +871,8 @@ class TransactionEndScenariosTest extends TransactionEndTestCase
 
     /**
      * Simulation only: the driver reports no transaction while one is in fact open. The real causes of
-     * this path - a raw COMMIT or a DDL statement inside the callback (MariaDB commits implicitly) -
-     * leave the data committed, see tests/Driver/MariaDb.
+     * this path - a raw COMMIT, or a DDL statement inside the callback on a database that commits
+     * before one - leave the data committed, see tests/Driver.
      */
     public function testLostWhenPdoNoLongerReportsTheTransaction(): void
     {
@@ -941,10 +941,11 @@ class TransactionEndScenariosTest extends TransactionEndTestCase
     }
 
     /**
-     * Simulation of what PostgreSQL leaves behind when COMMIT fails on a deferred constraint, and
-     * of a commit after a raw COMMIT: the commit fails and PDO reports no transaction. Nothing
-     * could end that transaction any more, so the failed commit itself tells its end - at once,
-     * on a direct commit() as well, not only when the next transaction begins.
+     * Simulation of what a database leaves behind that ends the transaction when COMMIT fails on a
+     * deferred constraint, and of a commit after a raw COMMIT: the commit fails and PDO reports
+     * no transaction. Nothing could end that transaction any more, so the failed commit itself
+     * tells its end - at once, on a direct commit() as well, not only when the next transaction
+     * begins.
      */
     public function testAFailedCommitOfATransactionThatIsGoneTellsItsEndAsLostAtOnce(): void
     {
@@ -1235,7 +1236,7 @@ class TransactionEndScenariosTest extends TransactionEndTestCase
     /**
      * A transaction begun on raw PDO and committed through the library tells an end when the
      * commit goes through - so it does when the commit fails and takes the transaction with it
-     * (PostgreSQL after a COMMIT rejected by a deferred constraint): 'lost', at once.
+     * (a COMMIT rejected by a deferred constraint, where that ends the transaction): 'lost', at once.
      */
     public function testAFailedCommitThatEndsARawBegunTransactionTellsItsEndAsLost(): void
     {
@@ -1982,7 +1983,7 @@ class TransactionEndScenariosTest extends TransactionEndTestCase
 
     /**
      * A 'transaction.begin' listener that ends the transaction behind the library's back (here: on
-     * raw PDO; on MySQL/MariaDB a DDL statement does the same): PDO reports none any more. Its end
+     * raw PDO; where a DDL statement commits, it does the same): PDO reports none any more. Its end
      * is told as 'lost', the begin fails, and the callback does not run in autocommit.
      */
     public function testABeginListenerThatEndsTheTransactionOnRawPdoMakesTheBeginFailAsLost(): void

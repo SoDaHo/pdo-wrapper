@@ -10,7 +10,8 @@ use Sodaho\PdoWrapper\Tests\Contract\ContractTestCase;
 
 /**
  * whereRaw(): a trusted SQL condition with bound values, for what the other where*() methods
- * cannot express (an expression on the left, an OR group).
+ * cannot express (an expression on the left, an OR group). The SQL the builder renders for it is
+ * in tests/Unit/ContractQueryRenderingTest.
  */
 class WhereRawTest extends ContractTestCase
 {
@@ -29,9 +30,8 @@ class WhereRawTest extends ContractTestCase
             ->where('status', 'active')
             ->whereRaw('LOWER(email) = ?', ['max@example.com'])
             ->whereRaw('score > ? OR score < ?', [15, 5]);
-        [$sql, $params] = $query->toSql();
+        [, $params] = $query->toSql();
 
-        $this->assertSame('SELECT * FROM `users` WHERE `status` = ? AND (LOWER(email) = ?) AND (score > ? OR score < ?)', $sql);
         $this->assertSame(['active', 'max@example.com', 15, 5], $params);
         $this->assertSame([], $query->get(), 'Max has score 10: neither > 15 nor < 5');
         $this->assertSame(['Max@Example.com'], array_column($this->db->table('users')->whereRaw('LOWER(email) = ?', ['max@example.com'])->get(), 'email'));
@@ -50,9 +50,8 @@ class WhereRawTest extends ContractTestCase
             ->whereRaw('LOWER(email) LIKE ? OR score >= ?', ['%example.com', 30])
             ->groupBy('status')
             ->having(Database::raw('COUNT(*)'), '>=', 1);
-        [$sql, $params] = $grouped->toSql();
+        [, $params] = $grouped->toSql();
 
-        $this->assertSame('SELECT `status`, COUNT(*) AS n FROM `users` WHERE `score` IN (?, 20, ?) AND (LOWER(email) LIKE ? OR score >= ?) GROUP BY `status` HAVING COUNT(*) >= ?', $sql);
         $this->assertSame([10, 30, '%example.com', 30, 1], $params);
         $this->assertSame([['status' => 'active', 'n' => 2], ['status' => 'inactive', 'n' => 1]], $grouped->orderBy('status')->get());
         $this->assertSame(2, $grouped->count(), 'two groups');

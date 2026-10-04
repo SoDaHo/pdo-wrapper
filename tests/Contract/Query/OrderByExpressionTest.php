@@ -29,10 +29,6 @@ class OrderByExpressionTest extends ContractTestCase
         $ids = array_column($this->db->table('tasks')->orderBy($order)->orderBy('id', 'DESC')->get(), 'id');
 
         $this->assertSame([4, 2, 3, 1], $ids);
-        $this->assertSame(
-            "SELECT * FROM `tasks` ORDER BY CASE status WHEN 'open' THEN 0 WHEN 'blocked' THEN 1 ELSE 2 END ASC, `id` DESC",
-            $this->db->table('tasks')->orderBy($order)->orderBy('id', 'DESC')->toSql()[0]
-        );
     }
 
     /**
@@ -50,13 +46,11 @@ class OrderByExpressionTest extends ContractTestCase
     }
 
     /**
-     * A string is a column name and nothing else: what a request sends cannot become SQL.
+     * A string is a column name and nothing else: what a request sends cannot become SQL. (The
+     * name quoted as one: tests/Unit/ContractQueryRenderingTest.)
      */
     public function testAStringIsAlwaysAQuotedColumnName(): void
     {
-        [$sql] = $this->db->table('tasks')->orderBy('status DESC, (SELECT 1)')->toSql();
-
-        $this->assertSame('SELECT * FROM `tasks` ORDER BY `status DESC, (SELECT 1)` ASC', $sql);
         $this->expectException(QueryException::class);
         $this->db->table('tasks')->orderBy('status DESC, (SELECT 1)')->get();
     }
@@ -64,7 +58,7 @@ class OrderByExpressionTest extends ContractTestCase
     public function testAnExpressionWithBindingsIsRefused(): void
     {
         try {
-            $this->db->table('tasks')->orderBy(Database::raw('FIELD(status, ?)', ['open']));
+            $this->db->table('tasks')->orderBy(Database::raw('CASE WHEN status = ? THEN 0 ELSE 1 END', ['open']));
             $this->fail('Expected QueryException');
         } catch (QueryException $e) {
             $this->assertStringContainsString('not in orderBy()', (string) $e->getDebugMessage());

@@ -989,7 +989,7 @@ class TransactionTest extends ContractTestCase
         $db = $this->connect(['pdoClass' => FalseReturningPdo::class]);
         $pdo = $db->getPdo();
         $this->assertInstanceOf(FalseReturningPdo::class, $pdo);
-        $pdo->failureInfo = ['HY000', 5, 'database is locked'];
+        $pdo->failureInfo = ['HY000', 4711, 'what the database said'];
         $failures = [];
 
         $pdo->fail = 'begin';
@@ -1036,7 +1036,7 @@ class TransactionTest extends ContractTestCase
 
         $this->assertSame(['begin', 'commit', 'rollback', 'insert id'], array_keys($failures));
         foreach ($failures as $what => $e) {
-            $this->assertSame(['HY000', 5], [$e->sqlState, $e->driverCode], $what);
+            $this->assertSame(['HY000', 4711], [$e->sqlState, $e->driverCode], $what);
             $this->assertInstanceOf(PDOException::class, $e->getPrevious(), $what);
         }
     }

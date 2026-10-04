@@ -190,7 +190,7 @@ class WorkflowTest extends ContractTestCase
 
     /**
      * An alias is quoted like every other name. The result key is the alias as written on every
-     * database (PostgreSQL folds a bare alias to lower case), orderBy() and groupBy() find it
+     * database (a database may fold a bare alias to lower case), orderBy() and groupBy() find it
      * under that name, a table alias with an upper-case letter works, and a reserved word is a
      * valid alias.
      */
@@ -290,8 +290,9 @@ class WorkflowTest extends ContractTestCase
      */
     public function testAnExceptionAboutAListenersFailureCarriesNoCodes(): void
     {
-        $deadlock = new \PDOException('SQLSTATE[40001]: Serialization failure: 1213 Deadlock found');
-        $deadlock->errorInfo = ['40001', 1213, 'Deadlock found'];
+        [$sqlState, $driverCode] = self::binding()->failureCodes()['deadlock'];
+        $deadlock = new \PDOException(sprintf('SQLSTATE[%s]: %d Deadlock found', $sqlState, $driverCode));
+        $deadlock->errorInfo = [$sqlState, $driverCode, 'Deadlock found'];
         $listener = static function () use ($deadlock): void {
             throw $deadlock;
         };
@@ -336,13 +337,13 @@ class WorkflowTest extends ContractTestCase
             $this->fail('Expected TransactionException');
         } catch (TransactionException $e) {
             $this->assertSame('Transaction rolled back, but a transaction.end listener failed', $e->getMessage());
-            $this->assertSame('40001', $e->getPrevious() instanceof QueryException ? $e->getPrevious()->sqlState : null, 'the listener\'s codes are one step away');
+            $this->assertSame($sqlState, $e->getPrevious() instanceof QueryException ? $e->getPrevious()->sqlState : null, 'the listener\'s codes are one step away');
             $caught['transaction.end'] = $e;
         }
 
         $this->assertSame(['query', 'transaction.begin', 'transaction.commit', 'transaction.end'], array_keys($caught));
         foreach ($caught as $event => $e) {
-            $this->assertSame($event === 'transaction.begin' ? ['40001', 1213] : [null, null], [$e->sqlState, $e->driverCode], $event);
+            $this->assertSame($event === 'transaction.begin' ? [$sqlState, $driverCode] : [null, null], [$e->sqlState, $e->driverCode], $event);
         }
     }
 
@@ -812,8 +813,8 @@ class WorkflowTest extends ContractTestCase
         $this->db->insert('posts', ['user_id' => $user3, 'title' => 'P6', 'content' => 'C', 'status' => 'published']);
         $this->db->insert('posts', ['user_id' => $user3, 'title' => 'P7', 'content' => 'C', 'status' => 'published']);
 
-        // Test: Find users with 2+ published posts using raw query to avoid SQLite type issues
-        // Note: HAVING with aggregate comparison via PDO execute() has type coercion issues in SQLite
+        // Test: Find users with 2+ published posts using a raw query with the limit written into the
+        // SQL: a database may compare a value bound in HAVING with an aggregate as text
         $result = $this->db->query(
             'SELECT user_id, COUNT(*) as post_count FROM posts WHERE status = ? GROUP BY user_id HAVING COUNT(*) >= 2',
             ['published']
@@ -1062,8 +1063,8 @@ class WorkflowTest extends ContractTestCase
 
     /**
      * Database::raw() with bindings as a value: bound where the expression stands. The SET list is
-     * written in the order of the array - which decides the result on MySQL/MariaDB, where a later
-     * assignment sees what an earlier one set.
+     * written in the order of the array - which decides the result on a database where a later
+     * assignment sees what an earlier one set (DriverBinding::laterAssignmentsSeeEarlierOnes()).
      */
     public function testARawValueWithBindingsAndTheOrderOfTheSetList(): void
     {
@@ -1077,7 +1078,7 @@ class WorkflowTest extends ContractTestCase
         $this->db->insert('set_order', ['id' => 2, 'attempts' => 1, 'pause_s' => 0, 'note' => 'new']);
         $seen = [];
 
-        // attempts first: on MySQL/MariaDB the pause is computed from the raised counter
+        // attempts first: where a later assignment sees an earlier one, the pause is computed from the raised counter
         $affected = $this->db->table('set_order')->where('id', 1)->whereIn('note', ['new', 'old'])->update([
             'attempts' => Database::raw('attempts + ?', [1]),
             'note' => 'first',

@@ -48,8 +48,8 @@ class CrudTest extends ContractTestCase
 
     /**
      * The ID is an integer, whatever its size: PDO's string is converted, not handed on. (What a
-     * database reports for a negative ID is its own matter: MariaDB reports it unsigned, which is
-     * out of range - see testInsertThrowsForAnIdThatIsNoIntegerOfPhp.)
+     * database reports for a negative ID is its own matter: one that reports it unsigned reports
+     * a number out of range - see testInsertThrowsForAnIdThatIsNoIntegerOfPhp.)
      */
     public function testInsertReturnsTheIdAsAnInteger(): void
     {
@@ -71,12 +71,16 @@ class CrudTest extends ContractTestCase
     /**
      * An ID that is no integer of PHP throws instead of being cut ((int) would make PHP_INT_MAX
      * of the first, 0 of the last). The row is inserted, and the exception says so where values
-     * may stand.
+     * may stand: with the statement as it was sent (its text: tests/Driver).
      */
     #[DataProvider('idsThatAreNoIntegerOfPhp')]
     public function testInsertThrowsForAnIdThatIsNoIntegerOfPhp(string $reported): void
     {
         $driver = $this->driverReporting($reported);
+        $sent = [];
+        $driver->on('query', static function (array $data) use (&$sent): void {
+            $sent[] = (string) $data['sql'];
+        });
 
         try {
             $driver->insert('users', ['name' => 'A']);
@@ -86,7 +90,9 @@ class CrudTest extends ContractTestCase
             $debug = $e->getDebugMessage() ?? '';
             $this->assertStringContainsString('The row was inserted', $debug);
             $this->assertStringContainsString('"' . $reported . '"', $debug);
-            $this->assertStringContainsString('SQL: INSERT INTO `users` (`name`) VALUES (?) | Params: ["A"]', $debug);
+            $this->assertCount(1, $sent, 'the insert ran');
+            $this->assertStringStartsWith('INSERT INTO ', $sent[0]);
+            $this->assertStringContainsString('SQL: ' . $sent[0] . ' | Params: ["A"]', $debug);
         }
 
         $this->assertSame(1, $driver->table('users')->count(), 'the row is there');
@@ -99,7 +105,7 @@ class CrudTest extends ContractTestCase
     {
         return [
             'one above PHP_INT_MAX' => ['9223372036854775808'],
-            'a negative ID as MySQL reports it' => ['18446744073709551611'],
+            'a negative ID reported unsigned' => ['18446744073709551611'],
             'one below PHP_INT_MIN' => ['-9223372036854775809'],
             'a fraction' => ['1.5'],
             'no number' => ['abc'],

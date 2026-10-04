@@ -40,8 +40,11 @@ class QueryOutcomeTest extends ContractTestCase
     public function testQueryHookPdoExceptionIsReportedAsHookFailureAndKeepsTheRow(): void
     {
         $hookError = new PDOException('log table missing');
-        $this->db->on('query', static function (array $data) use ($hookError): void {
+        $failedOn = null;
+        $this->db->on('query', static function (array $data) use ($hookError, &$failedOn): void {
             if (str_starts_with((string) $data['sql'], 'INSERT')) {
+                $failedOn = (string) $data['sql'];
+
                 throw $hookError;
             }
         });
@@ -52,9 +55,11 @@ class QueryOutcomeTest extends ContractTestCase
         } catch (QueryException $e) {
             $this->assertSame('Query hook failed', $e->getMessage());
             $this->assertSame($hookError, $e->getPrevious());
+            $this->assertNotNull($failedOn);
             $this->assertSame(
-                'log table missing | SQL: INSERT INTO `users` (`name`) VALUES (?) | Params: ["Max"]',
-                $e->getDebugMessage()
+                'log table missing | SQL: ' . $failedOn . ' | Params: ["Max"]',
+                $e->getDebugMessage(),
+                'the statement as the hook was told it (its text: tests/Driver)'
             );
         }
 
@@ -141,8 +146,9 @@ class QueryOutcomeTest extends ContractTestCase
             $this->assertSame($e->driverCode, $hook['code'], 'the driver\'s number: what the stand-in PDOException carries as its code');
         }
 
-        $this->assertSame(['INSERT INTO `users` (`id`, `name`) VALUES (?, ?)'], $this->errors);
-        $this->assertSame(['INSERT INTO `users` (`id`, `name`) VALUES (?, ?)'], $this->queries, 'only the first insert ran');
+        $this->assertCount(1, $this->queries, 'only the first insert ran');
+        $this->assertStringStartsWith('INSERT INTO ', $this->queries[0]);
+        $this->assertSame($this->queries, $this->errors, 'the failed insert is told with the same statement (its text: tests/Driver)');
         $this->assertSame(1, $this->db->table('users')->count());
     }
 

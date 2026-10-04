@@ -56,9 +56,9 @@ interface DriverBinding
 
     /**
      * The SQLSTATE and the driver's error number of a statement on a table that does not exist,
-     * and of a duplicate key.
+     * of a duplicate key, and of a deadlock (what a retry of the transaction looks for).
      *
-     * @return array{unknownTable: array{string, int}, duplicate: array{string, int}}
+     * @return array{unknownTable: array{string, int}, duplicate: array{string, int}, deadlock: array{string, int}}
      */
     public function failureCodes(): array;
 
@@ -69,6 +69,19 @@ interface DriverBinding
      * @return array<string, array{int|float|string, int|float|string}> [sum, avg] by column: small, big, price, ratio
      */
     public function deliveredAggregates(): array;
+
+    /**
+     * What a SUM() over an `int` column delivers - through sum() or as a column of a row - when its
+     * values add up to $sum: the integer, or the string or float the driver makes of it.
+     */
+    public function deliveredIntSum(int $sum): int|float|string;
+
+    /**
+     * What an AVG() over an `int` column delivers - through avg() or as a column of a row - when its
+     * values average $average (a value a float holds exactly): the float, or the string the driver
+     * makes of it, with the database's number of decimals.
+     */
+    public function deliveredIntAvg(float $average): int|float|string;
 
     /**
      * The name a duplicate key reports for a column declared `UNIQUE` (email) and for the primary key.
