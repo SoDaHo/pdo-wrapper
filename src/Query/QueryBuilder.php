@@ -49,7 +49,7 @@ class QueryBuilder
     /** @var array<int, array<string, string>> */
     private array $joins = [];
 
-    /** @var array<int, array{column: string, direction: string}> */
+    /** @var array<int, array{column: string|RawExpression, direction: string}> */
     private array $orderBy = [];
 
     private ?int $limit = null;
@@ -277,18 +277,20 @@ class QueryBuilder
     /**
      * Add a WHERE IN condition.
      *
+     * An empty list matches no row: the condition is rendered as `1 = 0`, so a select finds
+     * nothing and an update or delete hits nothing, as `IN ()` would if SQL allowed it.
+     *
      * @param string $column Column name
      * @param array<array-key, mixed> $values Values to match (a RawExpression element is inlined)
      *
-     * @throws QueryException When $values is empty or contains null
+     * @throws QueryException When $values contains null
      */
     public function whereIn(string $column, array $values): self
     {
-        if (empty($values)) {
-            throw new QueryException(
-                message: 'Query failed',
-                debugMessage: 'whereIn requires a non-empty array'
-            );
+        if ($values === []) {
+            $this->wheres[] = ['type' => 'raw', 'sql' => '1 = 0', 'bindings' => []];
+
+            return $this;
         }
         $this->guardAgainstNullElement('whereIn', $column, $values);
 
@@ -308,6 +310,10 @@ class QueryBuilder
      * @param string $column Column name
      * @param array<array-key, mixed> $values Values to exclude (a RawExpression element is inlined)
      *
+     * An empty list throws, unlike whereIn(): "not in nothing" would match every row, and in an
+     * update or delete that is every row of the table - too much to happen because a list came
+     * back empty.
+     *
      * @throws QueryException When $values is empty or contains null
      */
     public function whereNotIn(string $column, array $values): self
@@ -315,7 +321,7 @@ class QueryBuilder
         if (empty($values)) {
             throw new QueryException(
                 message: 'Query failed',
-                debugMessage: 'whereNotIn requires a non-empty array'
+                debugMessage: 'whereNotIn() with an empty list would match every row: check for the empty list before, and skip the condition or the statement'
             );
         }
         $this->guardAgainstNullElement('whereNotIn', $column, $values);
@@ -536,20 +542,25 @@ class QueryBuilder
      * ("DESCENDING", "down", "DESC NULLS LAST") throws instead of silently sorting ascending: the
      * direction decides which rows a page shows and, in delete()->limit(), which rows are deleted.
      *
-     * @param string $column Column to order by
+     * A string is always a column name, quoted; an expression is ordered by only as an object -
+     * Database::raw('FIELD(status, ...)'), an alias of a select() entry - so that a string from a
+     * request can never become SQL. The expression may not carry bindings.
+     *
+     * @param string|RawExpression $column Column to order by, or an expression
      * @param string $direction ASC or DESC (default: ASC)
      *
-     * @throws QueryException When the direction is neither ASC nor DESC
+     * @throws QueryException When the direction is neither ASC nor DESC, or the expression carries bindings
      */
-    public function orderBy(string $column, string $direction = 'ASC'): self
+    public function orderBy(string|RawExpression $column, string $direction = 'ASC'): self
     {
         $normalized = strtoupper(trim($direction));
         if (!in_array($normalized, ['ASC', 'DESC'], true)) {
             throw new QueryException(
                 message: 'Query failed',
-                debugMessage: sprintf('Invalid orderBy() direction "%s" for "%s". Allowed: ASC, DESC', $direction, $column)
+                debugMessage: sprintf('Invalid orderBy() direction "%s" for "%s". Allowed: ASC, DESC', $direction, (string) $column)
             );
         }
+        $this->guardAgainstBoundRaw('orderBy', [$column]);
 
         $this->orderBy[] = ['column' => $column, 'direction' => $normalized];
 
@@ -1070,20 +1081,71 @@ class QueryBuilder
     }
 
     /**
+     * Add to a column in the rows matching the WHERE conditions, in one statement:
+     * `UPDATE ... SET col = col + ?` - atomic, no read before the write. $extra is set in the same
+     * statement, after the column. The same rules as update(): at least one WHERE condition,
+     * limit() with orderBy().
+     *
+     * @param string $column Column to add to
+     * @param int|float $by What is added (bound)
+     * @param array<string, mixed> $extra Further column => value pairs to set
+     *
+     * @throws QueryException As update(), and when $extra sets the column itself
+     *
+     * @return int Number of affected rows
+     */
+    public function increment(string $column, int|float $by = 1, array $extra = []): int
+    {
+        return $this->step($column, '+', $by, $extra);
+    }
+
+    /**
+     * Subtract from a column in the rows matching the WHERE conditions: `SET col = col - ?` (see
+     * increment()).
+     *
+     * @param array<string, mixed> $extra Further column => value pairs to set
+     *
+     * @throws QueryException As update(), and when $extra sets the column itself
+     *
+     * @return int Number of affected rows
+     */
+    public function decrement(string $column, int|float $by = 1, array $extra = []): int
+    {
+        return $this->step($column, '-', $by, $extra);
+    }
+
+    /**
+     * @param array<string, mixed> $extra
+     *
+     * @throws QueryException
+     */
+    private function step(string $column, string $sign, int|float $by, array $extra): int
+    {
+        if (array_key_exists($column, $extra)) {
+            throw new QueryException(
+                message: 'Update failed',
+                debugMessage: sprintf('%s() changes "%s" itself; it cannot be set in $extra as well', $sign === '+' ? 'increment' : 'decrement', $column)
+            );
+        }
+
+        return $this->update([$column => new RawExpression(sprintf('%s %s ?', $this->quoteIdentifier($column), $sign), [$by])] + $extra);
+    }
+
+    /**
      * Update rows matching the WHERE conditions.
      *
      * Requires at least one WHERE condition for safety.
      *
-     * limit() updates at most that many rows, in orderBy() order when given (`UPDATE ... ORDER BY
-     * ... LIMIT n`, for updating in batches; order by a unique key, or add one as tie-breaker, so
-     * that the batch is deterministic). OFFSET, JOIN, GROUP BY, HAVING and an orderBy() without
-     * limit() are not supported (not part of the generated statement); select(), distinct() and a
-     * row lock are ignored.
+     * limit() updates at most that many rows, in orderBy() order (`UPDATE ... ORDER BY ... LIMIT
+     * n`, for updating in batches; order by a unique key, or add one as tie-breaker, so that the
+     * batch is deterministic): limit() without orderBy() throws. OFFSET, JOIN, GROUP BY, HAVING and
+     * an orderBy() without limit() are not supported (not part of the generated statement);
+     * select(), distinct() and a row lock are ignored.
      *
      * @param array<string, mixed> $data Column => value pairs to update
      *
      * @throws QueryException When no WHERE conditions set (safety)
-     * @throws QueryException When offset(), join(), groupBy(), having() or an orderBy() without limit() is set
+     * @throws QueryException When offset(), join(), groupBy(), having(), an orderBy() without limit() or a limit() without orderBy() is set
      *
      * @return int Number of affected rows
      */
@@ -1135,14 +1197,14 @@ class QueryBuilder
      *
      * Requires at least one WHERE condition for safety.
      *
-     * limit() deletes at most that many rows, in orderBy() order when given (`DELETE ... ORDER BY
-     * ... LIMIT n`: "the oldest n", for deleting in batches; order by a unique key, or add one as
-     * tie-breaker, so that the batch is deterministic). OFFSET, JOIN, GROUP BY, HAVING and an
-     * orderBy() without limit() are not supported (not part of the generated statement); select(),
-     * distinct() and a row lock are ignored.
+     * limit() deletes at most that many rows, in orderBy() order (`DELETE ... ORDER BY ... LIMIT
+     * n`: "the oldest n", for deleting in batches; order by a unique key, or add one as
+     * tie-breaker, so that the batch is deterministic): limit() without orderBy() throws. OFFSET,
+     * JOIN, GROUP BY, HAVING and an orderBy() without limit() are not supported (not part of the
+     * generated statement); select(), distinct() and a row lock are ignored.
      *
      * @throws QueryException When no WHERE conditions set (safety)
-     * @throws QueryException When offset(), join(), groupBy(), having() or an orderBy() without limit() is set
+     * @throws QueryException When offset(), join(), groupBy(), having(), an orderBy() without limit() or a limit() without orderBy() is set
      *
      * @return int Number of affected rows
      */
@@ -1303,7 +1365,8 @@ class QueryBuilder
         }
         $orderClauses = [];
         foreach ($this->orderBy as $order) {
-            $orderClauses[] = $this->quoteIdentifier($order['column']) . ' ' . $order['direction'];
+            $column = $order['column'];
+            $orderClauses[] = ($column instanceof RawExpression ? (string) $column : $this->quoteIdentifier($column)) . ' ' . $order['direction'];
         }
 
         return ' ORDER BY ' . implode(', ', $orderClauses);
@@ -1615,14 +1678,25 @@ class QueryBuilder
      * distinct() and a row lock are ignored: they cannot change which rows an UPDATE/DELETE hits
      * (the statement takes its own row locks), so a builder locked for a first() may be reused.
      *
-     * The statements render ORDER BY ... LIMIT, so limit() is allowed, and orderBy() with it.
+     * The statements render ORDER BY ... LIMIT: limit() is allowed with an orderBy() - without one,
+     * which rows the statement hits would be up to the server, and it throws.
      *
      * @param string $operation Operation name for error message ('update' or 'delete')
      *
-     * @throws QueryException When offset, join, groupBy or having is set, or orderBy without limit
+     * @throws QueryException When offset, join, groupBy or having is set, orderBy without limit, or limit without orderBy
      */
     private function guardAgainstSelectClauses(string $operation): void
     {
+        if ($this->limit !== null && empty($this->orderBy)) {
+            throw new QueryException(
+                message: ucfirst($operation) . ' failed',
+                debugMessage: sprintf(
+                    '%s() with limit() needs an orderBy(): without one, which rows it hits would be up to the server. Order by a unique key, or add one as tie-breaker.',
+                    $operation
+                )
+            );
+        }
+
         $unsupported = [];
 
         if ($this->offset !== null) {

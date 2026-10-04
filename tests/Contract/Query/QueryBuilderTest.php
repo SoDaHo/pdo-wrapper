@@ -148,11 +148,39 @@ class QueryBuilderTest extends ContractTestCase
         $this->assertCount(2, $users);
     }
 
-    public function testWhereInEmptyArrayThrowsException(): void
+    /**
+     * An empty list matches no row: a select finds nothing, an update and a delete hit nothing,
+     * also next to other conditions.
+     */
+    public function testWhereInWithAnEmptyListMatchesNothing(): void
     {
-        $this->expectException(QueryException::class);
+        $this->assertSame([], $this->db->table('users')->whereIn('name', [])->get());
+        $this->assertSame(0, $this->db->table('users')->where('id', '>', 0)->whereIn('name', [])->count());
+        $this->assertSame(0, $this->db->table('users')->whereIn('id', [])->update(['name' => 'changed']));
+        $this->assertSame(0, $this->db->table('users')->whereIn('id', [])->delete());
+        $this->assertSame(3, $this->db->table('users')->where('name', '!=', 'changed')->count(), 'nothing was changed or deleted');
+        [$sql, $params] = $this->db->table('users')->where('id', '>', 1)->whereIn('name', [])->toSql();
+        $this->assertSame('SELECT * FROM `users` WHERE `id` > ? AND (1 = 0)', $sql);
+        $this->assertSame([1], $params);
+    }
 
-        $this->db->table('users')->whereIn('name', [])->get();
+    /**
+     * "Not in nothing" would match every row - in an update or a delete every row of the table.
+     */
+    public function testWhereNotInWithAnEmptyListThrows(): void
+    {
+        foreach ([
+            'select' => fn (): mixed => $this->db->table('users')->whereNotIn('name', [])->get(),
+            'delete' => fn (): mixed => $this->db->table('users')->whereNotIn('id', [])->delete(),
+        ] as $how => $case) {
+            try {
+                $case();
+                $this->fail('Expected QueryException: ' . $how);
+            } catch (QueryException $e) {
+                $this->assertSame('whereNotIn() with an empty list would match every row: check for the empty list before, and skip the condition or the statement', $e->getDebugMessage(), $how);
+            }
+        }
+        $this->assertSame(3, $this->db->table('users')->count());
     }
 
     public function testWhereNotIn(): void

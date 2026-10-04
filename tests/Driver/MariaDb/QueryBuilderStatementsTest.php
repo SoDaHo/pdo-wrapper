@@ -49,9 +49,9 @@ class QueryBuilderStatementsTest extends ContractTestCase
     }
 
     /**
-     * delete() and update() with limit(): `... [ORDER BY ...] LIMIT n`. orderBy() without limit()
-     * and offset() are not part of the statement and throw before anything is sent; select(),
-     * distinct() and a row lock cannot change which rows are hit and are ignored.
+     * delete() and update() with limit() and orderBy(): `... ORDER BY ... LIMIT n`. orderBy()
+     * without limit(), limit() without orderBy() and offset() throw before anything is sent;
+     * select(), distinct() and a row lock cannot change which rows are hit and are ignored.
      */
     public function testDeleteAndUpdateWithLimit(): void
     {
@@ -67,26 +67,39 @@ class QueryBuilderStatementsTest extends ContractTestCase
         $this->assertSame([1, 2, 3, 4, 5, 8, 9], array_column($this->db->table('users')->orderBy('id')->get(), 'id'), 'the two lowest above 5');
         $this->assertSame(2, $this->db->table('users')->where('id', '>', 0)->orderBy('id', 'desc')->limit(2)->update(['name' => 'x']));
         $this->assertSame(['n1', 'n2', 'n3', 'n4', 'n5', 'x', 'x'], array_column($this->db->table('users')->orderBy('id')->get(), 'name'), 'the two highest');
-        $this->assertSame(1, $this->db->table('users')->where('id', '>', 5)->limit(1)->delete(), 'orderBy() is optional: one of the rows, whichever the server finds first');
-        $this->assertSame(6, $this->db->table('users')->count());
         $this->assertSame([
             'DELETE FROM `users` WHERE `id` > ? ORDER BY `id` ASC LIMIT 2',
             'UPDATE `users` SET `name` = ? WHERE `id` > ? ORDER BY `id` DESC LIMIT 2',
-            'DELETE FROM `users` WHERE `id` > ? LIMIT 1',
         ], array_values(array_filter($rendered->all(), static fn (string $sql): bool => !str_starts_with($sql, 'SELECT'))));
 
         $rendered->clear();
         foreach ([
             'orderBy() alone' => fn (): int => $this->db->table('users')->where('id', 1)->orderBy('id')->delete(),
-            'offset()' => fn (): int => $this->db->table('users')->where('id', 1)->limit(2)->offset(1)->delete(),
+            'offset()' => fn (): int => $this->db->table('users')->where('id', 1)->orderBy('id')->limit(2)->offset(1)->delete(),
             'update() orderBy() alone' => fn (): int => $this->db->table('users')->where('id', 1)->orderBy('id')->update(['name' => 'x']),
-            'update() offset()' => fn (): int => $this->db->table('users')->where('id', 1)->limit(2)->offset(1)->update(['name' => 'x']),
+            'update() offset()' => fn (): int => $this->db->table('users')->where('id', 1)->orderBy('id')->limit(2)->offset(1)->update(['name' => 'x']),
         ] as $name => $case) {
             try {
                 $case();
                 $this->fail("{$name}: expected QueryException");
             } catch (QueryException $e) {
                 $this->assertStringContainsString('does not support', $e->getDebugMessage() ?? '', $name);
+            }
+        }
+        // limit() without orderBy(): which rows would be up to the server
+        foreach ([
+            'delete' => fn (): int => $this->db->table('users')->where('id', '>', 5)->limit(1)->delete(),
+            'update' => fn (): int => $this->db->table('users')->where('id', '>', 5)->limit(1)->update(['name' => 'x']),
+        ] as $operation => $case) {
+            try {
+                $case();
+                $this->fail("{$operation}: expected QueryException");
+            } catch (QueryException $e) {
+                $this->assertSame(ucfirst($operation) . ' failed', $e->getMessage());
+                $this->assertSame(
+                    "{$operation}() with limit() needs an orderBy(): without one, which rows it hits would be up to the server. Order by a unique key, or add one as tie-breaker.",
+                    $e->getDebugMessage()
+                );
             }
         }
         $this->assertSame([], $rendered->all(), 'none of them reached the database');

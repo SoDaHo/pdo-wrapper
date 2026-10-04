@@ -242,6 +242,14 @@ interface DatabaseInterface
      */
     public function on(string $event, callable $callback): static;
 
+    /**
+     * Remove a callback registered with on() - every registration of it. Told apart by identity
+     * (`===`); a listener removed while its event is told still runs that once.
+     *
+     * @throws Exception\DatabaseException When the event is unknown, or the callback is not registered for it
+     */
+    public function off(string $event, callable $callback): static;
+
     // =========================================================================
     // CRUD Helper
     // =========================================================================

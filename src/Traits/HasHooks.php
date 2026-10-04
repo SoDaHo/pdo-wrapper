@@ -298,6 +298,37 @@ trait HasHooks
     }
 
     /**
+     * Remove a callback that was registered for an event - every registration of it, if it was
+     * registered more than once. Callbacks are told apart by identity (`===`): the same closure
+     * object, the same [object, 'method'] pair, the same function name. A listener removed while
+     * the event is being told still runs for that telling; the change counts from the next one.
+     *
+     * @throws DatabaseException When the event is not one of knownEvents(), or the callback is not registered for it (a typo, or a second off())
+     */
+    public function off(string $event, callable $callback): static
+    {
+        $known = $this->knownEvents();
+        if (!in_array($event, $known, true)) {
+            throw new DatabaseException(
+                message: 'Unknown hook event',
+                debugMessage: sprintf('Unknown event "%s": no listener can be registered for it. Known events: %s', $event, implode(', ', $known))
+            );
+        }
+
+        $registered = $this->hooks[$event] ?? [];
+        $kept = array_values(array_filter($registered, static fn (callable $listener): bool => $listener !== $callback));
+        if (count($kept) === count($registered)) {
+            throw new DatabaseException(
+                message: 'Unknown hook listener',
+                debugMessage: sprintf('off(): the callback is not registered for "%s"', $event)
+            );
+        }
+        $this->hooks[$event] = $kept;
+
+        return $this;
+    }
+
+    /**
      * The events on() accepts: those this library triggers. A driver that triggers events of
      * its own (trigger()) adds them: `return [...parent::knownEvents(), 'cache.hit'];`
      *

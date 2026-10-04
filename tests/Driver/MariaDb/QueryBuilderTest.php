@@ -76,7 +76,7 @@ class QueryBuilderTest extends TestCase
         $this->assertSame([3, 4, 5], array_map(Fetched::int(...), array_column($this->db->table('qb_test')->orderBy('id')->get(), 'id')), 'the two oldest rows are gone');
         $this->assertSame(1, $this->db->table('qb_test')->where('age', 20)->orderBy('id', 'DESC')->limit(1)->delete(), 'the newest of the matching rows');
         $this->assertSame([3, 4], array_map(Fetched::int(...), array_column($this->db->table('qb_test')->orderBy('id')->get(), 'id')));
-        $this->assertSame(2, $this->db->table('qb_test')->where('id', '>', 0)->limit(10)->delete(), 'limit() without orderBy(): any order');
+        $this->assertSame(2, $this->db->table('qb_test')->where('id', '>', 0)->orderBy('id')->limit(10)->delete(), 'a limit above the matching rows');
     }
 
 
