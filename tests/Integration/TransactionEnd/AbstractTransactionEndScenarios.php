@@ -2998,6 +2998,43 @@ abstract class AbstractTransactionEndScenarios extends TestCase
     }
 
     /**
+     * A transaction a commit listener left open waits for its end until the commit listeners are
+     * done: one a later commit listener runs meanwhile is a level deeper still.
+     */
+    public function testATransactionLeftOpenByACommitListenerCountsUntilItsEndIsTold(): void
+    {
+        $seen = $this->recordNumbers();
+        $once = ['first' => true, 'second' => true];
+        $this->db->on('transaction.commit', function () use (&$once): void {
+            if ($once['first']) {
+                $once['first'] = false;
+                $this->db->beginTransaction(); // left open: rolled back raw, its end buffered
+            }
+        });
+        $this->db->on('transaction.commit', function () use (&$once): void {
+            if ($once['second']) {
+                $once['second'] = false;
+                $this->db->transaction(static fn (): null => null);
+            }
+        });
+
+        try {
+            $this->db->transaction(static fn (): null => null);
+            $this->fail('Expected CommitHookException');
+        } catch (CommitHookException) {
+        }
+        $this->db->transaction(static fn (): null => null);
+
+        $this->assertSame([
+            'begin 1/1', 'commit 1/1',
+            'begin 2/2',
+            'begin 3/3', 'commit 3/3', 'end committed 3/3',
+            'end rolled_back 2/2', 'end committed 1/1',
+            'begin 4/1', 'commit 4/1', 'end committed 4/1',
+        ], $seen->getArrayCopy());
+    }
+
+    /**
      * A transaction that vanished behind the driver's back is told as 'lost' by the next begin,
      * with its own number, before the next one is told begun.
      */
@@ -3037,6 +3074,33 @@ abstract class AbstractTransactionEndScenarios extends TestCase
 
         $this->assertSame(
             ['begin 1/1', 'end lost 1/1', 'rollback 1/1', 'begin 2/1', 'commit 2/1', 'end committed 2/1'],
+            $seen->getArrayCopy()
+        );
+    }
+
+    /**
+     * The same with a commit() that ends it after all: its commit listeners are told the same
+     * number, no second end is told.
+     */
+    public function testALostTransactionKeepsItsNumberForItsLaterCommit(): void
+    {
+        $seen = $this->recordNumbers();
+        $cause = new RuntimeException('callback failed');
+        $this->pdo->failRollBackAlways = true;
+        try {
+            $this->db->transaction(static function () use ($cause): void {
+                throw $cause;
+            });
+            $this->fail('Expected the callback exception');
+        } catch (RuntimeException $e) {
+            $this->assertSame($cause, $e);
+        }
+        $this->pdo->failRollBackAlways = false;
+        $this->db->commit();
+        $this->db->transaction(static fn (): null => null);
+
+        $this->assertSame(
+            ['begin 1/1', 'end lost 1/1', 'commit 1/1', 'begin 2/1', 'commit 2/1', 'end committed 2/1'],
             $seen->getArrayCopy()
         );
     }
@@ -3175,6 +3239,41 @@ abstract class AbstractTransactionEndScenarios extends TestCase
 
         $this->assertSame(
             ['begin 1/1', 'rollback 1/1', 'end rolled_back 1/1', 'begin 2/1', 'commit 2/1', 'end committed 2/1'],
+            $seen->getArrayCopy()
+        );
+    }
+
+    /**
+     * The same with a handler that ends the transaction on raw PDO and then begins one through the
+     * driver: that begin tells the vanished one as 'lost' first, and the new one keeps its mark.
+     */
+    public function testATransactionAnErrorHandlerBeginsAfterARawRollbackDuringTheCleanupKeepsItsMark(): void
+    {
+        $seen = $this->recordNumbers();
+        $once = true;
+        $this->db->on('transaction.begin', function () use (&$once): void {
+            if ($once) {
+                $once = false;
+                $this->pdo->duringRollBack = function (): void {
+                    $this->pdo->rollBack();
+                    $this->db->beginTransaction();
+                    $this->pdo->failRollBackAlways = true;
+                };
+                throw new RuntimeException('begin listener failed');
+            }
+        });
+
+        try {
+            $this->db->beginTransaction();
+            $this->fail('Expected the listener exception');
+        } catch (RuntimeException) {
+        }
+        $this->pdo->failRollBackAlways = false;
+        $this->assertTrue($this->pdo->reallyInTransaction(), "the handler's transaction is open");
+        $this->db->commit();
+
+        $this->assertSame(
+            ['begin 1/1', 'end lost 1/1', 'begin 2/1', 'commit 2/1', 'end committed 2/1'],
             $seen->getArrayCopy()
         );
     }

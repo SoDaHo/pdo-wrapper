@@ -367,6 +367,86 @@ abstract class AbstractReconnectScenarios extends TestCase
         $this->assertSame([1, 2], $this->visible());
     }
 
+    /**
+     * Foreign code inside the ROLLBACK on the old connection - an error handler for a PDO warning -
+     * ends the transaction through the driver: that call tells its end, reconnect() tells no second
+     * one.
+     */
+    public function testAnErrorHandlerThatEndsTheTransactionDuringTheOldRollbackLeavesOneEnd(): void
+    {
+        $this->db->beginTransaction();
+        $this->scenarioPdo()->duringRollBack = function (): void {
+            $this->db->rollback();
+        };
+
+        $this->db->reconnect();
+
+        $this->assertSame(['begin 1', 'rollback 1', 'end rolled_back 1'], $this->events, 'one end, told by the handler');
+        $this->assertFalse($this->db->inTransaction());
+        $this->db->transaction(static fn (): null => null);
+        $this->assertSame(['begin 1', 'rollback 1', 'end rolled_back 1', 'begin 2', 'commit 2', 'end committed 2'], $this->events);
+        $this->assertSame(1, $this->ends[1]['depth'], 'nothing is owed any more');
+    }
+
+    /**
+     * The handler ends the transaction and begins another one through the driver - on the old
+     * connection: that one goes with it, and ends as 'lost'.
+     */
+    public function testATransactionAnErrorHandlerBeginsOnTheOldConnectionEndsAsLost(): void
+    {
+        $this->db->beginTransaction();
+        $this->scenarioPdo()->duringRollBack = function (): void {
+            $this->db->rollback();
+            $this->db->beginTransaction();
+        };
+
+        $this->db->reconnect();
+
+        $this->assertSame(['begin 1', 'rollback 1', 'end rolled_back 1', 'begin 2', 'end lost 2'], $this->events);
+        $this->assertFalse($this->db->inTransaction());
+        $this->db->transaction(static fn (): null => null);
+        $this->assertSame(1, $this->ends[2]['depth'], 'nothing is owed any more');
+    }
+
+    /**
+     * A transaction begun on raw PDO that the handler ends through the driver tells its end there;
+     * reconnect() tells no second one.
+     */
+    public function testAnErrorHandlerThatEndsARawTransactionDuringTheOldRollbackLeavesOneEnd(): void
+    {
+        $this->db->getPdo()->beginTransaction();
+        $this->scenarioPdo()->duringRollBack = function (): void {
+            $this->db->rollback();
+        };
+
+        $this->db->reconnect();
+
+        $this->assertSame(['rollback -', 'end rolled_back -'], $this->events);
+    }
+
+    /**
+     * The handler inside the ROLLBACK on the old connection reconnects itself and begins a
+     * transaction on its new connection: the outer reconnect() tells nothing more and keeps that
+     * connection and its transaction.
+     */
+    public function testAReconnectInsideTheOldRollbackKeepsItsNewConnection(): void
+    {
+        $this->db->beginTransaction();
+        $this->scenarioPdo()->duringRollBack = function (): void {
+            $this->db->reconnect();
+            $this->db->beginTransaction();
+        };
+
+        $this->db->reconnect();
+
+        $this->assertSame(['begin 1', 'end lost 1', 'begin 2'], $this->events, 'one end for the first, told by the inner reconnect()');
+        $this->assertTrue($this->db->inTransaction(), "the handler's transaction is still open on its connection");
+        $this->db->insert(self::TABLE, ['id' => 1, 'name' => 'kept']);
+        $this->db->commit();
+        $this->assertSame(['begin 1', 'end lost 1', 'begin 2', 'commit 2', 'end committed 2'], $this->events);
+        $this->assertSame([1], $this->visible());
+    }
+
     // ---- what reconnect() needs ------------------------------------------------------------------
 
     /**

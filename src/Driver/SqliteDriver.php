@@ -68,12 +68,11 @@ class SqliteDriver extends AbstractDriver
             PDO::ATTR_EMULATE_PREPARES => false,
         ];
 
-        $options = array_replace($defaultOptions, $options);
-
-        // Kept for reconnect()
-        parent::__construct(static function () use ($pdoClass, $dsn, $options): PDO {
+        // Kept for reconnect(); the options in an object that no dump of the driver shows
+        $settings = new ConnectionSettings(null, null, array_replace($defaultOptions, $options));
+        parent::__construct(static function () use ($pdoClass, $dsn, $settings): PDO {
             try {
-                $pdo = new $pdoClass($dsn, null, null, $options);
+                $pdo = new $pdoClass($dsn, null, null, $settings->options());
                 $pdo->exec('PRAGMA foreign_keys = ON');
 
                 return $pdo;

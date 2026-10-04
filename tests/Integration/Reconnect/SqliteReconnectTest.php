@@ -10,6 +10,7 @@ use RuntimeException;
 use Sodaho\PdoWrapper\Database;
 use Sodaho\PdoWrapper\Driver\AbstractDriver;
 use Sodaho\PdoWrapper\Driver\SqliteDriver;
+use Sodaho\PdoWrapper\Exception\ConnectionException;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Tests\Integration\TransactionEnd\ScenarioPdo;
 
@@ -91,6 +92,28 @@ class SqliteReconnectTest extends AbstractReconnectScenarios
         $db->commit();
 
         $this->assertSame([1], $this->visible());
+    }
+
+    /**
+     * PDO hands a persistent connection back for the same settings: nothing could be discarded,
+     * reconnect() refuses instead of pretending.
+     */
+    public function testAPersistentConnectionCannotBeDiscarded(): void
+    {
+        $db = $this->connect(['options' => [PDO::ATTR_PERSISTENT => true]]);
+        $pdo = $db->getPdo();
+        $db->beginTransaction();
+
+        try {
+            $db->reconnect();
+            $this->fail('Expected ConnectionException');
+        } catch (ConnectionException $e) {
+            $this->assertSame('Database connection failed', $e->getMessage());
+            $this->assertStringContainsString('cannot discard a persistent connection', (string) $e->getDebugMessage());
+        }
+        $this->assertSame($pdo, $db->getPdo(), 'nothing changed');
+        $this->assertTrue($db->inTransaction());
+        $db->rollback();
     }
 
     /**

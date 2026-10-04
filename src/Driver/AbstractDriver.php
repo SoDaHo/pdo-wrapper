@@ -52,8 +52,9 @@ abstract class AbstractDriver implements DatabaseInterface
     private bool $lostReported = false;
 
     /**
-     * Counts the transactions ended through this driver - by commit(), by rollback(), or told as
-     * 'lost' -, at the moment they end: before any of their listeners runs. A call that has been
+     * Counts the transactions ended through this driver - by commit(), by rollback(), by the raw
+     * rollback after a throwing begin listener, or told as 'lost' -, at the moment they end: before
+     * any of their listeners runs. A call that has been
      * inside PDO - and with it, possibly, inside foreign code that used this driver (an error
      * handler for a PDO warning) - compares it to see that the transaction it was about has been
      * ended meanwhile (endedSince()).
@@ -102,7 +103,9 @@ abstract class AbstractDriver implements DatabaseInterface
     /**
      * How many transactions begun through this driver have had their 'transaction.begin' told and
      * not yet their 'transaction.end' - every told begin gets exactly one end. The depth of the
-     * next one is this count plus one.
+     * next one is this count plus one. A transaction a commit listener left open counts until its
+     * buffered end is told, after the commit listeners: one a later commit listener begins is a
+     * level deeper.
      */
     private int $unendedBegins = 0;
 
@@ -1907,10 +1910,14 @@ abstract class AbstractDriver implements DatabaseInterface
      *
      * What belonged to the old session is gone: settings made with SQL (SET SESSION ...; give them
      * to the connection as options instead - Pdo\Mysql::ATTR_INIT_COMMAND runs on every connect),
-     * temporary tables, an in-memory SQLite database. getPdo() returns the new PDO object; a
-     * reference to the old one keeps the old connection open until it is dropped.
+     * temporary tables, an in-memory SQLite database - and what was done to the old PDO object
+     * after the driver created it: attributes set with getPdo()->setAttribute(), functions added
+     * with Pdo\Sqlite::createFunction(), a PDO object a subclass put in its place. getPdo() returns
+     * the new PDO object; a reference to the old one keeps the old connection open until it is
+     * dropped. A persistent connection (PDO::ATTR_PERSISTENT) cannot be discarded: PDO would hand
+     * the same one back.
      *
-     * @throws ConnectionException When the new connection cannot be opened (the old one stays), or the driver was not created with its connection settings (a custom driver that sets $pdo itself)
+     * @throws ConnectionException When the new connection cannot be opened (the old one stays), the driver was not created with its connection settings (a custom driver that sets $pdo itself), or the connection is persistent
      */
     public function reconnect(): void
     {
@@ -1921,23 +1928,51 @@ abstract class AbstractDriver implements DatabaseInterface
             );
         }
 
+        if ($this->pdo->getAttribute(PDO::ATTR_PERSISTENT) === true) {
+            // PDO would hand the same connection back for the same settings: nothing would be discarded
+            throw new ConnectionException(
+                message: 'Database connection failed',
+                debugMessage: 'reconnect() cannot discard a persistent connection (PDO::ATTR_PERSISTENT): PDO hands the same connection back for the same settings. Open the driver without that option to use reconnect().'
+            );
+        }
+
         $new = ($this->connector)(); // first: when it fails, nothing has changed
 
-        $at = $this->transactionAtHand();
-        $owed = $this->transactionBegun || $this->reportsATransactionThatOwesItsEnd();
+        // A transaction begun on raw PDO whose end this driver would tell, read before anything is sent
+        $rawOwed = !$this->transactionBegun && $this->reportsATransactionThatOwesItsEnd();
+        $ended = $this->transactionsEnded;
+        $old = $this->pdo;
         try {
+            // Before the end listeners run: the old transaction's locks must not outlive it while they
+            // work on the new connection
             if ($this->pdo->inTransaction()) {
                 $this->pdo->rollBack();
             }
         } catch (Throwable) {
             // The old connection is discarded either way
         }
+        if ($this->pdo !== $old) {
+            // Foreign code inside that ROLLBACK reconnected itself: the old connection is discarded
+            // already, and what it began on its new one stays. The one opened here is dropped.
+            return;
+        }
+
+        // What is owed is read now, not before: foreign code inside that ROLLBACK (an error handler)
+        // may have ended the transaction through this driver - that call told its end - or begun
+        // another one on the old connection, which goes with it as well
+        if ($this->transactionBegun) {
+            $at = $this->transactionAtHand();
+        } elseif ($rawOwed && $this->transactionsEnded === $ended) {
+            $at = [null, null];
+        } else {
+            $at = null;
+        }
 
         $this->pdo = $new;
         $this->suspectFailure = null;
-        if (!$owed) {
-            // Nothing begun through this driver is open ($owed would say so); a 'lost' told while the
-            // transaction might still be open is gone with the old connection
+        if ($at === null) {
+            // Nothing owes its end; a 'lost' told while the transaction might still be open is gone
+            // with the old connection
             $this->lostReported = false;
             $this->lostFor = null;
 

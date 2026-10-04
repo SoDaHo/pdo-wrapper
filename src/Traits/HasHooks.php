@@ -55,7 +55,7 @@ use Sodaho\PdoWrapper\Exception\DatabaseException;
  *
  * 'transaction.end' fires exactly once for every transaction this library ends, after the
  * 'transaction.commit' or 'transaction.rollback' listeners, with
- * array{outcome: 'committed'|'rolled_back'|'lost', error: ?Throwable}
+ * array{outcome: 'committed'|'rolled_back'|'lost', error: ?Throwable, transaction: ?int, depth: ?int}
  * (DatabaseInterface::TRANSACTION_COMMITTED, TRANSACTION_ROLLED_BACK, TRANSACTION_LOST).
  *
  * Outcomes:
@@ -99,9 +99,9 @@ use Sodaho\PdoWrapper\Exception\DatabaseException;
  *   'transaction.end' 'rolled_back' (or 'lost' when that rollback fails, does not end it, or the
  *   state cannot be read) with a LogicException as error, after all commit listeners ran, and is
  *   listed in the CommitHookException; one the listener ended itself on raw PDO or implicitly (a
- *   DDL statement) is simply gone, without an event - but do not then begin another transaction on
- *   raw PDO in the same listener: this library cannot tell that one from the first and would give it
- *   the first one's end (not supported);
+ *   DDL statement) gets 'transaction.end' 'lost' (a TransactionException as error: it ended outside
+ *   this library) - but do not then begin another transaction on raw PDO in the same listener: this
+ *   library cannot tell that one from the first and would give it the first one's end (not supported);
  * - inside a 'transaction.end' listener: it ends inside that listener, before the remaining outer
  *   'transaction.end' listeners run;
  * - one a rollback or end listener leaves open is not checked and stays open: it is that
@@ -133,10 +133,11 @@ use Sodaho\PdoWrapper\Exception\DatabaseException;
  *
  * Not paired and other caveats: a failing explicit commit() or rollback() fires nothing (the
  * transaction is still the caller's to end; the one exception is the failed or refused commit of
- * a transaction PDO no longer reports, see below), and so does the raw rollback after a throwing
- * 'transaction.begin' listener (when that listener ended the transaction behind this library's
- * back before it threw, nothing is left to roll back and the end is told as 'lost', with the
- * exception the caller gets as error). Every call into PDO may run foreign code - an error
+ * a transaction PDO no longer reports, see below). The raw rollback after a throwing
+ * 'transaction.begin' listener fires no 'transaction.rollback', but tells the end: 'rolled_back',
+ * or 'lost' when it failed (when that listener ended the transaction behind this library's back
+ * before it threw, nothing is left to roll back and the end is 'lost' as well), with the exception
+ * the caller gets as error. Every call into PDO may run foreign code - an error
  * handler for a PDO warning (PDO::ERRMODE_WARNING). When such a handler ends the transaction
  * through this library while a COMMIT, a ROLLBACK or the driver's question to the server is
  * under way, that call tells the end, and the one it interrupted tells none: transaction() and
@@ -303,7 +304,8 @@ trait HasHooks
     }
 
     /**
-     * Trigger all callbacks for an event.
+     * Trigger all callbacks for an event. Each gets the data in a variable of its own: a callback
+     * may take it by reference, and what it changes there is not what the next one is told.
      *
      * @param string $event Event name
      * @param array<string, mixed> $data Event data to pass to callbacks
@@ -311,7 +313,8 @@ trait HasHooks
     protected function trigger(string $event, array $data): void
     {
         foreach ($this->hooks[$event] ?? [] as $callback) {
-            $callback($data);
+            $payload = $data;
+            $callback($payload);
         }
     }
 }

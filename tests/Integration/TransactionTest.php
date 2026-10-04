@@ -1136,6 +1136,36 @@ class TransactionTest extends TestCase
     }
 
     /**
+     * The events trigger() hands out ('query', 'error', 'transaction.rollback') give every listener
+     * the payload in a variable of its own as well.
+     */
+    public function testAListenerTakingThePayloadByReferenceDoesNotChangeWhatTheNextIsTold(): void
+    {
+        $seen = [];
+        foreach (['query', 'transaction.rollback'] as $event) {
+            $this->db->on($event, static function (array &$data) use (&$seen, $event): void {
+                $seen[] = $event . ' first: ' . json_encode($data);
+                $data = ['changed' => true];
+            });
+            $this->db->on($event, static function (array $data) use (&$seen, $event): void {
+                $seen[] = $event . ' second: ' . json_encode($data);
+            });
+        }
+
+        $this->db->beginTransaction();
+        $this->db->rollback();
+        $this->db->query('SELECT 1');
+
+        $this->assertSame([
+            'transaction.rollback first: {"transaction":1,"depth":1}',
+            'transaction.rollback second: {"transaction":1,"depth":1}',
+        ], array_values(array_filter($seen, static fn (string $s): bool => str_starts_with($s, 'transaction.rollback'))));
+        $queries = array_values(array_filter($seen, static fn (string $s): bool => str_starts_with($s, 'query')));
+        $this->assertCount(2, $queries);
+        $this->assertSame(substr($queries[0], strlen('query first: ')), substr($queries[1], strlen('query second: ')), 'the second listener is told what the first was');
+    }
+
+    /**
      * SQLite driver on a ScenarioPdo ($this->scenarioPdo): the ROLLBACKs sent are counted there -
      * after a successful commit there must be none -, and its commit() and rollBack() fail on demand.
      */

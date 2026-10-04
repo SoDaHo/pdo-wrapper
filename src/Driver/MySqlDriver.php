@@ -102,11 +102,11 @@ class MySqlDriver extends AbstractDriver
             $this->countsFoundRows = (bool) ($options[\Pdo\Mysql::ATTR_FOUND_ROWS] ?? false);
         }
 
-        // Kept for reconnect(); the credentials in an object that var_dump() and print_r() do not show
-        $credentials = new Credentials($username, $password);
-        parent::__construct(static function () use ($pdoClass, $dsn, $credentials, $options, $host, $port): PDO {
+        // Kept for reconnect(); credentials and options in an object that no dump of the driver shows
+        $settings = new ConnectionSettings($username, $password, $options);
+        parent::__construct(static function () use ($pdoClass, $dsn, $settings, $host, $port): PDO {
             try {
-                return new $pdoClass($dsn, $credentials->username(), $credentials->password(), $options);
+                return new $pdoClass($dsn, $settings->username(), $settings->password(), $settings->options());
             } catch (PDOException $e) {
                 throw new ConnectionException(
                     message: 'Database connection failed',
