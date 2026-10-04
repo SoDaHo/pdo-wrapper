@@ -1911,9 +1911,10 @@ abstract class AbstractDriver implements DatabaseInterface
      * locks even while someone still holds the old PDO object), the driver continues on the new
      * one, and a transaction whose end was still owed ends as 'lost' (its 'transaction.end' tells
      * its number, with a TransactionException as error; no 'transaction.rollback' listener runs).
-     * inTransaction() is false afterwards - unless foreign code inside a call into the old PDO
-     * object (an error handler) reconnected itself and began a transaction on its connection, which
-     * then stays -; the numbers of the transactions go on counting.
+     * inTransaction() is false afterwards - unless an end listener of that 'lost' began a
+     * transaction, or foreign code inside a call into the old PDO object (an error handler)
+     * reconnected itself and began one on its connection: those stay -; the numbers of the
+     * transactions go on counting.
      *
      * What belonged to the old session is gone: settings made with SQL (SET SESSION ...; give them
      * to the connection as options instead - Pdo\Mysql::ATTR_INIT_COMMAND runs on every connect),
@@ -1922,10 +1923,14 @@ abstract class AbstractDriver implements DatabaseInterface
      * with Pdo\Sqlite::createFunction(), a PDO object a subclass put in its place. getPdo() returns
      * the new PDO object; a reference to the old one keeps the old connection open until it is
      * dropped. A persistent connection (PDO::ATTR_PERSISTENT) cannot be discarded: PDO would hand
-     * the same one back. Others that may still hold the old connection while the end listeners
-     * run: a PDOStatement the caller keeps, and the call reconnect() is made from - a 'query' or
-     * 'error' listener holds the statement it was told about, an error handler in the middle of a
-     * call into PDO holds that call.
+     * the same one back. The driver keeps nothing of the old connection; others may: a PDOStatement
+     * of it, an exception of a statement that failed on it (its trace holds the statement while
+     * arguments are kept - the error the end listeners of a refused commit are told, the
+     * CommitFailedException its caller gets), and the call reconnect() is made from (query()
+     * holds its statement while its 'query' and 'error' listeners run, an error handler runs inside
+     * the call into PDO). An error handler that reconnects in the middle of a statement and begins
+     * a transaction there: the statement's failure may be remembered for the new transaction, and
+     * the old statement with it, until that transaction ends (a documented limit).
      *
      * @throws ConnectionException When the new connection cannot be opened (the old one stays), the driver was not created with its connection settings (a custom driver that sets $pdo itself), or the connection is persistent
      */

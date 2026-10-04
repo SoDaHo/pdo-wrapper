@@ -18,8 +18,11 @@ use Sodaho\PdoWrapper\Exception\DatabaseException;
  * end with the same number - also after a throwing begin listener ('rolled_back' after the raw
  * rollback, or 'lost' when it failed; no rollback listener runs) and for a transaction a commit
  * listener began and ended on raw PDO ('lost'). A BEGIN that fails in PDO tells nothing. The
- * numbers are the library's: a listener that takes the payload by reference and changes them
- * changes what the listeners after it are told, not what the library tells later.
+ * numbers are the library's: a 'transaction.begin' or 'transaction.rollback' listener that takes
+ * the payload by reference and changes them changes what the listeners after it are told (these
+ * two, like 'query' and 'error', hand one payload from listener to listener), not what the library
+ * tells later. 'transaction.commit' and 'transaction.end' listeners get an array of their own each
+ * and cannot take it by reference: PHP throws an Error, which is that listener's failure.
  *
  * "Fail Hard" implementation for 'query', 'error', 'transaction.begin' and 'transaction.rollback':
  * exceptions in those hooks bubble up to the caller (a PDOException from a 'transaction.begin' or
