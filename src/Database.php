@@ -7,6 +7,7 @@ namespace Sodaho\PdoWrapper;
 use PDO;
 use Sodaho\PdoWrapper\Driver\MariaDbDriver;
 use Sodaho\PdoWrapper\Exception\ConnectionException;
+use Sodaho\PdoWrapper\Query\JsonExpression;
 use Sodaho\PdoWrapper\Query\RawExpression;
 
 /**
@@ -141,6 +142,28 @@ class Database
     public static function raw(string $value, array $bindings = []): RawExpression
     {
         return new RawExpression($value, $bindings);
+    }
+
+    /**
+     * A value inside a JSON column, as text: `JSON_UNQUOTE(JSON_EXTRACT(`payload`, '$.net'))`, for
+     * where*(), select() (named with ->as()), groupBy() and orderBy() - in having() use the
+     * alias. ->orColumn('ip')
+     * falls back to a column where the document has no value. The path is checked and written
+     * into the SQL (see Query\JsonExpression for the form and what MariaDB returns).
+     *
+     * @param string $column The JSON column
+     * @param string $path `$` followed by `.name` and `[n]` steps: '$.net', '$.items[0].id'
+     *
+     * @throws Exception\QueryException When the path has another form
+     *
+     * @example
+     * $db->table('events')->where(Database::json('payload', '$.net'), 'net-a')->count();
+     * $net = Database::json('payload', '$.net')->orColumn('ip');
+     * $db->table('events')->select([$net->as('net'), Database::raw('COUNT(*) AS n')])->groupBy($net)->get();
+     */
+    public static function json(string $column, string $path): JsonExpression
+    {
+        return new JsonExpression($column, $path);
     }
 
     /**

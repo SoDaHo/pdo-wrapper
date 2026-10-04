@@ -170,13 +170,17 @@ class QueryBuilder
      * The argument count decides the form: with two arguments the second one is always the value
      * (so 'IS' for Iceland or 'LIKE' as a value is fine), with three it is the operator.
      *
-     * @param string|array<string, mixed> $column Column name or array of column => value conditions
+     * The column may be an expression without bindings instead of a name - a JSON value
+     * (Database::json('payload', '$.net')) or Database::raw('LOWER(email)'); the same holds for
+     * the other where*() methods.
+     *
+     * @param string|RawExpression|array<string, mixed> $column Column name, an expression, or array of column => value conditions
      * @param mixed $operatorOrValue Operator or value (if 2 args)
      * @param mixed $value Value (if 3 args)
      *
-     * @throws QueryException When the value is null with an operator other than IS / IS NOT (use whereNull()/whereNotNull()), the operator is not allowed or the array form has a numeric key
+     * @throws QueryException When the value is null with an operator other than IS / IS NOT (use whereNull()/whereNotNull()), the operator is not allowed, the array form has a numeric key, or the column is an expression with bindings
      */
-    public function where(string|array $column, mixed $operatorOrValue = null, mixed $value = null): self
+    public function where(string|RawExpression|array $column, mixed $operatorOrValue = null, mixed $value = null): self
     {
         // Array syntax: where(['active' => 1, 'role' => 'admin'])
         if (is_array($column)) {
@@ -197,6 +201,7 @@ class QueryBuilder
             }
             return $this;
         }
+        $this->guardAgainstBoundRaw('where', [$column]);
 
         // Two arguments: where('id', 5) means equality, whatever the value looks like.
         // where(column: 'id', value: 5) leaves the operator null: equality as well.
@@ -281,13 +286,14 @@ class QueryBuilder
      * An empty list matches no row: the condition is rendered as `1 = 0`, so a select finds
      * nothing and an update or delete hits nothing, as `IN ()` would if SQL allowed it.
      *
-     * @param string $column Column name
+     * @param string|RawExpression $column Column name, or an expression without bindings (see where())
      * @param array<array-key, mixed> $values Values to match (a RawExpression element is inlined)
      *
-     * @throws QueryException When $values contains null
+     * @throws QueryException When $values contains null, or the column is an expression with bindings
      */
-    public function whereIn(string $column, array $values): self
+    public function whereIn(string|RawExpression $column, array $values): self
     {
+        $this->guardAgainstBoundRaw('whereIn', [$column]);
         if ($values === []) {
             $this->wheres[] = ['type' => 'raw', 'sql' => '1 = 0', 'bindings' => []];
 
@@ -308,17 +314,18 @@ class QueryBuilder
     /**
      * Add a WHERE NOT IN condition.
      *
-     * @param string $column Column name
+     * @param string|RawExpression $column Column name, or an expression without bindings (see where())
      * @param array<array-key, mixed> $values Values to exclude (a RawExpression element is inlined)
      *
      * An empty list throws, unlike whereIn(): "not in nothing" would match every row, and in an
      * update or delete that is every row of the table - too much to happen because a list came
      * back empty.
      *
-     * @throws QueryException When $values is empty or contains null
+     * @throws QueryException When $values is empty or contains null, or the column is an expression with bindings
      */
-    public function whereNotIn(string $column, array $values): self
+    public function whereNotIn(string|RawExpression $column, array $values): self
     {
+        $this->guardAgainstBoundRaw('whereNotIn', [$column]);
         if (empty($values)) {
             throw new QueryException(
                 message: 'Query failed',
@@ -340,13 +347,14 @@ class QueryBuilder
     /**
      * Add a WHERE BETWEEN condition.
      *
-     * @param string $column Column name
+     * @param string|RawExpression $column Column name, or an expression without bindings (see where())
      * @param array<array-key, mixed> $values [min, max] values (a RawExpression bound is inlined)
      *
-     * @throws QueryException When $values doesn't have exactly 2 elements or one of them is null
+     * @throws QueryException When $values doesn't have exactly 2 elements or one of them is null, or the column is an expression with bindings
      */
-    public function whereBetween(string $column, array $values): self
+    public function whereBetween(string|RawExpression $column, array $values): self
     {
+        $this->guardAgainstBoundRaw('whereBetween', [$column]);
         if (count($values) !== 2) {
             throw new QueryException(
                 message: 'Query failed',
@@ -368,13 +376,14 @@ class QueryBuilder
     /**
      * Add a WHERE NOT BETWEEN condition.
      *
-     * @param string $column Column name
+     * @param string|RawExpression $column Column name, or an expression without bindings (see where())
      * @param array<array-key, mixed> $values [min, max] values to exclude (a RawExpression bound is inlined)
      *
-     * @throws QueryException When $values doesn't have exactly 2 elements or one of them is null
+     * @throws QueryException When $values doesn't have exactly 2 elements or one of them is null, or the column is an expression with bindings
      */
-    public function whereNotBetween(string $column, array $values): self
+    public function whereNotBetween(string|RawExpression $column, array $values): self
     {
+        $this->guardAgainstBoundRaw('whereNotBetween', [$column]);
         if (count($values) !== 2) {
             throw new QueryException(
                 message: 'Query failed',
@@ -396,10 +405,13 @@ class QueryBuilder
     /**
      * Add a WHERE IS NULL condition.
      *
-     * @param string $column Column name
+     * @param string|RawExpression $column Column name, or an expression without bindings (see where())
+     *
+     * @throws QueryException When the column is an expression with bindings
      */
-    public function whereNull(string $column): self
+    public function whereNull(string|RawExpression $column): self
     {
+        $this->guardAgainstBoundRaw('whereNull', [$column]);
         $this->wheres[] = [
             'type' => 'null',
             'column' => $column,
@@ -412,10 +424,13 @@ class QueryBuilder
     /**
      * Add a WHERE IS NOT NULL condition.
      *
-     * @param string $column Column name
+     * @param string|RawExpression $column Column name, or an expression without bindings (see where())
+     *
+     * @throws QueryException When the column is an expression with bindings
      */
-    public function whereNotNull(string $column): self
+    public function whereNotNull(string|RawExpression $column): self
     {
+        $this->guardAgainstBoundRaw('whereNotNull', [$column]);
         $this->wheres[] = [
             'type' => 'null',
             'column' => $column,
@@ -432,11 +447,14 @@ class QueryBuilder
      * so a pattern part run through Database::escapeLike() is literal whatever the engine's default
      * or SQL mode. The same holds for where() and having() with the LIKE / NOT LIKE operator.
      *
-     * @param string $column Column name
+     * @param string|RawExpression $column Column name, or an expression without bindings (see where())
      * @param string $pattern LIKE pattern (use % for wildcards)
+     *
+     * @throws QueryException When the column is an expression with bindings
      */
-    public function whereLike(string $column, string $pattern): self
+    public function whereLike(string|RawExpression $column, string $pattern): self
     {
+        $this->guardAgainstBoundRaw('whereLike', [$column]);
         $this->wheres[] = [
             'type' => 'basic',
             'column' => $column,
@@ -450,11 +468,14 @@ class QueryBuilder
     /**
      * Add a WHERE NOT LIKE condition.
      *
-     * @param string $column Column name
+     * @param string|RawExpression $column Column name, or an expression without bindings (see where())
      * @param string $pattern LIKE pattern to exclude
+     *
+     * @throws QueryException When the column is an expression with bindings
      */
-    public function whereNotLike(string $column, string $pattern): self
+    public function whereNotLike(string|RawExpression $column, string $pattern): self
     {
+        $this->guardAgainstBoundRaw('whereNotLike', [$column]);
         $this->wheres[] = [
             'type' => 'basic',
             'column' => $column,
@@ -1500,14 +1521,16 @@ class QueryBuilder
 
         foreach ($this->wheres as $where) {
             $type = (string)($where['type'] ?? '');
-            $column = (string)($where['column'] ?? '');
+            // A name is quoted; an expression (Database::json(), raw() without bindings) stands as it is
+            $column = $where['column'] ?? '';
+            $column = $column instanceof RawExpression ? (string) $column : $this->quoteIdentifier((string) $column);
 
             switch ($type) {
                 case 'basic':
                     $operator = (string)($where['operator'] ?? '=');
                     $value = $where['value'] ?? null;
                     $right = $this->valueSql($value, $params);
-                    $clause = $this->comparison($this->quoteIdentifier($column), $operator, $right, $value instanceof RawExpression);
+                    $clause = $this->comparison($column, $operator, $right, $value instanceof RawExpression);
                     if ($operator === 'LIKE' || $operator === 'NOT LIKE') {
                         $clause .= ' ESCAPE ?';
                         $params[] = self::LIKE_ESCAPE;
@@ -1534,7 +1557,7 @@ class QueryBuilder
                         $slots[] = $this->valueSql($item, $params);
                     }
                     $inOperator = ($where['not'] ?? false) ? 'NOT IN' : 'IN';
-                    $clauses[] = $this->quoteIdentifier($column) . " {$inOperator} (" . implode(', ', $slots) . ')';
+                    $clauses[] = $column . " {$inOperator} (" . implode(', ', $slots) . ')';
                     break;
 
                 case 'between':
@@ -1546,12 +1569,12 @@ class QueryBuilder
                     foreach ([$betweenValues[0] ?? null, $betweenValues[1] ?? null] as $bound) {
                         $bounds[] = $this->valueSql($bound, $params);
                     }
-                    $clauses[] = $this->quoteIdentifier($column) . " {$betweenOperator} {$bounds[0]} AND {$bounds[1]}";
+                    $clauses[] = $column . " {$betweenOperator} {$bounds[0]} AND {$bounds[1]}";
                     break;
 
                 case 'null':
                     $nullOperator = ($where['not'] ?? false) ? 'IS NOT NULL' : 'IS NULL';
-                    $clauses[] = $this->quoteIdentifier($column) . ' ' . $nullOperator;
+                    $clauses[] = $column . ' ' . $nullOperator;
                     break;
             }
         }
@@ -1597,7 +1620,7 @@ class QueryBuilder
                     message: 'Query failed',
                     debugMessage: sprintf(
                         'A raw expression with bindings is only accepted as a value (insert()/update() data, where(), whereIn(), whereBetween(), the value of having()), not in %s(). Use whereRaw() for a condition, or query() for the whole statement.',
-                        $method === 'having' ? 'the column of having' : $method
+                        in_array($method, ['select', 'orderBy', 'groupBy'], true) ? $method : 'the column of ' . $method
                     )
                 );
             }
@@ -1703,7 +1726,7 @@ class QueryBuilder
      *
      * @throws QueryException When an element is null
      */
-    private function guardAgainstNullElement(string $method, string $column, array $values): void
+    private function guardAgainstNullElement(string $method, string|RawExpression $column, array $values): void
     {
         foreach ($values as $value) {
             if ($value === null) {
@@ -1727,7 +1750,7 @@ class QueryBuilder
      *
      * @throws QueryException When a bound is null
      */
-    private function guardAgainstNullBound(string $method, string $column, array $values): void
+    private function guardAgainstNullBound(string $method, string|RawExpression $column, array $values): void
     {
         foreach ($values as $value) {
             if ($value === null) {
