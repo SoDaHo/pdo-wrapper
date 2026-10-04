@@ -11,8 +11,8 @@ use Sodaho\PdoWrapper\Tests\Support\Recorder;
 
 /**
  * Builder statements on MariaDB, executed, with the SQL the 'query' hook was told: output names
- * that differ in case, UPDATE/DELETE ... ORDER BY ... LIMIT, locks with exists() and aggregates,
- * and how booleans are bound.
+ * that differ in case, UPDATE/DELETE ... ORDER BY ... LIMIT, increment()'s cast, orderBy() with a
+ * string, locks with exists() and aggregates, and how booleans are bound.
  */
 class QueryBuilderStatementsTest extends ContractTestCase
 {
@@ -37,17 +37,27 @@ class QueryBuilderStatementsTest extends ContractTestCase
 
     /**
      * A grouped count keeps one select() entry per alias: a string entry's alias and a raw
-     * expression's bare alias are the same name.
+     * expression's alias are the same name - bare or quoted, MariaDB compares them without case
+     * (two of them would end in error 1060, a duplicate column name in the derived table).
      */
     public function testAGroupedCountKeepsOneEntryPerAlias(): void
     {
         $this->create('users', ['a' => 'int', 'b' => 'int']);
+        $this->db->insert('users', ['a' => 1, 'b' => 2]);
+        $this->db->insert('users', ['a' => 2, 'b' => 2]);
         $rendered = new Recorder(static fn (array $context): string => (string) $context['sql']);
         $this->db->on('query', $rendered);
 
-        $this->db->table('users')->select(['a as N', Database::raw('COUNT(*) AS n')])->groupBy('a')->count();
+        foreach (['COUNT(*) AS n', 'COUNT(*) AS `n`', 'COUNT(*) as "N"', 'COUNT(*) AS `N`'] as $raw) {
+            $this->assertSame(2, $this->db->table('users')->select(['a as N', Database::raw($raw)])->groupBy('a')->count(), $raw);
+        }
 
-        $this->assertSame(['SELECT COUNT(*) as aggregate FROM (SELECT `a` as `N` FROM `users` GROUP BY `a`) as grouped'], $rendered->all());
+        $this->assertSame(array_fill(0, 4, 'SELECT COUNT(*) as aggregate FROM (SELECT `a` as `N` FROM `users` GROUP BY `a`) as grouped'), $rendered->all());
+
+        // A quoted alias is an alias: the entry stays for having() to refer to
+        foreach (['COUNT(*) AS `n`', 'COUNT(*) AS "n"'] as $raw) {
+            $this->assertSame(2, $this->db->table('users')->select([Database::raw($raw)])->groupBy('a')->having('n', '>', 0)->count(), $raw);
+        }
     }
 
     /**
@@ -119,7 +129,8 @@ class QueryBuilderStatementsTest extends ContractTestCase
 
     /**
      * increment() and decrement(): the column first, then $extra, in the order given; the step
-     * is bound where it stands, the WHERE values after the SET values.
+     * is bound where it stands, the WHERE values after the SET values. The step is cast - an int
+     * to SIGNED, a float to DECIMAL(65,30) -: bound as text it would make MariaDB add in DOUBLE.
      */
     public function testIncrementSetsTheColumnFirstThenTheExtraValues(): void
     {
@@ -132,9 +143,62 @@ class QueryBuilderStatementsTest extends ContractTestCase
         $this->db->table('counters')->where('id', 1)->decrement('attempts', 1.5);
 
         $this->assertSame([
-            ['UPDATE `counters` SET `attempts` = `attempts` + ?, `note` = ?, `seen` = ? WHERE `id` = ?', [2, 'b', 1, 1]],
-            ['UPDATE `counters` SET `attempts` = `attempts` - ? WHERE `id` = ?', [1.5, 1]],
+            ['UPDATE `counters` SET `attempts` = `attempts` + CAST(? AS SIGNED), `note` = ?, `seen` = ? WHERE `id` = ?', [2, 'b', 1, 1]],
+            ['UPDATE `counters` SET `attempts` = `attempts` - CAST(? AS DECIMAL(65,30)) WHERE `id` = ?', [1.5, 1]],
         ], $rendered->all());
+    }
+
+    /**
+     * A float the DECIMAL(65,30) cast would change is refused before anything is sent: INF, NAN,
+     * magnitudes from 1e35 (beyond the integer digits) and below 1e-13 (the digits PHP writes
+     * could reach past the 30th place; a tiny step on a DOUBLE column would silently be lost).
+     * 0, negative steps and the bounds themselves are added.
+     */
+    public function testAFloatStepTheCastCannotHoldIsRefused(): void
+    {
+        $this->create('counters', ['id' => 'key', 'score' => 'double NOT NULL']);
+        $this->db->insert('counters', ['id' => 1, 'score' => 0.5]);
+        $rendered = new Recorder(static fn (array $context): string => (string) $context['sql']);
+        $this->db->on('query', $rendered);
+
+        foreach ([INF, -INF, NAN, 9.99e-14, -1e-14, 1e35, -1e35] as $step) {
+            foreach (['increment', 'decrement'] as $method) {
+                try {
+                    $this->db->table('counters')->where('id', 1)->{$method}('score', $step);
+                    $this->fail(sprintf('Expected QueryException: %s(%s)', $method, var_export($step, true)));
+                } catch (QueryException $e) {
+                    $this->assertSame('Update failed', $e->getMessage());
+                    $this->assertSame(sprintf('%s() adds a float as DECIMAL(65,30), which would change %s: only 0 and magnitudes from 1e-13 below 1e35 keep the digits PHP writes for a float. Use update() with Database::raw() for it.', $method, var_export($step, true)), $e->getDebugMessage());
+                }
+            }
+        }
+        $this->assertSame([], $rendered->all(), 'nothing was sent');
+
+        $score = fn (): mixed => $this->db->findOne('counters', ['id' => 1])['score'] ?? null;
+        foreach ([0.0, -0.0] as $step) {
+            $this->assertSame(0, $this->db->table('counters')->where('id', 1)->increment('score', $step), 'nothing changed');
+        }
+        $this->db->table('counters')->where('id', 1)->increment('score', 1e-13);
+        $this->assertSame(0.5000000000001, $score());
+        $this->db->table('counters')->where('id', 1)->increment('score', -1e-13);
+        $this->assertSame(0.5, $score(), 'a negative step');
+        $this->db->table('counters')->where('id', 1)->increment('score', 9.9e34);
+        $this->assertSame(9.9e34, $score());
+    }
+
+    /**
+     * orderBy() takes a string as one column name: "title as x" is not split into an alias.
+     */
+    public function testOrderByTakesAStringAsOneColumnName(): void
+    {
+        $this->create('docs', ['id' => 'key', 'title as x' => 'int']);
+        $this->db->insert('docs', ['id' => 1, 'title as x' => 2]);
+        $this->db->insert('docs', ['id' => 2, 'title as x' => 1]);
+        $builder = $this->db->table('docs')->orderBy('title as x');
+
+        $this->assertSame('SELECT * FROM `docs` ORDER BY `title as x` ASC', $builder->toSql()[0]);
+        $this->assertSame([2, 1], array_column($builder->get(), 'id'));
+        $this->assertSame('SELECT `title` as `x` FROM `docs`', $this->db->table('docs')->select(['title as x'])->toSql()[0], 'select() still reads an alias');
     }
 
     /**
@@ -176,20 +240,71 @@ class QueryBuilderStatementsTest extends ContractTestCase
     }
 
     /**
-     * Aggregates drop the lock (a locking read of an aggregate locks nothing a caller could name);
-     * the builder keeps it for the rows it returns.
+     * Aggregates keep the lock: `SELECT COUNT(*) ... FOR UPDATE` locks what it reads. The
+     * combinations a select refuses (distinct(), groupBy(), having()) are refused here too,
+     * before anything is sent.
      */
-    public function testAggregatesDropTheLock(): void
+    public function testAggregatesKeepTheLock(): void
     {
-        $this->create('users', ['id' => 'key']);
+        $this->create('users', ['id' => 'key', 'n' => 'int']);
         $rendered = new Recorder(static fn (array $context): string => (string) $context['sql']);
         $this->db->on('query', $rendered);
-        $builder = $this->db->table('users');
 
-        $this->assertSame(0, $builder->lockForUpdate()->count());
+        $this->db->beginTransaction();
+        $this->assertSame(0, $this->db->table('users')->where('n', 7)->lockForUpdate()->count());
+        $this->assertNull($this->db->table('users')->sharedLock()->max('n'));
+        $this->assertNull($this->db->table('users')->lockForUpdate()->sum('n'));
+        $this->db->rollback();
 
-        $this->assertSame(['SELECT COUNT(*) as aggregate FROM `users`'], $rendered->all());
-        $this->assertSame('SELECT * FROM `users` FOR UPDATE', $builder->toSql()[0]);
+        $this->assertSame([
+            'SELECT COUNT(*) as aggregate FROM `users` WHERE `n` = ? FOR UPDATE',
+            'SELECT MAX(`n`) as aggregate FROM `users` LOCK IN SHARE MODE',
+            'SELECT SUM(`n`) as aggregate FROM `users` FOR UPDATE',
+        ], $rendered->all());
+
+        $rendered->clear();
+        foreach ([
+            'distinct() with a column' => fn (): int => $this->db->table('users')->distinct()->lockForUpdate()->count('n'),
+            'distinct()' => fn (): int => $this->db->table('users')->distinct()->lockForUpdate()->count(),
+            'groupBy()' => fn (): int => $this->db->table('users')->groupBy('n')->lockForUpdate()->count(),
+            'having()' => fn (): mixed => $this->db->table('users')->having(Database::raw('COUNT(*)'), '>', Database::raw('0'))->sharedLock()->max('n'),
+        ] as $name => $case) {
+            try {
+                $case();
+                $this->fail("Expected QueryException: {$name}");
+            } catch (QueryException $e) {
+                $this->assertStringContainsString('cannot be combined with distinct(), groupBy() or having()', (string) $e->getDebugMessage(), $name);
+            }
+        }
+        $this->assertSame([], $rendered->all(), 'nothing may run unlocked');
+    }
+
+    /**
+     * What the kept lock is for: a count under lockForUpdate() holds off another transaction's
+     * insert into what it counted until the transaction ends (REPEATABLE READ locks the gaps too),
+     * so "count, then insert" is not overtaken.
+     */
+    public function testALockedCountHoldsOffAnotherInsert(): void
+    {
+        $this->create('sessions', ['id' => 'key', 'user_id' => 'int']);
+        $this->db->insert('sessions', ['id' => 1, 'user_id' => 7]);
+        $other = $this->connect();
+        $other->execute('SET SESSION innodb_lock_wait_timeout = 1');
+
+        $this->db->beginTransaction();
+        $this->assertSame(1, $this->db->table('sessions')->where('user_id', 7)->lockForUpdate()->count());
+        try {
+            $other->insert('sessions', ['id' => 2, 'user_id' => 7]);
+            $this->fail('Expected the insert to wait for the lock');
+        } catch (QueryException $e) {
+            $previous = $e->getPrevious();
+            $this->assertInstanceOf(\PDOException::class, $previous);
+            $this->assertSame(1205, $previous->errorInfo[1] ?? null, 'lock wait timeout');
+        }
+        $this->db->rollback();
+
+        $other->insert('sessions', ['id' => 2, 'user_id' => 7]);
+        $this->assertSame(2, $other->table('sessions')->count(), 'free after the end');
     }
 
     /**

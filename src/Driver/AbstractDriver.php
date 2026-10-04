@@ -176,13 +176,11 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      * name is used with new, where anything but a class that can stand in for PDO would end in an
      * Error - or in an object the driver cannot use. The message names the key, never the value.
      *
-     * @internal
-     *
      * @throws ConnectionException When the value is not the name of a class that is PDO or extends it and can be instantiated
      *
      * @return class-string<PDO>
      */
-    public static function validPdoClass(mixed $class): string
+    protected static function validPdoClass(mixed $class): string
     {
         if (!is_string($class) || !is_a($class, PDO::class, true) || !(new ReflectionClass($class))->isInstantiable()) {
             throw new ConnectionException(
@@ -212,7 +210,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      * So is a RawExpression: bound, it would arrive as its own text; write it into the SQL.
      *
      * After a failure that ended the open transaction on the server for certain (a MariaDB
-     * deadlock, see transactionIsOver()) nothing is sent until that transaction is ended here -
+     * deadlock or a 1020, see transactionIsOver()) nothing is sent until that transaction is ended here -
      * by rollback(), or by a refused commit() that tells 'lost'; for a transaction begun on raw PDO
      * also once PDO reports none: the statement throws, with that failure as previous, and fires
      * no hook. A ROLLBACK sent as a statement is refused like any other: call rollback().
@@ -235,7 +233,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
             $afterExecute = $this->afterExecute[2];
         }
 
-        // The server has thrown the open transaction away (a MariaDB deadlock): what would be sent
+        // The server has thrown the open transaction away (a MariaDB deadlock or a 1020): what would be sent
         // now would run outside of it and be committed on its own.
         if ($this->suspectFailure !== null && $this->deadTransactionPending()) {
             throw new QueryException(
@@ -466,7 +464,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
     /**
      * Which statement failure commit() shall ask transactionEndedBy() about: one that may have
      * ended the open transaction on the server although PDO still reports it. MariaDB rolls it
-     * back on a deadlock (and on a lock wait timeout when configured so); the server would then
+     * back on a deadlock or a 1020 (and on a lock wait timeout when configured so); the server would then
      * answer COMMIT with success for a transaction that no longer holds the work.
      *
      * @param PDOException|null $remembered What is remembered so far in this transaction
@@ -512,12 +510,11 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
 
     /**
      * Whether the remembered failure has ended the transaction on the server for certain, known
-     * from the failure alone (no statement is sent to find out): a MariaDB deadlock. Until
+     * from the failure alone (no statement is sent to find out): a MariaDB deadlock or a 1020. Until
      * that transaction is ended here (see deadTransactionPending()), query() sends nothing more -
      * every statement throws - and beginTransaction() refuses; no hook fires for the refused
      * statement (the failure itself was told to the 'error' hook).
-     * False where the server only undid the statement or may have (a lock wait timeout), and where
-     * the server refuses further statements by itself.
+     * False where the server only undid the statement or may have (a lock wait timeout).
      */
     protected function transactionIsOver(PDOException $failure): bool
     {
@@ -891,7 +888,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
         }
 
         if ($this->suspectFailure !== null && $this->transactionIsOver($this->suspectFailure)) {
-            // The server has thrown the transaction away (a deadlock), whatever PDO reports: the
+            // The server has thrown the transaction away (a deadlock or a 1020), whatever PDO reports: the
             // caller would begin its work in a dead transaction. Undone by the catch in
             // beginTransaction(), like every begin that fails; nothing of it is committed, and the
             // failure's codes are the caller's.
@@ -1650,20 +1647,20 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      *   the exception is re-thrown, a PDOException from the listener as TransactionException;
      * - the callback threw: rollback attempted, the callback's exception is re-thrown
      *   (best effort: if the rollback fails, the transaction may still be open). Measured on
-     *   MariaDB 11.4 with mysqlnd: after a deadlock (the server rolled the transaction back) and
+     *   MariaDB 11.4 with mysqlnd: after a deadlock or a 1020 (the server rolled the transaction back) and
      *   after a lock wait timeout (the server rolled back only the statement) PDO still reports the
      *   transaction, so the rollback is sent, the transaction.rollback listeners run and
      *   transaction.end reports 'rolled_back'; after a lost connection the rollback fails, no
      *   rollback listener runs, PDO still reported the transaction, and transaction.end reports 'lost';
      * - the callback swallowed a statement error that ended the transaction on the server
-     *   (a deadlock, or a lock wait timeout under innodb_rollback_on_timeout): the commit is
+     *   (a deadlock or a 1020, or a lock wait timeout under innodb_rollback_on_timeout): the commit is
      *   refused before it is sent and the CommitFailedException is thrown, instead of a COMMIT the
      *   server answers with success. While PDO still reports the transaction the rollback follows
      *   and transaction.end reports 'rolled_back'; once PDO knows that the transaction is gone - from
-     *   a statement on raw PDO after a deadlock, or from the question to the server after another
+     *   a statement on raw PDO after a deadlock or a 1020, or from the question to the server after another
      *   failure (the lock wait timeout: statements the callback ran after it were committed on
      *   their own) - nothing is left to roll back and transaction.end reports 'lost'. Through
-     *   this library nothing is sent between a deadlock and the rollback;
+     *   this library nothing is sent between a deadlock or a 1020 and the rollback;
      * - the commit failed: a rollback is attempted when PDO still reports the transaction, the
      *   CommitFailedException is re-thrown; transaction.end reports 'rolled_back' when that rollback
      *   succeeded (nothing was committed) and 'lost' when it failed too (the commit may or may not
@@ -2061,7 +2058,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
             );
         }
         if ($lastId === '') {
-            return 0; // a PDO driver that has no ID to report
+            return 0; // a PDO class (pdoClass) that reports no ID
         }
 
         // Not (int): the cast cuts what does not fit. MariaDB reports a BIGINT UNSIGNED ID above
@@ -2088,7 +2085,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      *
      * Renders `INSERT INTO table (...) SELECT ?, ?, ... FROM DUAL WHERE (condition)` (MariaDB needs
      * `FROM DUAL` before a WHERE without a table). The row's values are bound first, then the
-     * condition's bindings (see DatabaseInterface::insertWhen()).
+     * condition's bindings (see InternalMethods::insertWhen()).
      *
      * @param string $table Table name (supports schema.table format)
      * @param array<string, mixed> $data Column => value pairs of the row
@@ -2136,7 +2133,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
     }
 
     /**
-     * Insert a row unless it collides with an existing one (see DatabaseInterface::insertIgnore()).
+     * Insert a row unless it collides with an existing one (see InternalMethods::insertIgnore()).
      *
      * `ON DUPLICATE KEY UPDATE col = col` on the row's first column: a no-op whichever key
      * collided, reported as 0 affected rows.

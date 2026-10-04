@@ -17,9 +17,10 @@ use Throwable;
  * Database::fromEnv() reads the config from the environment.
  *
  * What comes back from a query is pinned when the connection opens: the server must be MariaDB
- * 10.11 or later and the client mysqlnd, and fetched values are not turned into strings
- * (ATTR_STRINGIFY_FETCHES off). Then INT and BIGINT arrive as int (a BIGINT UNSIGNED above
- * PHP_INT_MAX as string), FLOAT and DOUBLE as float, DECIMAL - and SUM()/AVG() of integers, which
+ * 10.11 or later and the client mysqlnd, fetched values are not turned into strings
+ * (ATTR_STRINGIFY_FETCHES off), and NULL and '' are not turned into each other (ATTR_ORACLE_NULLS
+ * NULL_NATURAL, PDO's default); options that set either otherwise are refused. Then, on 64-bit PHP, INT and
+ * BIGINT arrive as int (a BIGINT UNSIGNED above PHP_INT_MAX as string), FLOAT and DOUBLE as float, DECIMAL - and SUM()/AVG() of integers, which
  * are DECIMAL - as string, TINYINT(1)/BOOLEAN as int, DATETIME, VARCHAR, TEXT and JSON as string,
  * NULL as null - in native and in emulated prepares alike (measured on MariaDB 10.11, 11.4 and
  * 12.3 with PHP 8.5 and mysqlnd). These are mysqlnd's types; pdo_mysql built on another client
@@ -52,7 +53,7 @@ class MariaDbDriver extends AbstractDriver
      *
      * @param array{host?: string|null, database?: string|null, username?: string|null, password?: string|null, port?: int|string, charset?: string, options?: array<int, mixed>, pdoClass?: class-string<PDO>|null} $config
      *
-     * @throws ConnectionException When required config is missing, 'pdoClass' names no class that extends PDO, 'options' turn ATTR_STRINGIFY_FETCHES on, the connection fails, or the server is no MariaDB 10.11 or later or the client no mysqlnd
+     * @throws ConnectionException When required config is missing, 'pdoClass' names no class that extends PDO, 'options' turn ATTR_STRINGIFY_FETCHES on, the connection fails, or the server is no MariaDB 10.11 or later, the client no mysqlnd or ATTR_ORACLE_NULLS not NULL_NATURAL
      */
     public function __construct(#[\SensitiveParameter] array $config)
     {
@@ -213,7 +214,7 @@ class MariaDbDriver extends AbstractDriver
     }
 
     /**
-     * Insert a row unless it collides with an existing one (see DatabaseInterface::insertIgnore()).
+     * Insert a row unless it collides with an existing one (see InternalMethods::insertIgnore()).
      *
      * `ON DUPLICATE KEY UPDATE col = col` reports 1 affected row for an inserted row and 0 for an
      * existing one - unless the connection counts matched rows (the driver's ATTR_FOUND_ROWS
@@ -274,9 +275,14 @@ class MariaDbDriver extends AbstractDriver
 
     /**
      * The library promises MariaDB 10.11 or later and the PHP types mysqlnd delivers: a server or
-     * a client that cannot keep that promise is refused at once, before any statement - the same
-     * at reconnect(). The version is the one the client got in the handshake (nothing is sent);
-     * MariaDB before 11 prefixes it with "5.5.5-" for old MySQL clients.
+     * a client that cannot keep that promise is refused at once, before the library sends a
+     * statement (an INIT_COMMAND among the options has run in the handshake already) - the same
+     * at reconnect(). The version is the one the client got in the handshake (nothing is sent):
+     * MariaDB before 11 prefixes it with "5.5.5-" for old MySQL clients, MariaDB Enterprise puts
+     * its build number after the version ("11.4.5-3-MariaDB-enterprise"). A proxy in between
+     * passes when it reports the server's version string. All of it is read from
+     * the PDO object: a 'pdoClass' of the caller's that reports something else is trusted, as the
+     * rest of the caller's code is.
      *
      * @throws ConnectionException
      */
@@ -289,13 +295,18 @@ class MariaDbDriver extends AbstractDriver
                 'pdo_mysql is not built on mysqlnd (client "%s"): the PHP types of the fetched values would not be the ones this library promises. Use a PHP build whose pdo_mysql uses mysqlnd.',
                 is_string($client) ? $client : get_debug_type($client)
             ),
-            !is_string($server) || preg_match('/^(?:5\.5\.5-)?(\d+\.\d+\.\d+)-MariaDB/i', $server, $version) !== 1 => sprintf(
+            !is_string($server) || preg_match('/^(?:5\.5\.5-)?(\d+\.\d+\.\d+)(?:-\d+)?-MariaDB/i', $server, $version) !== 1 => sprintf(
                 'The server is no MariaDB (it reports "%s"): this library supports MariaDB 10.11 and later only.',
                 is_string($server) ? $server : get_debug_type($server)
             ),
             version_compare($version[1], '10.11.0', '<') => sprintf(
                 'MariaDB %s is older than 10.11, the oldest version this library supports.',
                 $version[1]
+            ),
+            // Read back, not checked in the options: PDO takes any spelling of an int for it ('00', true)
+            $pdo->getAttribute(PDO::ATTR_ORACLE_NULLS) !== PDO::NULL_NATURAL => sprintf(
+                'ATTR_ORACLE_NULLS is %s on this connection: NULL would arrive as \'\' or \'\' as null, not as this library promises (see MariaDbDriver). Leave it at PDO::NULL_NATURAL and convert in the application.',
+                var_export($pdo->getAttribute(PDO::ATTR_ORACLE_NULLS), true)
             ),
             default => null,
         };

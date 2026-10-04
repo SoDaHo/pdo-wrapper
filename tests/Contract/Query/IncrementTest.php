@@ -59,17 +59,48 @@ class IncrementTest extends ContractTestCase
         $this->assertSame([0, 15], array_map(static fn (array $row): int => Fetched::int($row['attempts']), $this->db->table('counters')->orderBy('id')->get()));
     }
 
+    /**
+     * The column cannot be set in $extra as well - also not in another case or as
+     * "table.column", which name the same column: the second assignment would replace the step.
+     */
     public function testTheColumnCannotBeSetInTheExtraValuesToo(): void
     {
-        foreach (['increment' => fn (): int => $this->db->table('counters')->where('id', 1)->increment('attempts', 1, ['attempts' => 9]), 'decrement' => fn (): int => $this->db->table('counters')->where('id', 1)->decrement('attempts', 1, ['attempts' => 9])] as $method => $call) {
-            try {
-                $call();
-                $this->fail('Expected QueryException: ' . $method);
-            } catch (QueryException $e) {
-                $this->assertSame('Update failed', $e->getMessage());
-                $this->assertSame(sprintf('%s() changes "attempts" itself; it cannot be set in $extra as well', $method), $e->getDebugMessage());
+        foreach (['increment', 'decrement'] as $method) {
+            foreach (['attempts', 'ATTEMPTS', 'counters.attempts', 'Counters.Attempts'] as $key) {
+                try {
+                    $this->db->table('counters')->where('id', 1)->{$method}('attempts', 1, ['note' => 'x', $key => 9]);
+                    $this->fail("Expected QueryException: {$method} with {$key}");
+                } catch (QueryException $e) {
+                    $this->assertSame('Update failed', $e->getMessage());
+                    $this->assertSame(sprintf('%s() changes "attempts" itself; it cannot be set in $extra as well (as "%s")', $method, $key), $e->getDebugMessage());
+                }
             }
         }
-        $this->assertSame(0, Fetched::int($this->db->findOne('counters', ['id' => 1])['attempts'] ?? null));
+        $row = $this->db->findOne('counters', ['id' => 1]) ?? [];
+        $this->assertSame(0, Fetched::int($row['attempts'] ?? null), 'nothing was sent');
+        $this->assertSame('a', $row['note'] ?? null);
+    }
+
+    /**
+     * The step is added exactly: a BIGINT beyond 2^53 and a DECIMAL with more digits than a double
+     * holds come back exact, for an int step and for a float step.
+     */
+    public function testTheStepIsAddedExactly(): void
+    {
+        $this->create('amounts', ['id' => 'key', 'big' => 'bigint NOT NULL', 'exact' => 'decimal NOT NULL']);
+        $this->db->insert('amounts', ['id' => 1, 'big' => 9007199254740993, 'exact' => '12345678901234567.1234']);
+        $row = fn (): array => $this->db->findOne('amounts', ['id' => 1]) ?? [];
+
+        $this->db->table('amounts')->where('id', 1)->increment('big', 1, ['exact' => '12345678901234567.1234']);
+        $this->assertSame(9007199254740994, Fetched::int($row()['big']));
+        $this->db->table('amounts')->where('id', 1)->decrement('big', 3);
+        $this->assertSame(9007199254740991, Fetched::int($row()['big']));
+
+        $this->db->table('amounts')->where('id', 1)->increment('exact', 1);
+        $this->assertSame('12345678901234568.1234', $row()['exact']);
+        $this->db->table('amounts')->where('id', 1)->increment('exact', 0.5);
+        $this->assertSame('12345678901234568.6234', $row()['exact']);
+        $this->db->table('amounts')->where('id', 1)->decrement('exact', 0.0001);
+        $this->assertSame('12345678901234568.6233', $row()['exact']);
     }
 }

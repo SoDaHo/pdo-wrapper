@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Sodaho\PdoWrapper\Tests\Driver\MariaDb;
 
 use PDO;
+use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Tests\Contract\ContractTestCase;
 
 /**
@@ -73,5 +74,26 @@ class FetchTypesTest extends ContractTestCase
         $this->assertIsArray($row);
 
         return array_map(get_debug_type(...), $row);
+    }
+
+    /**
+     * sum() and avg() hand on what MariaDB delivers - a numeric string, a float or null. Any other
+     * type means the connection does not deliver MariaDB's types: thrown, never passed off as "no
+     * value". Replayed with a statement class that delivers integers.
+     */
+    public function testSumAndAvgRefuseATypeMariaDbDoesNotDeliver(): void
+    {
+        $db = $this->connect(['options' => [PDO::ATTR_STATEMENT_CLASS => [IntegerDeliveringStatement::class]]]);
+
+        foreach (['sum' => static fn (): mixed => $db->table('fetch_types')->sum('i'), 'avg' => static fn (): mixed => $db->table('fetch_types')->where('i', 1)->avg('small')] as $method => $call) {
+            try {
+                $call();
+                $this->fail('Expected QueryException: ' . $method);
+            } catch (QueryException $e) {
+                $this->assertSame('Query failed', $e->getMessage());
+                $this->assertSame(sprintf('%s() got int from the connection: MariaDB delivers a numeric string, a float or NULL here. The connection does not deliver the types this library promises (see MariaDbDriver).', $method), $e->getDebugMessage());
+            }
+        }
+        $this->assertNull($db->table('fetch_types')->where('i', 0)->sum('i'), 'null still means no value');
     }
 }

@@ -52,7 +52,7 @@ class Database
      *
      * @throws ConnectionException When no or an unknown driver is named, a required value is missing, or the connection fails
      */
-    public static function connect(#[\SensitiveParameter] array $config): DatabaseInterface
+    public static function connect(#[\SensitiveParameter] array $config): MariaDbDriver
     {
         $driver = strtolower(trim($config['driver'] ?? ''));
 
@@ -93,7 +93,7 @@ class Database
      *
      * @throws ConnectionException When no or an unknown driver is named, a required value is missing, or the connection fails
      */
-    public static function fromEnv(#[\SensitiveParameter] array $overrides = []): DatabaseInterface
+    public static function fromEnv(#[\SensitiveParameter] array $overrides = []): MariaDbDriver
     {
         // What was passed stays, null included: the union only adds the keys that are missing
         $config = $overrides + [

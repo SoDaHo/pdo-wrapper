@@ -8,6 +8,7 @@ use PDOException;
 use Sodaho\PdoWrapper\DatabaseInterface;
 use Sodaho\PdoWrapper\Exception\CommitFailedException;
 use Sodaho\PdoWrapper\Exception\QueryException;
+use Sodaho\PdoWrapper\Exception\TransactionException;
 use Sodaho\PdoWrapper\Tests\Contract\ContractTestCase;
 
 /**
@@ -40,13 +41,14 @@ class SnapshotIsolationTest extends ContractTestCase
     {
         $swallowed = null;
         $blocked = null;
+        $freed = null;
         $ends = [];
         $this->db->on('transaction.end', static function (array $data) use (&$ends): void {
             $ends[] = $data['outcome'];
         });
 
         try {
-            $this->db->transaction(function (DatabaseInterface $db) use (&$swallowed, &$blocked): void {
+            $this->db->transaction(function (DatabaseInterface $db) use (&$swallowed, &$blocked, &$freed): void {
                 $db->table('snapshot_rows')->get(); // the snapshot
                 $db->update('snapshot_rows', ['name' => 'changed in the transaction'], ['id' => 2]);
                 $this->other->update('snapshot_rows', ['name' => 'changed by the other'], ['id' => 1]);
@@ -60,6 +62,9 @@ class SnapshotIsolationTest extends ContractTestCase
                 } catch (QueryException $e) {
                     $blocked = $e;
                 }
+                // The server rolled the whole transaction back, not the statement: the lock its
+                // first update took on row 2 is gone while PDO still reports the transaction
+                $freed = $this->other->query('SELECT name FROM snapshot_rows WHERE id = 2 FOR UPDATE NOWAIT')->fetchColumn();
             });
             $this->fail('Expected CommitFailedException');
         } catch (CommitFailedException $e) {
@@ -72,9 +77,64 @@ class SnapshotIsolationTest extends ContractTestCase
 
         $this->assertInstanceOf(QueryException::class, $blocked);
         $this->assertStringContainsString('Not sent', (string) $blocked->getDebugMessage());
+        $this->assertSame('Anna', $freed, 'row 2 was free and unchanged before the library rolled back');
         $this->assertSame(['rolled_back'], $ends);
         $this->assertFalse($this->db->inTransaction());
         $rows = $this->other->table('snapshot_rows')->orderBy('id')->get();
         $this->assertSame(['changed by the other', 'Anna'], array_column($rows, 'name'), 'what the transaction did before is gone');
+    }
+
+    /**
+     * The manual path after a 1020, as after a deadlock: further statements and a new
+     * beginTransaction() are refused, the commit is refused without a COMMIT, and rollback() ends
+     * the transaction - then the connection works again.
+     */
+    public function testAfterA1020OnlyRollbackEndsTheTransaction(): void
+    {
+        $ends = [];
+        $this->db->on('transaction.end', static function (array $data) use (&$ends): void {
+            $ends[] = $data['outcome'];
+        });
+
+        $this->db->beginTransaction();
+        $this->db->table('snapshot_rows')->get();
+        $this->db->update('snapshot_rows', ['name' => 'changed in the transaction'], ['id' => 2]);
+        $this->other->update('snapshot_rows', ['name' => 'changed by the other'], ['id' => 1]);
+        try {
+            $this->db->update('snapshot_rows', ['name' => 'too late'], ['id' => 1]);
+            $this->fail('Expected QueryException: 1020');
+        } catch (QueryException $e) {
+            $failure = $e->getPrevious();
+            $this->assertInstanceOf(PDOException::class, $failure);
+            $this->assertSame(1020, $failure->errorInfo[1] ?? null);
+        }
+
+        try {
+            $this->db->query('SELECT 1');
+            $this->fail('Expected QueryException: nothing is sent');
+        } catch (QueryException $e) {
+            $this->assertSame($failure, $e->getPrevious());
+        }
+        try {
+            $this->db->beginTransaction();
+            $this->fail('Expected TransactionException: the begin is refused');
+        } catch (TransactionException $e) {
+            $this->assertSame($failure, $e->getPrevious());
+        }
+        try {
+            $this->db->commit();
+            $this->fail('Expected CommitFailedException: the commit is refused');
+        } catch (CommitFailedException $e) {
+            $this->assertSame($failure, $e->getPrevious());
+            $this->assertNull($e->outcome, 'the transaction is still the caller\'s to end');
+        }
+        $this->assertSame([], $ends);
+        $this->assertTrue($this->db->inTransaction(), 'PDO still reports it');
+
+        $this->db->rollback();
+
+        $this->assertSame(['rolled_back'], $ends);
+        $this->assertFalse($this->db->inTransaction());
+        $this->assertSame(['changed by the other', 'Anna'], array_column($this->db->table('snapshot_rows')->orderBy('id')->get(), 'name'));
     }
 }

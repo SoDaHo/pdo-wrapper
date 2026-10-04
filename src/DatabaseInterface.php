@@ -77,7 +77,7 @@ interface DatabaseInterface
      * 'lost' first). A transaction begun through
      * this library that PDO no longer reports (an implicit commit by a DDL statement, ended by the
      * server or on raw PDO) is told as 'transaction.end' 'lost' first - except after a MariaDB
-     * deadlock: then beginTransaction() refuses, and rollback() tells that end.
+     * deadlock or a 1020: then beginTransaction() refuses, and rollback() tells that end.
      *
      * @throws Exception\TransactionException When the transaction cannot be started (including PDO reporting the failure without throwing), when a transaction begun through this library was rolled back by the server (a deadlock or a 1020) and has not been ended with rollback() yet, a listener threw a PDOException, or a listener ended the transaction it was told about
      * @throws \Throwable Re-throws any other exception of a 'transaction.begin' listener
@@ -108,7 +108,7 @@ interface DatabaseInterface
      * leaves as the handler's exception instead (see Traits\HasHooks).
      *
      * The commit is refused (CommitFailedException, no COMMIT sent) when a statement failed inside
-     * the transaction in a way that ended it on the server: a deadlock on MariaDB (or, with
+     * the transaction in a way that ended it on the server: a deadlock or a 1020 on MariaDB (or, with
      * autocommit on, a lock wait timeout under innodb_rollback_on_timeout). The server would
      * answer that COMMIT with success. While PDO still reports the transaction, nothing fires and
      * it stays refused until rollback(); when PDO reports none any more (a statement on raw PDO,
@@ -133,10 +133,10 @@ interface DatabaseInterface
      * it is gone, nothing is sent; when the question fails, the ROLLBACK is sent all the same but
      * proves nothing (the end listeners' failures on such a 'lost' reach only the 'error' hook). A rollback listener's exception takes precedence and passes through unchanged
      * (a PDOException as TransactionException); the end listeners' failures then reach only the
-     * 'error' hook. A failed rollback fires nothing. After a MariaDB deadlock rollback() also
+     * 'error' hook. A failed rollback fires nothing. After a MariaDB deadlock or a 1020 rollback() also
      * ends a transaction begun through this library that PDO no longer reports (a statement on raw
      * PDO told it): nothing is sent, no rollback listener runs, and 'transaction.end' reports 'lost'
-     * with the deadlock as error (its listeners' failures then reach only the 'error' hook).
+     * with that failure as error (its listeners' failures then reach only the 'error' hook).
      * When the connection is in a transaction right
      * after the ROLLBACK (completion_type=CHAIN, not supported), that is reported as
      * TransactionException after the listeners ran, unless a rollback listener threw.
@@ -157,20 +157,20 @@ interface DatabaseInterface
      *   the exception is re-thrown, a PDOException from the listener as TransactionException;
      * - the callback threw: rollback attempted, the callback's exception is re-thrown
      *   (best effort: if the rollback fails, the transaction may still be open). Measured on
-     *   MariaDB 11.4 with mysqlnd: after a deadlock (the server rolled the transaction back) and
+     *   MariaDB 11.4 with mysqlnd: after a deadlock or a 1020 (the server rolled the transaction back) and
      *   after a lock wait timeout (the server rolled back only the statement) PDO still reports the
      *   transaction, so the rollback is sent, the transaction.rollback listeners run and
      *   transaction.end reports 'rolled_back'; after a lost connection the rollback fails, no
      *   rollback listener runs, PDO still reported the transaction, and transaction.end reports 'lost';
      * - the callback swallowed a statement error that ended the transaction on the server
-     *   (a deadlock, or a lock wait timeout under innodb_rollback_on_timeout): the commit is
+     *   (a deadlock or a 1020, or a lock wait timeout under innodb_rollback_on_timeout): the commit is
      *   refused before it is sent and the CommitFailedException is thrown, instead of a COMMIT the
      *   server answers with success. While PDO still reports the transaction the rollback follows
      *   and transaction.end reports 'rolled_back'; once PDO knows that the transaction is gone - from
-     *   a statement on raw PDO after a deadlock, or from the question to the server after another
+     *   a statement on raw PDO after a deadlock or a 1020, or from the question to the server after another
      *   failure (the lock wait timeout: statements the callback ran after it were committed on
      *   their own) - nothing is left to roll back and transaction.end reports 'lost'. Through
-     *   this library nothing is sent between a deadlock and the rollback;
+     *   this library nothing is sent between a deadlock or a 1020 and the rollback;
      * - the commit failed: a rollback is attempted when PDO still reports the transaction, the
      *   CommitFailedException is re-thrown; transaction.end reports 'rolled_back' when that rollback
      *   succeeded (nothing was committed) and 'lost' when it failed too (the commit may or may not

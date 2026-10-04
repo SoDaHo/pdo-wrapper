@@ -129,10 +129,12 @@ class QueryBuilder
     /**
      * Lock the selected rows for update (SELECT ... FOR UPDATE) until the transaction ends.
      *
-     * Aggregates (count() etc.) drop the lock - an aggregate returns no row a caller could go on
-     * to change; exists() keeps it. Not allowed together with distinct(), groupBy() or having()
-     * (QueryException): such a result is not the rows the lock would hold. Use inside a
-     * transaction, otherwise the lock ends with the statement.
+     * Aggregates (count() etc.) and exists() keep it: `SELECT COUNT(*) ... FOR UPDATE` locks the
+     * rows it reads - in REPEATABLE READ the gaps between them too -, so a count followed by an
+     * insert in the same transaction is not overtaken by another transaction's insert. Not
+     * allowed together with distinct(), groupBy() or having() (QueryException): such a result is
+     * not the rows the lock would hold. Use inside a transaction, otherwise the lock ends with the
+     * statement.
      */
     public function lockForUpdate(): self
     {
@@ -709,8 +711,7 @@ class QueryBuilder
     /**
      * Check if any records exist matching the query.
      *
-     * Runs `SELECT 1 ... LIMIT 1` and keeps a requested row lock (unlike count(), which must drop it)
-     * and an offset(), so `offset(50)->exists()` answers "is there a next page?". With distinct() the
+     * Runs `SELECT 1 ... LIMIT 1` and keeps a requested row lock and an offset(), so `offset(50)->exists()` answers "is there a next page?". With distinct() the
      * selected columns stay in place, so the answer refers to the distinct result rows (an aggregate
      * projection yields a row even over an empty table). With groupBy() the aliased select() entries
      * stay, so having() may refer to them. With having() but no groupBy() it is evaluated as
@@ -722,7 +723,7 @@ class QueryBuilder
      */
     public function exists(): bool
     {
-        $this->assertLockIsPortable();
+        $this->assertTheLockFitsTheResult();
 
         // HAVING without GROUP BY makes the whole set one group (see count()): keep the COUNT(*)
         // evaluation there.
@@ -768,22 +769,14 @@ class QueryBuilder
 
     /**
      * The alias of a select() entry as a comparison key, or null: a trailing `AS name`. In a raw
-     * expression the name may be bare, double-quoted or backtick-quoted: a bare name is folded to
-     * lower case, a quoted one keeps its quote character and its case. In a string entry
-     * quoteIdentifier() renders the alias quoted, and its key is folded like a column name
-     * (quotedNameKey()).
+     * expression the name may be bare, double-quoted or backtick-quoted. MariaDB compares aliases
+     * without case, quoted or not: the key is folded like a column name (quotedNameKey()).
      */
     private function aliasKey(string|RawExpression $entry): ?string
     {
-        if ($entry instanceof RawExpression) {
-            if (preg_match('/\s+as\s+(["`]?)(\w+)\1$/i', (string) $entry, $match) === 1) {
-                return $match[1] === '' ? strtolower($match[2]) : $match[1] . $match[2];
-            }
+        $pattern = $entry instanceof RawExpression ? '/\s+as\s+(["`]?)(\w+)\1$/i' : '/\s+as\s+()(\w+)$/i';
 
-            return null;
-        }
-
-        return preg_match('/\s+as\s+(\w+)$/i', $entry, $match) === 1 ? $this->quotedNameKey($match[1]) : null;
+        return preg_match($pattern, (string) $entry, $match) === 1 ? $this->quotedNameKey($match[2]) : null;
     }
 
     /**
@@ -793,6 +786,17 @@ class QueryBuilder
     private function quotedNameKey(string $name): string
     {
         return strtolower($name);
+    }
+
+    /**
+     * The column a reference names ("col", "table.col") as a comparison key: its last dot segment,
+     * folded (quotedNameKey()).
+     */
+    private function columnNameKey(string $reference): string
+    {
+        $dot = strrpos($reference, '.');
+
+        return $this->quotedNameKey($dot === false ? $reference : substr($reference, $dot + 1));
     }
 
     /**
@@ -816,13 +820,9 @@ class QueryBuilder
                 }
                 continue;
             }
-            $name = $this->aliasKey($entry);
-            if ($name === null) {
-                $dot = strrpos($entry, '.');
-                $name = $this->quotedNameKey($dot === false ? $entry : substr($entry, $dot + 1));
-            }
+            $name = $this->aliasKey($entry) ?? $this->columnNameKey($entry);
             if (isset($names[$name])) {
-                return sprintf('"%s" appears twice as an output name', ltrim($name, self::QUOTE));
+                return sprintf('"%s" appears twice as an output name', $name);
             }
             $names[$name] = true;
         }
@@ -874,7 +874,7 @@ class QueryBuilder
      */
     public function sum(string $column): float|string|null
     {
-        return self::numberAsDelivered($this->aggregate('SUM', $column));
+        return self::numberAsDelivered('sum', $this->aggregate('SUM', $column));
     }
 
     /**
@@ -890,17 +890,27 @@ class QueryBuilder
      */
     public function avg(string $column): float|string|null
     {
-        return self::numberAsDelivered($this->aggregate('AVG', $column));
+        return self::numberAsDelivered('avg', $this->aggregate('AVG', $column));
     }
 
     /**
      * What MariaDB returns for SUM() and AVG(): a numeric string (they are DECIMAL for integer and
      * DECIMAL columns) or a float (for FLOAT and DOUBLE) - handed on as it is. Null for SQL NULL
-     * (no rows, or only NULL).
+     * (no rows, or only NULL). Anything else means the connection does not deliver MariaDB's
+     * types (see MariaDbDriver): thrown, not passed off as "no value".
+     *
+     * @throws QueryException
      */
-    private static function numberAsDelivered(mixed $value): float|string|null
+    private static function numberAsDelivered(string $function, mixed $value): float|string|null
     {
-        return is_float($value) || is_string($value) ? $value : null;
+        if ($value === null || is_float($value) || is_string($value)) {
+            return $value;
+        }
+
+        throw new QueryException(
+            message: 'Query failed',
+            debugMessage: sprintf('%s() got %s from the connection: MariaDB delivers a numeric string, a float or NULL here. The connection does not deliver the types this library promises (see MariaDbDriver).', $function, get_debug_type($value))
+        );
     }
 
     /**
@@ -936,11 +946,14 @@ class QueryBuilder
      */
     private function aggregate(string $function, string $column): mixed
     {
+        // The lock stays (see lockForUpdate()); the combinations a select refuses are refused here
+        // before any of them is taken apart
+        $this->assertTheLockFitsTheResult();
+
         $query = clone $this;
         $query->limit = null;
         $query->offset = null;
         $query->orderBy = [];
-        $query->lock = null; // an aggregate returns no row a caller could go on to change
 
         if (!empty($this->groupBy)) {
             // One value per group is ambiguous for sum()/avg()/min()/max(); count() means "how many groups"
@@ -1012,7 +1025,7 @@ class QueryBuilder
     }
 
     /**
-     * Insert a row only when a condition holds, in one statement (see DatabaseInterface::insertWhen()).
+     * Insert a row only when a condition holds, in one statement (see InternalMethods::insertWhen()).
      *
      * The condition is the argument: a where*()/whereRaw(), join, groupBy()/having(), orderBy(),
      * limit()/offset(), distinct() or row lock set on this builder is not part of the statement, so
@@ -1039,7 +1052,7 @@ class QueryBuilder
     }
 
     /**
-     * Insert a row unless it collides with an existing one (see DatabaseInterface::insertIgnore()).
+     * Insert a row unless it collides with an existing one (see InternalMethods::insertIgnore()).
      *
      * A where*()/whereRaw(), join, groupBy()/having(), orderBy(), limit()/offset(), distinct() or
      * row lock set on this builder is not part of the statement, so it throws instead of being
@@ -1073,15 +1086,25 @@ class QueryBuilder
 
     /**
      * Add to a column in the rows matching the WHERE conditions, in one statement:
-     * `UPDATE ... SET col = col + ?` - atomic, no read before the write. $extra is set in the same
-     * statement, after the column. The same rules as update(): at least one WHERE condition,
-     * limit() with orderBy().
+     * `UPDATE ... SET col = col + CAST(? AS SIGNED)` - atomic, no read before the write. $extra is
+     * set in the same statement, after the column. The same rules as update(): at least one WHERE
+     * condition, limit() with orderBy().
+     *
+     * The amount is bound as text, like every value, and cast so that the server adds it exactly:
+     * a text operand would make MariaDB add in DOUBLE, and a BIGINT above 2^53 or a DECIMAL with
+     * more than about 15 digits would come back rounded (measured on 10.11, 11.4 and 12.3). An
+     * int is cast to SIGNED (integer arithmetic; on a DECIMAL column, DECIMAL arithmetic), a float
+     * to DECIMAL(65,30) - exact in the digits PHP writes for it. A float the cast would change is
+     * refused: INF and NAN, a magnitude from 1e35 (beyond the 35 integer digits), and a magnitude
+     * below 1e-13 other than 0 (the up to 17 significant digits PHP writes for a float could reach
+     * past the 30th decimal place). update() with Database::raw() adds it as you write it.
      *
      * @param string $column Column to add to
      * @param int|float $by What is added (bound)
      * @param array<string, mixed> $extra Further column => value pairs to set
      *
-     * @throws QueryException As update(), and when $extra sets the column itself
+     * @throws QueryException As update(), when $extra sets the column itself (in any case, or as
+     *                        "table.column"), and for a float the cast would change
      *
      * @return int Number of affected rows
      */
@@ -1091,12 +1114,13 @@ class QueryBuilder
     }
 
     /**
-     * Subtract from a column in the rows matching the WHERE conditions: `SET col = col - ?` (see
-     * increment()).
+     * Subtract from a column in the rows matching the WHERE conditions:
+     * `SET col = col - CAST(? AS SIGNED)` (see increment()).
      *
      * @param array<string, mixed> $extra Further column => value pairs to set
      *
-     * @throws QueryException As update(), and when $extra sets the column itself
+     * @throws QueryException As update(), when $extra sets the column itself, and for a float the
+     *                        cast would change (see increment())
      *
      * @return int Number of affected rows
      */
@@ -1112,14 +1136,26 @@ class QueryBuilder
      */
     private function step(string $column, string $sign, int|float $by, array $extra): int
     {
-        if (array_key_exists($column, $extra)) {
+        $method = $sign === '+' ? 'increment' : 'decrement';
+        // MariaDB takes "Attempts" and "t.attempts" for the column "attempts": a second assignment
+        // to it would silently replace the step
+        foreach (array_keys($extra) as $key) {
+            if ($this->columnNameKey($key) === $this->columnNameKey($column)) {
+                throw new QueryException(
+                    message: 'Update failed',
+                    debugMessage: sprintf('%s() changes "%s" itself; it cannot be set in $extra as well (as "%s")', $method, $column, $key)
+                );
+            }
+        }
+        if (is_float($by) && $by !== 0.0 && !(abs($by) >= 1e-13 && abs($by) < 1e35)) {
             throw new QueryException(
                 message: 'Update failed',
-                debugMessage: sprintf('%s() changes "%s" itself; it cannot be set in $extra as well', $sign === '+' ? 'increment' : 'decrement', $column)
+                debugMessage: sprintf('%s() adds a float as DECIMAL(65,30), which would change %s: only 0 and magnitudes from 1e-13 below 1e35 keep the digits PHP writes for a float. Use update() with Database::raw() for it.', $method, var_export($by, true))
             );
         }
+        $cast = is_int($by) ? 'SIGNED' : 'DECIMAL(65,30)';
 
-        return $this->update([$column => new RawExpression(sprintf('%s %s ?', $this->quoteIdentifier($column), $sign), [$by])] + $extra);
+        return $this->update([$column => new RawExpression(sprintf('%s %s CAST(? AS %s)', $this->quoteIdentifier($column), $sign, $cast), [$by])] + $extra);
     }
 
     /**
@@ -1339,7 +1375,7 @@ class QueryBuilder
         }
 
         if ($this->lock !== null) {
-            $this->assertLockIsPortable();
+            $this->assertTheLockFitsTheResult();
             $sql .= $this->lockClause();
         }
 
@@ -1357,7 +1393,7 @@ class QueryBuilder
         $orderClauses = [];
         foreach ($this->orderBy as $order) {
             $column = $order['column'];
-            $orderClauses[] = ($column instanceof RawExpression ? (string) $column : $this->quoteIdentifier($column)) . ' ' . $order['direction'];
+            $orderClauses[] = ($column instanceof RawExpression ? (string) $column : $this->quoteReference($column)) . ' ' . $order['direction'];
         }
 
         return ' ORDER BY ' . implode(', ', $orderClauses);
@@ -1369,7 +1405,7 @@ class QueryBuilder
      *
      * @throws QueryException When a row lock is combined with distinct(), groupBy() or having()
      */
-    private function assertLockIsPortable(): void
+    private function assertTheLockFitsTheResult(): void
     {
         if ($this->lock !== null && ($this->distinct || !empty($this->groupBy) || !empty($this->having))) {
             throw new QueryException(
@@ -1571,9 +1607,18 @@ class QueryBuilder
     {
         // Handle alias: "column as alias" or "table.column as alias"
         if (preg_match('/^(.+)\s+as\s+(\w+)$/i', $identifier, $matches)) {
-            return $this->quoteIdentifier(trim($matches[1])) . ' as ' . self::QUOTE . $matches[2] . self::QUOTE;
+            return $this->quoteReference(trim($matches[1])) . ' as ' . self::QUOTE . $matches[2] . self::QUOTE;
         }
 
+        return $this->quoteReference($identifier);
+    }
+
+    /**
+     * Quote a column reference without an alias ("col", "table.col", "table.*"): what orderBy()
+     * takes - there "title as x" is the name of one column, not an alias declaration.
+     */
+    private function quoteReference(string $identifier): string
+    {
         // Escape character: double the quote char (standard SQL escaping)
         $escape = self::QUOTE . self::QUOTE;
 
