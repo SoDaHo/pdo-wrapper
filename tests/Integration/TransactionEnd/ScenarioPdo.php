@@ -28,6 +28,9 @@ final class ScenarioPdo extends PDO
 
     public ?Closure $duringExec = null;
 
+    /** Run once in the middle of the next inTransaction(), before anything is read */
+    public ?Closure $duringInTransaction = null;
+
     public bool $failRollBackAlways = false;
 
     /** The failure as a non-exception error mode reports it: rollBack() returns false, as long as this is set */
@@ -111,6 +114,7 @@ final class ScenarioPdo extends PDO
 
     public function inTransaction(): bool
     {
+        $this->interrupt($this->duringInTransaction);
         if ($this->stateUnreadable) {
             throw new PDOException('state unreadable (scenario)');
         }

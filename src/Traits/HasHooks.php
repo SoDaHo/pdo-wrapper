@@ -304,8 +304,8 @@ trait HasHooks
     }
 
     /**
-     * Trigger all callbacks for an event. Each gets the data in a variable of its own: a callback
-     * may take it by reference, and what it changes there is not what the next one is told.
+     * Trigger all callbacks for an event. They are handed one variable: a callback may take it by
+     * reference, and what it changes there is what the callbacks after it are told.
      *
      * @param string $event Event name
      * @param array<string, mixed> $data Event data to pass to callbacks
@@ -313,8 +313,7 @@ trait HasHooks
     protected function trigger(string $event, array $data): void
     {
         foreach ($this->hooks[$event] ?? [] as $callback) {
-            $payload = $data;
-            $callback($payload);
+            $callback($data);
         }
     }
 }

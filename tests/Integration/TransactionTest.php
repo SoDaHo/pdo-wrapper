@@ -1116,53 +1116,51 @@ class TransactionTest extends TestCase
     /**
      * The 'transaction.begin' listeners are called by beginTransaction() itself, with a payload
      * a listener may take by reference - as trigger() hands it over for the other events. What it
-     * changes there is not what the next listener is told.
+     * changes there is what the listeners after it are told, as in 2.0.
      */
     public function testABeginListenerMayTakeItsPayloadByReference(): void
     {
         $seen = [];
         $this->db->on('transaction.begin', static function (array &$data) use (&$seen): void {
             $seen[] = $data;
-            $data['transaction'] = 99;
+            $data['marked'] = true;
         });
         $this->db->on('transaction.begin', static function (array $data) use (&$seen): void {
             $seen[] = $data;
         });
 
         $this->db->beginTransaction();
-        $this->assertSame([['transaction' => 1, 'depth' => 1], ['transaction' => 1, 'depth' => 1]], $seen);
+        $this->assertSame([['transaction' => 1, 'depth' => 1], ['transaction' => 1, 'depth' => 1, 'marked' => true]], $seen);
         $this->assertTrue($this->db->inTransaction());
         $this->db->rollback();
     }
 
     /**
-     * The events trigger() hands out ('query', 'error', 'transaction.rollback') give every listener
-     * the payload in a variable of its own as well.
+     * The events trigger() hands out ('query', 'error', 'transaction.rollback') pass one variable,
+     * as in 2.0: what a listener that takes it by reference changes is what the next one is told -
+     * a listener that redacts the parameters before a logger keeps working.
      */
-    public function testAListenerTakingThePayloadByReferenceDoesNotChangeWhatTheNextIsTold(): void
+    public function testAListenerTakingThePayloadByReferenceChangesWhatTheNextIsTold(): void
     {
         $seen = [];
-        foreach (['query', 'transaction.rollback'] as $event) {
-            $this->db->on($event, static function (array &$data) use (&$seen, $event): void {
-                $seen[] = $event . ' first: ' . json_encode($data);
-                $data = ['changed' => true];
-            });
-            $this->db->on($event, static function (array $data) use (&$seen, $event): void {
-                $seen[] = $event . ' second: ' . json_encode($data);
-            });
-        }
+        $this->db->on('query', static function (array &$data): void {
+            $data['params'] = ['(redacted)'];
+        });
+        $this->db->on('query', static function (array $data) use (&$seen): void {
+            $seen[] = $data['params'];
+        });
+        $this->db->on('transaction.rollback', static function (array &$data): void {
+            $data['marked'] = true;
+        });
+        $this->db->on('transaction.rollback', static function (array $data) use (&$seen): void {
+            $seen[] = $data;
+        });
 
+        $this->db->query('SELECT ?', ['secret']);
         $this->db->beginTransaction();
         $this->db->rollback();
-        $this->db->query('SELECT 1');
 
-        $this->assertSame([
-            'transaction.rollback first: {"transaction":1,"depth":1}',
-            'transaction.rollback second: {"transaction":1,"depth":1}',
-        ], array_values(array_filter($seen, static fn (string $s): bool => str_starts_with($s, 'transaction.rollback'))));
-        $queries = array_values(array_filter($seen, static fn (string $s): bool => str_starts_with($s, 'query')));
-        $this->assertCount(2, $queries);
-        $this->assertSame(substr($queries[0], strlen('query first: ')), substr($queries[1], strlen('query second: ')), 'the second listener is told what the first was');
+        $this->assertSame([['(redacted)'], ['transaction' => 1, 'depth' => 1, 'marked' => true]], $seen);
     }
 
     /**

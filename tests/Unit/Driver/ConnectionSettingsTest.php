@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Sodaho\PdoWrapper\Tests\Unit\Driver;
 
-use Pdo\Mysql;
 use PHPUnit\Framework\TestCase;
 use Sodaho\PdoWrapper\Database;
 use Sodaho\PdoWrapper\Driver\AbstractDriver;
@@ -15,7 +14,8 @@ use Sodaho\PdoWrapper\Tests\Support\SqliteBackedPdo;
 
 /**
  * A driver keeps its credentials and options for reconnect(): they reach PDO on every connect,
- * and never a dump of the driver.
+ * and never a dump of the driver. The option key 1002 is pdo_mysql's init command, written as a
+ * number: the SQLite job of the CI may run without pdo_mysql.
  */
 class ConnectionSettingsTest extends TestCase
 {
@@ -39,7 +39,7 @@ class ConnectionSettingsTest extends TestCase
      */
     public function testAServerDriverKeepsItsSettingsForReconnectOutOfItsDumps(): void
     {
-        $config = ['host' => 'db.internal', 'database' => 'app', 'username' => 'dump-user-2', 'password' => 'dump-secret-2', 'pdoClass' => SqliteBackedPdo::class, 'options' => [Mysql::ATTR_INIT_COMMAND => "SET @marker = 'dump-option-2'"]];
+        $config = ['host' => 'db.internal', 'database' => 'app', 'username' => 'dump-user-2', 'password' => 'dump-secret-2', 'pdoClass' => SqliteBackedPdo::class, 'options' => [1002 => "SET @marker = 'dump-option-2'"]];
         $drivers = [
             'mysql:host=db.internal;port=3306;dbname=app;charset=utf8mb4' => static fn (): AbstractDriver => new MySqlDriver($config),
             "pgsql:host='db.internal';port=5432;dbname='app'" => static fn (): AbstractDriver => new PostgresDriver($config),
@@ -60,7 +60,7 @@ class ConnectionSettingsTest extends TestCase
             $this->assertCount(2, $given, $dsn);
             foreach ($given as $n => [$givenDsn, $username, $password, $options]) {
                 $this->assertSame([$dsn, 'dump-user-2', 'dump-secret-2'], [$givenDsn, $username, $password], "{$dsn}: connect {$n}");
-                $this->assertSame("SET @marker = 'dump-option-2'", $options[Mysql::ATTR_INIT_COMMAND] ?? null, "{$dsn}: connect {$n}");
+                $this->assertSame("SET @marker = 'dump-option-2'", $options[1002] ?? null, "{$dsn}: connect {$n}");
             }
         }
     }
@@ -71,12 +71,12 @@ class ConnectionSettingsTest extends TestCase
     public function testSqliteKeepsItsOptionsOutOfItsDumps(): void
     {
         SqliteBackedPdo::forget();
-        $db = Database::sqlite(':memory:', [Mysql::ATTR_INIT_COMMAND => 'dump-option-3'], SqliteBackedPdo::class);
+        $db = Database::sqlite(':memory:', [1002 => 'dump-option-3'], SqliteBackedPdo::class);
         foreach ($this->dumps($db) as $how => $dump) {
             $this->assertStringNotContainsString('dump-option-3', $dump, $how);
         }
         $db->reconnect();
-        $this->assertSame(['dump-option-3', 'dump-option-3'], array_map(static fn (array $given): mixed => $given[3][Mysql::ATTR_INIT_COMMAND] ?? null, SqliteBackedPdo::given()));
+        $this->assertSame(['dump-option-3', 'dump-option-3'], array_map(static fn (array $given): mixed => $given[3][1002] ?? null, SqliteBackedPdo::given()));
     }
 
     /**

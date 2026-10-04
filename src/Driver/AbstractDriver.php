@@ -54,7 +54,9 @@ abstract class AbstractDriver implements DatabaseInterface
     /**
      * Counts the transactions ended through this driver - by commit(), by rollback(), by the raw
      * rollback after a throwing begin listener, or told as 'lost' -, at the moment they end: before
-     * any of their listeners runs. A call that has been
+     * any of their listeners runs. Not counted: the ends commit listeners' transactions get buffered
+     * in runCommitListeners() (raw cleanup, protected by the mark itself; nothing waits on the count
+     * there). A call that has been
      * inside PDO - and with it, possibly, inside foreign code that used this driver (an error
      * handler for a PDO warning) - compares it to see that the transaction it was about has been
      * ended meanwhile (endedSince()).
@@ -831,10 +833,8 @@ abstract class AbstractDriver implements DatabaseInterface
         try {
             // One by one: after a listener that ended the transaction no further one runs - it would
             // write outside of any transaction, or into one somebody began afterwards
+            $payload = ['transaction' => $number, 'depth' => $depth]; // a variable, as trigger() passes one: a listener may take it by reference
             foreach ($this->hooks['transaction.begin'] ?? [] as $listener) {
-                // A variable, as trigger() passes one: a listener may take it by reference - a fresh
-                // one each time, so that it cannot change what the next listener is told
-                $payload = ['transaction' => $number, 'depth' => $depth];
                 $listener($payload);
                 $this->failIfNoLongerOpen($number);
             }
@@ -1906,7 +1906,9 @@ abstract class AbstractDriver implements DatabaseInterface
      * locks even while someone still holds the old PDO object), the driver continues on the new
      * one, and a transaction whose end was still owed ends as 'lost' (its 'transaction.end' tells
      * its number, with a TransactionException as error; no 'transaction.rollback' listener runs).
-     * inTransaction() is false afterwards; the numbers of the transactions go on counting.
+     * inTransaction() is false afterwards - unless foreign code inside a call into the old PDO
+     * object (an error handler) reconnected itself and began a transaction on its connection, which
+     * then stays -; the numbers of the transactions go on counting.
      *
      * What belonged to the old session is gone: settings made with SQL (SET SESSION ...; give them
      * to the connection as options instead - Pdo\Mysql::ATTR_INIT_COMMAND runs on every connect),
@@ -1938,24 +1940,27 @@ abstract class AbstractDriver implements DatabaseInterface
 
         $new = ($this->connector)(); // first: when it fails, nothing has changed
 
+        // Every call into the old PDO object may run foreign code (an error handler, a PDO class of the
+        // caller's) that uses this driver: the old connection is held here, and only it is rolled back
+        $old = $this->pdo;
         // A transaction begun on raw PDO whose end this driver would tell, read before anything is sent
         $rawOwed = !$this->transactionBegun && $this->reportsATransactionThatOwesItsEnd();
         $ended = $this->transactionsEnded;
-        $old = $this->pdo;
         try {
             // Before the end listeners run: the old transaction's locks must not outlive it while they
             // work on the new connection
-            if ($this->pdo->inTransaction()) {
-                $this->pdo->rollBack();
+            if ($old->inTransaction()) {
+                $old->rollBack();
             }
         } catch (Throwable) {
             // The old connection is discarded either way
         }
         if ($this->pdo !== $old) {
-            // Foreign code inside that ROLLBACK reconnected itself: the old connection is discarded
+            // Foreign code inside one of those calls reconnected itself: the old connection is discarded
             // already, and what it began on its new one stays. The one opened here is dropped.
             return;
         }
+        unset($old); // the old connection closes at the swap below, before any end listener runs - unless someone else holds it
 
         // What is owed is read now, not before: foreign code inside that ROLLBACK (an error handler)
         // may have ended the transaction through this driver - that call told its end - or begun

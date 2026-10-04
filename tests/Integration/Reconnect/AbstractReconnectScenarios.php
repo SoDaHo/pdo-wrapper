@@ -16,6 +16,7 @@ use Sodaho\PdoWrapper\Tests\Integration\TransactionEnd\ScenarioPdo;
 use Sodaho\PdoWrapper\Tests\Support\Fetched;
 use Sodaho\PdoWrapper\Tests\Support\RefusingPdo;
 use Throwable;
+use WeakReference;
 
 /**
  * reconnect(): the driver discards its connection and continues on a new one, opened with the
@@ -445,6 +446,46 @@ abstract class AbstractReconnectScenarios extends TestCase
         $this->db->commit();
         $this->assertSame(['begin 1', 'end lost 1', 'begin 2', 'commit 2', 'end committed 2'], $this->events);
         $this->assertSame([1], $this->visible());
+    }
+
+    /**
+     * The same when the foreign code runs inside the first question reconnect() asks the old PDO
+     * object: the transaction begun on the new connection is not taken for the old one.
+     */
+    public function testAReconnectInsideTheFirstQuestionKeepsItsNewConnection(): void
+    {
+        $this->scenarioPdo()->duringInTransaction = function (): void {
+            $this->db->reconnect();
+            $this->db->beginTransaction();
+        };
+
+        $this->db->reconnect();
+
+        $this->assertSame(['begin 1'], $this->events);
+        $this->assertTrue($this->db->inTransaction(), "the handler's transaction is still open on its connection");
+        $this->db->insert(self::TABLE, ['id' => 1, 'name' => 'kept']);
+        $this->db->commit();
+        $this->assertSame(['begin 1', 'commit 1', 'end committed 1'], $this->events);
+        $this->assertSame([1], $this->visible());
+    }
+
+    /**
+     * The old connection is closed at the swap, before the end listeners run: what its session
+     * held - a lock the ROLLBACK does not free, say - does not outlive it while they work on the
+     * new connection (unless someone else holds the old PDO object).
+     */
+    public function testTheOldConnectionIsClosedBeforeTheEndListenersRun(): void
+    {
+        $this->db->beginTransaction();
+        $old = WeakReference::create($this->db->getPdo());
+        $alive = [];
+        $this->db->on('transaction.end', static function () use ($old, &$alive): void {
+            $alive[] = $old->get() !== null;
+        });
+
+        $this->db->reconnect();
+
+        $this->assertSame([false], $alive);
     }
 
     // ---- what reconnect() needs ------------------------------------------------------------------
