@@ -18,7 +18,6 @@ use Sodaho\PdoWrapper\Exception\CommitHookException;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Exception\TransactionException;
 use Sodaho\PdoWrapper\Tests\Contract\ContractTestCase;
-use Sodaho\PdoWrapper\Tests\Support\Fetched;
 use Sodaho\PdoWrapper\Tests\Support\ScenarioPdo;
 use Throwable;
 
@@ -1177,7 +1176,8 @@ class TransactionTest extends ContractTestCase
     {
         $row = $db->query('SELECT COUNT(*) AS c FROM ' . $table)->fetch();
         $this->assertIsArray($row);
+        $this->assertIsInt($row['c'], 'COUNT() arrives as int');
 
-        return Fetched::int($row['c']);
+        return $row['c'];
     }
 }

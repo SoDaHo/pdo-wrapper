@@ -42,7 +42,7 @@ class QueryOutcomeTest extends ContractTestCase
         $hookError = new PDOException('log table missing');
         $failedOn = null;
         $this->db->on('query', static function (array $data) use ($hookError, &$failedOn): void {
-            if (str_starts_with((string) $data['sql'], 'INSERT')) {
+            if ($failedOn === null) { // the first statement told: the insert
                 $failedOn = (string) $data['sql'];
 
                 throw $hookError;
@@ -69,8 +69,11 @@ class QueryOutcomeTest extends ContractTestCase
 
     public function testOtherQueryHookExceptionsReachTheCallerUnchanged(): void
     {
-        $this->db->on('query', static function (array $data): void {
-            if (str_starts_with((string) $data['sql'], 'INSERT')) {
+        $thrown = false;
+        $this->db->on('query', static function () use (&$thrown): void {
+            if (!$thrown) { // the first statement told: the insert
+                $thrown = true;
+
                 throw new RuntimeException('audit failed');
             }
         });

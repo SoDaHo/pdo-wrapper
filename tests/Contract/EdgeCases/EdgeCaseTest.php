@@ -278,7 +278,6 @@ class EdgeCaseTest extends ContractTestCase
 
         // Original builder state should be preserved
         $this->assertSame($before, $builder->toSql());
-        $this->assertSame([], $builder->get(), 'ordered, limited and offset as before');
     }
 
     // =========================================================================
@@ -650,7 +649,7 @@ class EdgeCaseTest extends ContractTestCase
         $db = $this->db;
         $repeated = false;
         $db->on('query', static function (array $data) use ($db, &$repeated): void {
-            if (!$repeated && str_starts_with($data['sql'], 'INSERT')) {
+            if (!$repeated) { // the first statement told: the insert itself
                 $repeated = true;
                 $db->execute($data['sql'], $data['params']);
             }

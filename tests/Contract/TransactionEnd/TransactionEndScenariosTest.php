@@ -1728,7 +1728,7 @@ class TransactionEndScenariosTest extends TransactionEndTestCase
             }
         });
         $this->db->on('query', static function (array $data) use ($state, $takeOver): void {
-            if ($state->armed === 'query' && str_starts_with((string) $data['sql'], 'UPDATE')) {
+            if ($state->armed === 'query') { // the first statement once armed: the batch's update
                 $state->armed = null;
                 $takeOver();
             }

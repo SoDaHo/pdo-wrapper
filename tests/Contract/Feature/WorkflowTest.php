@@ -10,7 +10,6 @@ use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Exception\TransactionException;
 use Sodaho\PdoWrapper\Exception\UniqueViolationException;
 use Sodaho\PdoWrapper\Tests\Contract\ContractTestCase;
-use Sodaho\PdoWrapper\Tests\Support\Fetched;
 use Sodaho\PdoWrapper\Tests\Support\ReadsPdoErrorInfo;
 
 /**
@@ -211,7 +210,7 @@ class WorkflowTest extends ContractTestCase
             ->orderBy('AuthorId')
             ->get();
         $this->assertSame(['AuthorId', 'n'], array_keys($rows[0]));
-        $this->assertSame([[$ada, 1], [$bob, 2]], array_map(static fn (array $row): array => [$row['AuthorId'], Fetched::int($row['n'])], $rows));
+        $this->assertSame([[$ada, 1], [$bob, 2]], array_map(static fn (array $row): array => [$row['AuthorId'], $row['n']], $rows));
 
         $rows = $this->db->table('posts as P')
             ->join('users as U', 'U.id', '=', 'P.user_id')
@@ -742,15 +741,15 @@ class WorkflowTest extends ContractTestCase
         $this->assertSame(3, $this->db->table('posts')->where('user_id', $userId)->count());
 
         // Total views
-        $this->assertEquals(400, $this->db->table('posts')->where('user_id', $userId)->sum('views'));
+        $this->assertSame(self::binding()->deliveredIntSum(400), $this->db->table('posts')->where('user_id', $userId)->sum('views'));
 
         // Average views
         $avg = $this->db->table('posts')->where('user_id', $userId)->avg('views');
         $this->assertEqualsWithDelta(133.33, $avg, 0.01);
 
         // Min/Max views
-        $this->assertEquals(50, $this->db->table('posts')->where('user_id', $userId)->min('views'));
-        $this->assertEquals(250, $this->db->table('posts')->where('user_id', $userId)->max('views'));
+        $this->assertSame(50, $this->db->table('posts')->where('user_id', $userId)->min('views'));
+        $this->assertSame(250, $this->db->table('posts')->where('user_id', $userId)->max('views'));
     }
 
     /**
@@ -846,7 +845,7 @@ class WorkflowTest extends ContractTestCase
         // Test parameter ordering - having() called BEFORE where()
         // The QueryBuilder must build params in SQL order (WHERE first, then HAVING)
         // regardless of the order methods are called
-        [$sql, $params] = $this->db->table('posts')
+        [, $params] = $this->db->table('posts')
             ->select(['user_id', \Sodaho\PdoWrapper\Database::raw('COUNT(*) as cnt')])
             ->groupBy('user_id')
             ->having(\Sodaho\PdoWrapper\Database::raw('COUNT(*)'), '>=', 2)       // Called first, but param should be second
@@ -858,7 +857,6 @@ class WorkflowTest extends ContractTestCase
         $this->assertSame(2, $params[1], 'Second param should be HAVING value');
 
         // The statement runs with them in that order (the SQL itself: tests/Unit)
-        $this->assertNotSame('', $sql);
         $this->assertSame([$user1], array_map(static fn (array $row): mixed => $row['user_id'], $this->db->table('posts')
             ->select(['user_id', \Sodaho\PdoWrapper\Database::raw('COUNT(*) as cnt')])
             ->groupBy('user_id')
@@ -911,7 +909,7 @@ class WorkflowTest extends ContractTestCase
     {
         $listenerId = null;
         $this->db->on('query', function (array $data) use (&$listenerId): void {
-            if ($listenerId === null && str_contains($data['sql'], 'INSERT')) {
+            if ($listenerId === null) { // the first statement told: the outer insert
                 $listenerId = 0; // set before the nested inserts fire this hook again
                 // a plain statement first: the outer insert's id must not be read a second time after it
                 $this->db->execute('INSERT INTO users (email, name) VALUES (?, ?)', ['audit2@test.com', 'Audit 2']);
@@ -925,8 +923,8 @@ class WorkflowTest extends ContractTestCase
         $audit = $this->db->findOne('users', ['email' => 'audit@test.com']);
         $this->assertNotNull($own);
         $this->assertNotNull($audit);
-        $this->assertEquals($own['id'], $id, 'insert() returns the id of its own row');
-        $this->assertEquals($audit['id'], $listenerId);
+        $this->assertSame($own['id'], $id, 'insert() returns the id of its own row');
+        $this->assertSame($audit['id'], $listenerId);
         $this->assertNotEquals($id, $listenerId);
         $this->assertSame(3, $this->db->table('users')->count());
     }
@@ -946,7 +944,7 @@ class WorkflowTest extends ContractTestCase
 
         $rows = (clone $byName)->orderBy('lower_name')->get();
         $this->assertSame(['anna', 'bert'], array_column($rows, 'lower_name'));
-        $this->assertEquals([2, 1], array_column($rows, 'total'));
+        $this->assertSame([2, 1], array_column($rows, 'total'));
         $this->assertSame(2, $byName->count());
 
         $mixed = $this->db->table('users')
@@ -972,9 +970,12 @@ class WorkflowTest extends ContractTestCase
         $this->assertFalse($this->db->table('users')->select('role')->distinct()->groupBy('role')->having(Database::raw('COUNT(*)'), '>', 2)->exists());
         $this->assertFalse($this->db->table('users')->where('role', 'guest')->select('role')->distinct()->groupBy('role')->exists());
 
-        $between = $this->db->table('users')->whereBetween('id', [Database::raw((string) Fetched::int($ids[0]) . ' + 1'), $ids[2]])->orderBy('id')->get();
+        [$first, $second, $third] = $ids;
+        $this->assertIsInt($first);
+        $this->assertIsInt($third);
+        $between = $this->db->table('users')->whereBetween('id', [Database::raw($first . ' + 1'), $third])->orderBy('id')->get();
         $this->assertSame(['Bert', 'Cleo'], array_column($between, 'name'));
-        $notBetween = $this->db->table('users')->whereNotBetween('id', [$ids[1], Database::raw((string) Fetched::int($ids[2]) . ' + 0')])->get();
+        $notBetween = $this->db->table('users')->whereNotBetween('id', [$second, Database::raw($third . ' + 0')])->get();
         $this->assertSame(['Anna'], array_column($notBetween, 'name'));
     }
 

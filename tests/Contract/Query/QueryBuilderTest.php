@@ -452,14 +452,14 @@ class QueryBuilderTest extends ContractTestCase
     {
         $min = $this->db->table('users')->min('age');
 
-        $this->assertEquals(20, $min);
+        $this->assertSame(20, $min);
     }
 
     public function testMax(): void
     {
         $max = $this->db->table('users')->max('age');
 
-        $this->assertEquals(30, $max);
+        $this->assertSame(30, $max);
     }
 
     // =========================================================================

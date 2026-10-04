@@ -119,11 +119,11 @@ class RawValueTest extends ContractTestCase
      */
     public function testRawInSelectIsUnchanged(): void
     {
-        [$sql, $params] = $this->db->table('counters')
+        // The statement itself: tests/Unit/ContractQueryRenderingTest
+        [, $params] = $this->db->table('counters')
             ->select([Database::raw('counters.*'), Database::raw('COUNT(*) AS n')])
             ->toSql();
 
-        $this->assertNotSame('', $sql, 'the whole statement: tests/Unit/ContractQueryRenderingTest');
         $this->assertSame([], $params);
     }
 
@@ -220,8 +220,8 @@ class RawValueTest extends ContractTestCase
     {
         $data = ['name' => Database::raw('UPPER(?)', ['e']), 'hits' => 7];
 
-        [$sql, $params] = $this->sent(fn () => $this->db->insertWhen('counters', $data, 'NOT EXISTS (SELECT 1 FROM counters WHERE name = ?)', ['E']));
-        $this->assertNotSame('', $sql, 'the statement itself: tests/Driver');
+        // The statement itself: tests/Driver
+        [, $params] = $this->sent(fn () => $this->db->insertWhen('counters', $data, 'NOT EXISTS (SELECT 1 FROM counters WHERE name = ?)', ['E']));
         $this->assertSame(['e', 7, 'E'], $params, "the row's values in column order, then the condition's");
         $this->assertSame(0, $this->db->insertWhen('counters', $data, 'NOT EXISTS (SELECT 1 FROM counters WHERE name = ?)', ['E']));
 
@@ -236,24 +236,24 @@ class RawValueTest extends ContractTestCase
      */
     public function testASubclassThatOverridesToStringIsRenderedThroughIt(): void
     {
-        $shouting = new class ('hits + ?', [41]) extends RawExpression {
+        $doubling = new class ('hits + ?', [41]) extends RawExpression {
             public function __toString(): string
             {
-                return '(' . $this->value . ')';
+                return '(' . $this->value . ') * 2';
             }
         };
 
-        [$sql, $params] = $this->sent(fn () => $this->db->update('counters', ['hits' => $shouting], ['hits' => new class ('1') extends RawExpression {
+        [, $params] = $this->sent(fn () => $this->db->update('counters', ['hits' => $doubling], ['hits' => new class ('0') extends RawExpression {
             public function __toString(): string
             {
-                return '0 + ' . $this->value;
+                return $this->value . ' + 1';
             }
         }]));
         // the whole statement: tests/Driver/MariaDb/Query/SentStatementsTest; here what it did -
-        // only "(hits + ?)" makes 42 of the 1 that only "0 + 1" finds
-        $this->assertNotSame('', $sql);
+        // only the WHERE override ("0 + 1") finds the row holding 1, and only the SET override
+        // doubles: (1 + 41) * 2
         $this->assertSame([41], $params);
-        $this->assertSame(42, $this->db->findOne('counters', ['name' => 'a'])['hits'] ?? null);
+        $this->assertSame(84, $this->db->findOne('counters', ['name' => 'a'])['hits'] ?? null);
     }
 
     public function testARawExpressionWithBindingsIsRefusedWhereNoValueStands(): void
