@@ -25,7 +25,7 @@
 ### Added
 - `off($event, $callback)` on `DatabaseInterface`: removes a listener; an unknown event or a callback that is not registered throws.
 - `reconnect()` on `DatabaseInterface`.
-- `increment()` / `decrement()` on the query builder: `UPDATE ... SET col = col + CAST(? AS SIGNED)` (a float step: `DECIMAL(65,30)`), exact also for a `BIGINT` beyond 2^53 and a long `DECIMAL`, with further columns in the same statement.
+- `increment()` / `decrement()` on the query builder: `UPDATE ... SET col = col + CAST(? AS SIGNED)` (a float step: its shortest exact decimal text as `DECIMAL(65,30)`), exact also for a `BIGINT` beyond 2^53 and a long `DECIMAL`, with further columns in the same statement (not the column itself, in any case; with them, names beyond ASCII are refused).
 - `orderBy()` takes an expression (`Database::raw()`, without bindings); a string stays a quoted column name, also one that contains `as`.
 
 ### Upgrading from 2.x

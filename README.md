@@ -54,7 +54,7 @@ $db = Database::mariadb([
 
 ### What Comes Back
 
-The PHP type of a fetched value is pinned, the same on MariaDB 10.11, 11.4 and 12.3, with native and with emulated prepares (measured with PHP 8.5 and mysqlnd, on 64-bit PHP - where an `int` has 32 bits, a `BIGINT` beyond it cannot arrive as one):
+The PHP type of a fetched value is pinned, the same on MariaDB 10.11, 11.4 and 12.3, with native and with emulated prepares (measured with PHP 8.5 and mysqlnd, on 64-bit PHP; on a 32-bit build a `BIGINT` beyond 2^31 cannot arrive as `int`):
 
 | Column or expression | PHP type |
 |---|---|
@@ -507,7 +507,7 @@ $claimed = $db->table('jobs')
     ->limit(10)
     ->update(['status' => 'claimed']);
 
-// Add to a column in place, atomically: UPDATE ... SET `attempts` = `attempts` + ?
+// Add to a column in place, atomically: UPDATE ... SET `attempts` = `attempts` + CAST(? AS SIGNED)
 $db->table('login_codes')->where('id', $id)->increment('attempts');
 $db->table('devices')->where('user_id', $userId)->increment('generation', 1, ['updated_at' => $db->now()]);
 $db->table('slots')->where('id', $id)->where('used', '>', 0)->decrement('used');
@@ -529,7 +529,7 @@ $inserted = $db->table('subscriptions')->insertIgnore(['user_id' => $userId, 'to
 
 `insertWhen()` renders `INSERT INTO codes (...) SELECT ?, ? FROM DUAL WHERE (condition)`. The condition is trusted developer SQL, like `whereRaw()`: never build it from user input. Check and insert see one snapshot, but two concurrent calls can still both insert: an invariant like "one open code per user" needs a `UNIQUE` constraint, a row lock (`lockForUpdate()` on the user row) or `SERIALIZABLE` on top. After a return of 0, `lastInsertId()` is meaningless. Clauses set on the builder (`where*()`, joins, `groupBy()`/`having()`, `orderBy()`, `limit()`/`offset()`, `distinct()`, locks) are not part of the statement and make `insertWhen()` and `insertIgnore()` throw; a `select()` is ignored.
 
-`increment()` and `decrement()` follow the rules of `update()` (a `where()` is required; `limit()` with `orderBy()`), set `$extra` in the same statement after the column, and return the affected rows; `$extra` must not set the column itself, also not in another case or as `table.column`. The step is bound and cast, so that the server adds it exactly (`col + CAST(? AS SIGNED)` for an `int`, `CAST(? AS DECIMAL(65,30))` for a `float`): bound as text it would make MariaDB add in `DOUBLE`, and a `BIGINT` beyond 2^53 or a `DECIMAL` with more digits than a double holds would come back rounded. A float the cast would change throws a `QueryException`: `INF`, `NAN`, a magnitude from `1e35` (beyond the 35 integer digits), and one below `1e-13` other than `0` (the up to 17 digits PHP writes for a float could reach past the 30th decimal place); add it with `update()` and `Database::raw()`. `whereIn()` with an empty list renders `1 = 0`; `whereNotIn()` with an empty list throws - "not in nothing" would match every row, in a `delete()` every row of the table.
+`increment()` and `decrement()` follow the rules of `update()` (a `where()` is required; `limit()` with `orderBy()`), set `$extra` in the same statement after the column, and return the affected rows. The step is bound and cast, so that the server adds it exactly (`col + CAST(? AS SIGNED)` for an `int`, `CAST(? AS DECIMAL(65,30))` for a `float`): bound as text it would make MariaDB add in `DOUBLE`, and a `BIGINT` beyond 2^53 or a `DECIMAL` with more digits than a double holds would come back rounded. A `float` is bound as the shortest decimal text that reads back as the same float (`0.1`; not as PHP's `precision` setting writes it, which cuts after 14 digits); one whose text has more than 35 integer or 30 fraction digits, `INF` and `NAN` throw a `QueryException` - add it with `update()` and `Database::raw()`. A column that is `NULL` stays `NULL` and does not count as changed; `update(['n' => Database::raw('COALESCE(n, 0) + CAST(? AS SIGNED)', [1])])` starts it from 0. `$extra` must not set the column itself, also not in another case or as `table.column` (MariaDB takes those for the same column, and the step would be replaced); with `$extra`, a column name beyond ASCII throws, because MariaDB folds the case of such names by rules that differ between versions. `whereIn()` with an empty list renders `1 = 0`; `whereNotIn()` with an empty list throws - "not in nothing" would match every row, in a `delete()` every row of the table.
 
 ### Debug Query
 
@@ -946,7 +946,7 @@ The suite has three parts:
 - `tests/Contract` is what every driver of this library must do the same way. These tests name no database and write no DDL: they reach the database only through a **binding** (`tests/Support/Binding/DriverBinding.php`) - how to connect, the tables from a small set of column types, and the few facts that do differ between databases (error codes, the types of aggregates, the order of a SET list). The binding is chosen with `PDO_WRAPPER_TEST_DRIVER` (default `mariadb`).
 - `tests/Driver/MariaDb` is what only MariaDB has: deadlocks and error 1020, implicit commits, the version and client checks, the pinned result types.
 
-**The contract for a new driver:** a driver for another database comes with a binding of its own (registered in `ContractTestCase::binding()`), and it passes all of `tests/Contract` with it, unchanged - plus tests of its own for what only its database does. Only then is it part of the library. The contract tests what a driver does, not the SQL text: the SQL the builder renders is tested in `tests/Unit` and `tests/Driver/MariaDb`. It runs the shared base (`AbstractDriver`, `QueryBuilder`) through the driver, and that base renders MariaDB's SQL (backtick quoting, `FROM DUAL`, `ON DUPLICATE KEY UPDATE`): a driver for a database with another dialect first brings a dialect seam back into it.
+**The contract for a new driver:** a driver for another database comes with a binding of its own (registered in `ContractTestCase::binding()`), and it passes all of `tests/Contract` with it, unchanged - plus tests of its own for what only its database does. Only then is it part of the library. The contract tests what a driver does, not the SQL text: the SQL the builder renders is tested in `tests/Unit` and `tests/Driver/MariaDb`. What it does includes the PHP types of the values: the column types of the binding arrive as the types of [What Comes Back](#what-comes-back). It runs the shared base (`AbstractDriver`, `QueryBuilder`) through the driver, and that base renders MariaDB's SQL (backtick quoting, `FROM DUAL`, `ON DUPLICATE KEY UPDATE`): a driver for a database with another dialect first brings a dialect seam back into it.
 
 ## Acknowledgments
 

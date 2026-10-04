@@ -36,7 +36,7 @@ use Sodaho\PdoWrapper\Exception\DatabaseException;
  * listed as failures (see AbstractDriver) - and an end listener's as described below.
  * 'transaction.rollback' listeners run only after a rollback this library performed and that
  * succeeded (rollback(), or the automatic rollback in transaction()/updateMultiple()). Measured on
- * MariaDB 11.4 with mysqlnd: after a deadlock (transaction rolled back by the server)
+ * MariaDB 11.4 with mysqlnd: after a deadlock or a 1020 (transaction rolled back by the server)
  * and after a lock wait timeout (only the statement rolled back) PDO still reports the transaction,
  * the library's ROLLBACK succeeds and the listeners run; after a lost connection the rollback fails,
  * no 'transaction.rollback' listener runs, and 'transaction.end' reports 'lost'. Before a ROLLBACK
@@ -54,9 +54,9 @@ use Sodaho\PdoWrapper\Exception\DatabaseException;
  * ROLLBACK is sent to clean up, but it confirms nothing - 'lost' as well, without rollback
  * listeners. Asked only while PDO reports the transaction: once a later statement has told PDO
  * that it is gone, a manual rollback() fails as before, and the next beginTransaction() tells
- * the end. Not asked after a deadlock, which settles the matter - also when an earlier failure
- * of the same transaction was swallowed: a statement with an implicit commit that failed,
- * followed by a statement that runs into a deadlock, is still told as 'rolled_back'.
+ * the end. Not asked after a deadlock or a 1020, which settles the matter - also when an earlier
+ * failure of the same transaction was swallowed: a statement with an implicit commit that
+ * failed, followed by a statement that runs into a deadlock, is still told as 'rolled_back'.
  *
  * 'transaction.end' fires exactly once for every transaction this library ends, after the
  * 'transaction.commit' or 'transaction.rollback' listeners, with
@@ -130,7 +130,7 @@ use Sodaho\PdoWrapper\Exception\DatabaseException;
  * let the failure escape. Not to be found out: the begin fails, a ROLLBACK cleans up, 'lost'
  * (when that ROLLBACK fails too, the transaction may still be open: its later rollback() tells
  * no second end). A failure that ended the transaction for certain (transactionIsOver(): a
- * deadlock) fails the begin as well, also when the listener swallowed it: undone, no event.
+ * deadlock or a 1020) fails the begin as well, also when the listener swallowed it: undone, no event.
  * The 'transaction.begin' listeners are called one by one by beginTransaction() itself, as the
  * 'transaction.commit' and 'transaction.end' listeners always were: an overriding trigger() does
  * not see these three events.
