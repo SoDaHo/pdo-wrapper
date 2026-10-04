@@ -550,8 +550,9 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
 
     /**
      * Describe the first parameter that must not be bound, or null when all can be: anything but
-     * null, a scalar or a Stringable object, and a RawExpression (bound, it would arrive as the
-     * text of the expression). A driver whose bindAndExecute() binds more (a stream as LOB)
+     * null, a scalar or a Stringable object, a RawExpression (bound, it would arrive as the text
+     * of the expression), and a float INF or NAN (MariaDB has no such number; sent as text, it
+     * compares as 0 - measured). A driver whose bindAndExecute() binds more (a stream as LOB)
      * overrides this along with it.
      *
      * @param array<int|string, mixed> $params
@@ -563,6 +564,10 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
 
             if ($value instanceof RawExpression) {
                 return sprintf('Cannot bind a raw expression (parameter %s): write it into the SQL instead', $position);
+            }
+            if (is_float($value) && !is_finite($value)) {
+                // Sent as 'INF'/'NAN', MariaDB would read 0 in a comparison (with a warning only)
+                return sprintf('Cannot bind %s (parameter %s): MariaDB has no such number and would compare it as 0', var_export($value, true), $position);
             }
             if ($value === null || is_scalar($value) || $value instanceof Stringable) {
                 continue;
@@ -610,7 +615,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
         foreach ($params as $key => $value) {
             $bound[$key] = match (true) {
                 is_bool($value) => $value ? '1' : '0',
-                is_float($value) && is_finite($value) => FloatText::of($value),
+                is_float($value) => FloatText::of($value), // finite: unbindableParameter() refused INF and NAN
                 default => $value,
             };
         }

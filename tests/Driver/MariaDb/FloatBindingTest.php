@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Sodaho\PdoWrapper\Tests\Driver\MariaDb;
 
+use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Tests\Contract\ContractTestCase;
 
 /**
@@ -31,6 +32,22 @@ class FloatBindingTest extends ContractTestCase
         }
 
         $this->assertSame(0.1234567890123456, $this->db->findOne('prices', ['id' => 1])['value'] ?? null);
+    }
+
+    /**
+     * INF and NAN are no numbers MariaDB has: sent as text, a comparison would read them as 0
+     * and match the row holding 0 (measured). Refused before anything is sent.
+     */
+    public function testInfAndNanAreRefused(): void
+    {
+        foreach ([INF, -INF, NAN] as $value) {
+            try {
+                $this->db->table('prices')->where('value', $value)->count();
+                $this->fail('Expected QueryException: ' . var_export($value, true));
+            } catch (QueryException $e) {
+                $this->assertStringStartsWith(sprintf('Cannot bind %s (parameter #1): MariaDB has no such number and would compare it as 0 | SQL: ', var_export($value, true)), (string) $e->getDebugMessage());
+            }
+        }
     }
 
     /**

@@ -72,6 +72,8 @@ class JsonExpressionTest extends TestCase
             'a space' => ['$. a'],
             'a newline at the end' => ["$.a\n"],
             'a last index' => ['$[last]'],
+            'text before the $' => ["x') OR 1 = 1 -- $"],
+            'a $ inside' => ['a$.b'],
         ];
     }
 
