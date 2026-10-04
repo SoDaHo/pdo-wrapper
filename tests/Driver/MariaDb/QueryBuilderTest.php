@@ -6,7 +6,7 @@ namespace Sodaho\PdoWrapper\Tests\Driver\MariaDb;
 
 use PHPUnit\Framework\TestCase;
 use Sodaho\PdoWrapper\Database;
-use Sodaho\PdoWrapper\Driver\MySqlDriver;
+use Sodaho\PdoWrapper\Driver\MariaDbDriver;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Tests\Support\Fetched;
 use Sodaho\PdoWrapper\Tests\Support\ReadsPdoErrorInfo;
@@ -16,11 +16,11 @@ class QueryBuilderTest extends TestCase
 {
     use ReadsPdoErrorInfo;
 
-    private MySqlDriver $db;
+    private MariaDbDriver $db;
 
     protected function setUp(): void
     {
-        $this->db = Database::mysql(TestEnvironment::mysql());
+        $this->db = Database::mariadb(TestEnvironment::mariadb());
 
         $this->db->execute('DROP TABLE IF EXISTS qb_test');
         $this->db->execute('CREATE TABLE qb_test (id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(255), age INT)');
@@ -86,7 +86,7 @@ class QueryBuilderTest extends TestCase
      */
     public function testSharedLockIsVisibleToAnotherConnection(): void
     {
-        $other = Database::mysql(TestEnvironment::mysql());
+        $other = Database::mariadb(TestEnvironment::mariadb());
         $other->execute('SET SESSION innodb_lock_wait_timeout = 1');
         // NOWAIT exists since MySQL 8.0 / MariaDB 10.3 (the supported matrix starts at 8.0 / 10.11)
         $exclusiveProbe = static fn (): mixed => $other->query('SELECT id FROM qb_test WHERE id = 1 FOR UPDATE NOWAIT')->fetch();
@@ -140,7 +140,7 @@ class QueryBuilderTest extends TestCase
      */
     public function testRowLockIsVisibleToAnotherConnection(): void
     {
-        $other = Database::mysql(TestEnvironment::mysql());
+        $other = Database::mariadb(TestEnvironment::mariadb());
         $probe = static fn (): mixed => $other->query('SELECT id FROM qb_test WHERE id = 1 FOR UPDATE NOWAIT')->fetch();
 
         foreach (['first', 'exists'] as $method) {

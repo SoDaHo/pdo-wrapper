@@ -38,7 +38,7 @@ final class RecordingPdo extends PDO
     public function __construct(string $dsn, ?string $username = null, #[\SensitiveParameter] ?string $password = null, ?array $options = null)
     {
         self::$given[] = [$dsn, $username, $password, $options];
-        $test = TestEnvironment::mysql();
+        $test = TestEnvironment::mariadb();
         parent::__construct(
             sprintf('mysql:host=%s;port=%d;dbname=%s;charset=utf8mb4', $test['host'], $test['port'], $test['database']),
             $test['username'],

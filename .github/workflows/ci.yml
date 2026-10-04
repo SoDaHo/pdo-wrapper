@@ -92,11 +92,11 @@ jobs:
       - name: Run all tests
         run: vendor/bin/phpunit --no-coverage
         env:
-          MYSQL_HOST: mariadb
-          MYSQL_PORT: 3306
-          MYSQL_DATABASE: pdo_wrapper_test
-          MYSQL_USERNAME: root
-          MYSQL_PASSWORD: root
+          MARIADB_HOST: mariadb
+          MARIADB_PORT: 3306
+          MARIADB_DATABASE: pdo_wrapper_test
+          MARIADB_USERNAME: root
+          MARIADB_PASSWORD: root
 
   # One run with a coverage driver: src/ must stay fully covered. The matrix jobs above run without coverage; this
   # job is what fails when new code arrives without a test.
@@ -155,11 +155,11 @@ jobs:
         run: vendor/bin/phpunit --coverage-clover clover.xml
         env:
           XDEBUG_MODE: coverage
-          MYSQL_HOST: mariadb
-          MYSQL_PORT: 3306
-          MYSQL_DATABASE: pdo_wrapper_test
-          MYSQL_USERNAME: root
-          MYSQL_PASSWORD: root
+          MARIADB_HOST: mariadb
+          MARIADB_PORT: 3306
+          MARIADB_DATABASE: pdo_wrapper_test
+          MARIADB_USERNAME: root
+          MARIADB_PASSWORD: root
 
       - name: Require full statement coverage of src/
         run: |

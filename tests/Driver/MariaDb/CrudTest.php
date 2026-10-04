@@ -6,17 +6,17 @@ namespace Sodaho\PdoWrapper\Tests\Driver\MariaDb;
 
 use PHPUnit\Framework\TestCase;
 use Sodaho\PdoWrapper\Database;
-use Sodaho\PdoWrapper\Driver\MySqlDriver;
+use Sodaho\PdoWrapper\Driver\MariaDbDriver;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Tests\Support\TestEnvironment;
 
 class CrudTest extends TestCase
 {
-    private MySqlDriver $db;
+    private MariaDbDriver $db;
 
     protected function setUp(): void
     {
-        $this->db = Database::mysql(TestEnvironment::mysql());
+        $this->db = Database::mariadb(TestEnvironment::mariadb());
 
         $this->db->execute('DROP TABLE IF EXISTS crud_test');
         $this->db->execute('CREATE TABLE crud_test (id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(255), email VARCHAR(255))');

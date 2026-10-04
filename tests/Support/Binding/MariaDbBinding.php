@@ -9,12 +9,12 @@ use Pdo\Mysql;
 use Sodaho\PdoWrapper\Database;
 use Sodaho\PdoWrapper\DatabaseInterface;
 use Sodaho\PdoWrapper\Driver\AbstractDriver;
-use Sodaho\PdoWrapper\Driver\MySqlDriver;
+use Sodaho\PdoWrapper\Driver\MariaDbDriver;
 use Sodaho\PdoWrapper\Tests\Support\TestEnvironment;
 use UnexpectedValueException;
 
 /**
- * The binding of the MariaDB driver: the test database from the MYSQL_* variables
+ * The binding of the MariaDB driver: the test database from the MARIADB_* variables
  * (TestEnvironment), tables in InnoDB with case- and accent-sensitive strings.
  */
 final class MariaDbBinding implements DriverBinding
@@ -33,12 +33,12 @@ final class MariaDbBinding implements DriverBinding
 
     public function connect(array $extra = []): AbstractDriver
     {
-        return Database::mysql(TestEnvironment::mysql() + $extra);
+        return Database::mariadb(TestEnvironment::mariadb() + $extra);
     }
 
     public function pdo(string $class = PDO::class): PDO
     {
-        $settings = TestEnvironment::mysql();
+        $settings = TestEnvironment::mariadb();
 
         return new $class(
             sprintf('mysql:host=%s;port=%d;dbname=%s;charset=utf8mb4', $settings['host'], $settings['port'], $settings['database']),
@@ -108,15 +108,15 @@ final class MariaDbBinding implements DriverBinding
 
     public function factories(): array
     {
-        $config = TestEnvironment::mysql();
+        $config = TestEnvironment::mariadb();
 
         return [
-            'Database::mysql()' => static fn (array $extra): AbstractDriver => Database::mysql($config + $extra),
-            'new MySqlDriver()' => static fn (array $extra): AbstractDriver => new MySqlDriver($config + $extra),
-            'Database::connect()' => static fn (array $extra): AbstractDriver => self::driver(Database::connect(['driver' => 'mysql'] + $config + $extra)),
-            'Database::fromEnv() with everything passed' => static fn (array $extra): AbstractDriver => self::driver(Database::fromEnv(['driver' => 'mysql'] + $config + $extra)),
+            'Database::mariadb()' => static fn (array $extra): AbstractDriver => Database::mariadb($config + $extra),
+            'new MariaDbDriver()' => static fn (array $extra): AbstractDriver => new MariaDbDriver($config + $extra),
+            'Database::connect()' => static fn (array $extra): AbstractDriver => self::driver(Database::connect(['driver' => 'mariadb'] + $config + $extra)),
+            'Database::fromEnv() with everything passed' => static fn (array $extra): AbstractDriver => self::driver(Database::fromEnv(['driver' => 'mariadb'] + $config + $extra)),
             'Database::fromEnv() with DB_*' => static function (array $extra) use ($config): AbstractDriver {
-                $_ENV['DB_DRIVER'] = 'mysql';
+                $_ENV['DB_DRIVER'] = 'mariadb';
                 $_ENV['DB_HOST'] = $config['host'];
                 $_ENV['DB_PORT'] = (string) $config['port'];
                 $_ENV['DB_DATABASE'] = $config['database'];

@@ -8,7 +8,7 @@ use PDO;
 use PHPUnit\Framework\TestCase;
 use Sodaho\PdoWrapper\Database;
 use Sodaho\PdoWrapper\DatabaseInterface;
-use Sodaho\PdoWrapper\Driver\MySqlDriver;
+use Sodaho\PdoWrapper\Driver\MariaDbDriver;
 use Sodaho\PdoWrapper\Exception\ConnectionException;
 use Sodaho\PdoWrapper\Tests\Support\AbstractPdo;
 use Sodaho\PdoWrapper\Tests\Support\ScenarioPdo;
@@ -52,7 +52,7 @@ class DatabaseTest extends TestCase
 
     public function testConnectAndFromEnvPickTheDriverByName(): void
     {
-        foreach (['mysql', ' MariaDB ', 'MYSQL'] as $driver) {
+        foreach (['mariadb', ' MariaDB ', 'MARIADB'] as $driver) {
             $this->assertConnectionAttempt(static fn (): DatabaseInterface => Database::connect(['driver' => $driver] + self::NOTHING_LISTENS), $driver);
         }
 
@@ -61,8 +61,29 @@ class DatabaseTest extends TestCase
 
         // getenv() is the second channel
         unset($_ENV['DB_DRIVER']);
-        putenv('DB_DRIVER=mysql');
+        putenv('DB_DRIVER=mariadb');
         $this->assertConnectionAttempt(static fn (): DatabaseInterface => Database::fromEnv(self::NOTHING_LISTENS), 'getenv()');
+    }
+
+    /**
+     * The driver was called "mysql" before 3.0, and MySQL servers are not supported any more: the
+     * old name says so instead of connecting as MariaDB.
+     */
+    public function testTheOldDriverNameSaysWhatItIsCalledNow(): void
+    {
+        foreach (['connect()' => static fn (): DatabaseInterface => Database::connect(['driver' => ' MySQL '] + self::NOTHING_LISTENS), 'fromEnv()' => static function (): DatabaseInterface {
+            $_ENV['DB_DRIVER'] = 'mysql';
+
+            return Database::fromEnv(self::NOTHING_LISTENS);
+        }] as $how => $connect) {
+            try {
+                $connect();
+                $this->fail('Expected ConnectionException in ' . $how);
+            } catch (ConnectionException $e) {
+                $this->assertSame('The driver "mysql" is called "mariadb" since 3.0, and MySQL servers are not supported: this library supports MariaDB only', $e->getDebugMessage(), $how);
+                $this->assertNull($e->getPrevious(), $how . ': nothing was tried');
+            }
+        }
     }
 
     /**
@@ -97,7 +118,7 @@ class DatabaseTest extends TestCase
      */
     public function testTheFactoriesDoNotReadTheEnvironment(): void
     {
-        $_ENV['DB_DRIVER'] = 'mysql';
+        $_ENV['DB_DRIVER'] = 'mariadb';
         $_ENV['DB_HOST'] = '127.0.0.1';
         $_ENV['DB_DATABASE'] = 'app';
         $_ENV['DB_USERNAME'] = 'app';
@@ -108,8 +129,8 @@ class DatabaseTest extends TestCase
         } catch (ConnectionException $e) {
             $this->assertStringStartsWith('No database driver given', (string) $e->getDebugMessage());
         }
-        $this->assertMissingConfig(static fn (): MySqlDriver => Database::mysql([]));
-        $this->assertMissingConfig(static fn (): DatabaseInterface => Database::connect(['driver' => 'mysql']));
+        $this->assertMissingConfig(static fn (): MariaDbDriver => Database::mariadb([]));
+        $this->assertMissingConfig(static fn (): DatabaseInterface => Database::connect(['driver' => 'mariadb']));
     }
 
     /**
@@ -123,8 +144,8 @@ class DatabaseTest extends TestCase
         $_ENV['DB_USERNAME'] = 'app';
 
         // the driver that was passed beats DB_DRIVER, a null that was passed beats DB_DATABASE
-        $this->assertMissingConfig(static fn (): DatabaseInterface => Database::fromEnv(['driver' => 'mysql', 'database' => null]));
-        $this->assertConnectionAttempt(static fn (): DatabaseInterface => Database::fromEnv(['driver' => 'mysql'] + self::NOTHING_LISTENS), 'everything passed');
+        $this->assertMissingConfig(static fn (): DatabaseInterface => Database::fromEnv(['driver' => 'mariadb', 'database' => null]));
+        $this->assertConnectionAttempt(static fn (): DatabaseInterface => Database::fromEnv(['driver' => 'mariadb'] + self::NOTHING_LISTENS), 'everything passed');
     }
 
     public function testConnectRejectsMissingAndUnknownDrivers(): void
@@ -133,7 +154,7 @@ class DatabaseTest extends TestCase
             Database::connect([]);
             $this->fail('Expected ConnectionException without a driver');
         } catch (ConnectionException $e) {
-            $this->assertSame('No database driver given: pass \'driver\' (mysql), or set DB_DRIVER for fromEnv()', $e->getDebugMessage());
+            $this->assertSame('No database driver given: pass \'driver\' (mariadb), or set DB_DRIVER for fromEnv()', $e->getDebugMessage());
         }
 
         try {
@@ -147,7 +168,7 @@ class DatabaseTest extends TestCase
             Database::connect(['driver' => 'oracle']);
             $this->fail('Expected ConnectionException for an unknown driver');
         } catch (ConnectionException $e) {
-            $this->assertSame('Unknown database driver "oracle": use mysql', $e->getDebugMessage());
+            $this->assertSame('Unknown database driver "oracle": use mariadb', $e->getDebugMessage());
         }
     }
 
@@ -163,24 +184,24 @@ class DatabaseTest extends TestCase
         putenv('DB_HOST=127.0.0.1'); // $_ENV has the key: it decides
         $_ENV['DB_DATABASE'] = 'app';
         $_ENV['DB_USERNAME'] = 'app';
-        $this->assertMissingConfig(static fn (): DatabaseInterface => Database::fromEnv(['driver' => 'mysql']));
+        $this->assertMissingConfig(static fn (): DatabaseInterface => Database::fromEnv(['driver' => 'mariadb']));
         putenv('DB_HOST');
 
         $_ENV['DB_HOST'] = ['127.0.0.1'];
-        $this->assertMissingConfig(static fn (): \Sodaho\PdoWrapper\DatabaseInterface => Database::fromEnv(['driver' => 'mysql']));
+        $this->assertMissingConfig(static fn (): \Sodaho\PdoWrapper\DatabaseInterface => Database::fromEnv(['driver' => 'mariadb']));
 
         // null in $_ENV is no value (as before): getenv() is asked
         $_ENV['DB_HOST'] = null;
         putenv('DB_HOST=127.0.0.1');
         $_ENV['DB_PORT'] = '59996';
-        $this->assertConnectionAttempt(static fn (): DatabaseInterface => Database::fromEnv(['driver' => 'mysql']), 'the host from getenv()');
+        $this->assertConnectionAttempt(static fn (): DatabaseInterface => Database::fromEnv(['driver' => 'mariadb']), 'the host from getenv()');
         putenv('DB_HOST');
         unset($_ENV['DB_PORT']);
 
         // getenv()
         unset($_ENV['DB_HOST'], $_ENV['DB_DRIVER']);
         putenv('DB_HOST=');
-        $this->assertMissingConfig(static fn (): DatabaseInterface => Database::fromEnv(['driver' => 'mysql']));
+        $this->assertMissingConfig(static fn (): DatabaseInterface => Database::fromEnv(['driver' => 'mariadb']));
         putenv('DB_DRIVER=');
         try {
             Database::fromEnv();
@@ -202,7 +223,7 @@ class DatabaseTest extends TestCase
             $connect();
             $this->fail('Expected ConnectionException: nothing listens there - ' . $message);
         } catch (ConnectionException $e) {
-            $this->assertStringStartsWith('MySQL connection to 127.0.0.1:59996 failed', (string) $e->getDebugMessage(), $message);
+            $this->assertStringStartsWith('MariaDB connection to 127.0.0.1:59996 failed', (string) $e->getDebugMessage(), $message);
             $this->assertInstanceOf(\PDOException::class, $e->getPrevious(), $message);
         }
     }
@@ -223,10 +244,10 @@ class DatabaseTest extends TestCase
     public function testTheConfigParametersAreMarkedSensitive(): void
     {
         $parameters = [
-            new \ReflectionParameter([Database::class, 'mysql'], 'config'),
+            new \ReflectionParameter([Database::class, 'mariadb'], 'config'),
             new \ReflectionParameter([Database::class, 'connect'], 'config'),
             new \ReflectionParameter([Database::class, 'fromEnv'], 'overrides'),
-            new \ReflectionParameter([MySqlDriver::class, '__construct'], 'config'),
+            new \ReflectionParameter([MariaDbDriver::class, '__construct'], 'config'),
         ];
 
         foreach ($parameters as $parameter) {
@@ -234,7 +255,7 @@ class DatabaseTest extends TestCase
         }
 
         try {
-            new MySqlDriver(['host' => 'h', 'database' => 'd', 'username' => 'u', 'password' => 'secret', 'port' => 'abc']);
+            new MariaDbDriver(['host' => 'h', 'database' => 'd', 'username' => 'u', 'password' => 'secret', 'port' => 'abc']);
             $this->fail('Expected ConnectionException');
         } catch (ConnectionException $e) {
             $this->assertStringNotContainsString('secret', var_export($e->getTrace(), true));
@@ -258,12 +279,12 @@ class DatabaseTest extends TestCase
         ];
 
         foreach ($invalid as $what => $class) {
-            $_ENV['DB_DRIVER'] = 'mysql';
+            $_ENV['DB_DRIVER'] = 'mariadb';
             $calls = [
-                'mysql()' => static fn (): mixed => Untyped::call(Database::mysql(...), $server + ['pdoClass' => $class]),
-                'new MySqlDriver()' => static fn (): mixed => Untyped::create(MySqlDriver::class, $server + ['pdoClass' => $class]),
-                'connect()' => static fn (): mixed => Untyped::call(Database::connect(...), ['driver' => 'mysql'] + $server + ['pdoClass' => $class]),
-                'fromEnv() with everything passed' => static fn (): mixed => Untyped::call(Database::fromEnv(...), ['driver' => 'mysql'] + $server + ['pdoClass' => $class]),
+                'mariadb()' => static fn (): mixed => Untyped::call(Database::mariadb(...), $server + ['pdoClass' => $class]),
+                'new MariaDbDriver()' => static fn (): mixed => Untyped::create(MariaDbDriver::class, $server + ['pdoClass' => $class]),
+                'connect()' => static fn (): mixed => Untyped::call(Database::connect(...), ['driver' => 'mariadb'] + $server + ['pdoClass' => $class]),
+                'fromEnv() with everything passed' => static fn (): mixed => Untyped::call(Database::fromEnv(...), ['driver' => 'mariadb'] + $server + ['pdoClass' => $class]),
                 'fromEnv() with DB_DRIVER' => static fn (): mixed => Untyped::call(Database::fromEnv(...), $server + ['pdoClass' => $class]),
             ];
 
@@ -295,8 +316,8 @@ class DatabaseTest extends TestCase
 
         foreach ([123, true, 1.5, ['PDO'], new \stdClass(), $pdoObject] as $class) {
             foreach ([
-                'new MySqlDriver()' => static fn (): mixed => Untyped::create(MySqlDriver::class, $server + ['pdoClass' => $class]),
-                'connect()' => static fn (): mixed => Untyped::call(Database::connect(...), ['driver' => 'mysql'] + $server + ['pdoClass' => $class]),
+                'new MariaDbDriver()' => static fn (): mixed => Untyped::create(MariaDbDriver::class, $server + ['pdoClass' => $class]),
+                'connect()' => static fn (): mixed => Untyped::call(Database::connect(...), ['driver' => 'mariadb'] + $server + ['pdoClass' => $class]),
             ] as $how => $call) {
                 try {
                     $call();
@@ -319,7 +340,7 @@ class DatabaseTest extends TestCase
     public function testAValidPdoClassReachesTheConnectionAttempt(): void
     {
         foreach ([ScenarioPdo::class, PDO::class, '\\PDO'] as $class) {
-            $this->assertConnectionAttempt(static fn (): DatabaseInterface => Untyped::create(MySqlDriver::class, self::NOTHING_LISTENS + ['pdoClass' => $class]), $class);
+            $this->assertConnectionAttempt(static fn (): DatabaseInterface => Untyped::create(MariaDbDriver::class, self::NOTHING_LISTENS + ['pdoClass' => $class]), $class);
         }
     }
 }

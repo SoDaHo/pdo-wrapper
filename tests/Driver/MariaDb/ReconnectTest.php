@@ -8,7 +8,7 @@ use Pdo\Mysql;
 use PDOException;
 use RuntimeException;
 use Sodaho\PdoWrapper\DatabaseInterface;
-use Sodaho\PdoWrapper\Driver\MySqlDriver;
+use Sodaho\PdoWrapper\Driver\MariaDbDriver;
 use Sodaho\PdoWrapper\Exception\CommitFailedException;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Tests\Contract\ContractTestCase;
@@ -157,7 +157,7 @@ class ReconnectTest extends ContractTestCase
      */
     public function testAFailureRememberedOnTheOldConnectionRefusesNothingOnTheNewOne(): void
     {
-        $db = new class (TestEnvironment::mysql() + ['pdoClass' => ScenarioPdo::class]) extends MySqlDriver {
+        $db = new class (TestEnvironment::mariadb() + ['pdoClass' => ScenarioPdo::class]) extends MariaDbDriver {
             protected function failureToRemember(?PDOException $remembered, PDOException $failure): PDOException
             {
                 return $failure;

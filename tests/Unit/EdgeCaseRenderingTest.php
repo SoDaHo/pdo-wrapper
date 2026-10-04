@@ -20,7 +20,7 @@ use Sodaho\PdoWrapper\Tests\Support\Untyped;
  */
 class EdgeCaseRenderingTest extends TestCase
 {
-    /** What MySqlDriver::table() builds, on a database that is never reached */
+    /** What MariaDbDriver::table() builds, on a database that is never reached */
     private function table(string $table): QueryBuilder
     {
         return new QueryBuilder($this->createStub(DatabaseInterface::class), $table);

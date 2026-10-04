@@ -19,7 +19,7 @@ use Sodaho\PdoWrapper\Query\RawExpression;
  */
 class RawExpressionSecurityTest extends TestCase
 {
-    /** What MySqlDriver::table('users') builds */
+    /** What MariaDbDriver::table('users') builds */
     private function users(): QueryBuilder
     {
         return new QueryBuilder($this->createStub(DatabaseInterface::class), 'users');

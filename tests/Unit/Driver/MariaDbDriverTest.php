@@ -6,11 +6,11 @@ namespace Sodaho\PdoWrapper\Tests\Unit\Driver;
 
 use PHPUnit\Framework\TestCase;
 use Sodaho\PdoWrapper\Database;
-use Sodaho\PdoWrapper\Driver\MySqlDriver;
+use Sodaho\PdoWrapper\Driver\MariaDbDriver;
 use Sodaho\PdoWrapper\Exception\ConnectionException;
 use Sodaho\PdoWrapper\Tests\Support\Untyped;
 
-class MySqlDriverTest extends TestCase
+class MariaDbDriverTest extends TestCase
 {
     protected function tearDown(): void
     {
@@ -43,7 +43,7 @@ class MySqlDriverTest extends TestCase
 
         foreach ($cases as [$key, $value]) {
             try {
-                new MySqlDriver([$key => $value] + $base);
+                new MariaDbDriver([$key => $value] + $base);
                 $this->fail("Expected ConnectionException for {$key}");
             } catch (ConnectionException $e) {
                 $this->assertSame('Database connection failed', $e->getMessage());
@@ -61,7 +61,7 @@ class MySqlDriverTest extends TestCase
 
         foreach (['abc', '3306;host=evil', '', 0, -1, 65536, 3306.5, true] as $port) {
             try {
-                Untyped::create(MySqlDriver::class, ['port' => $port] + $base); // not all of them are a port by type
+                Untyped::create(MariaDbDriver::class, ['port' => $port] + $base); // not all of them are a port by type
                 $this->fail('Expected ConnectionException for port ' . var_export($port, true));
             } catch (ConnectionException $e) {
                 $this->assertSame('Invalid config value "port": expected a whole number between 1 and 65535', $e->getDebugMessage());
@@ -82,7 +82,7 @@ class MySqlDriverTest extends TestCase
         foreach (['abc', '1e3', '1.9', '70000', '65536', '0', '-1', '33 06'] as $port) {
             $_ENV['DB_PORT'] = $port;
             try {
-                Database::fromEnv(['driver' => 'mysql']);
+                Database::fromEnv(['driver' => 'mariadb']);
                 $this->fail("Expected ConnectionException for DB_PORT={$port}");
             } catch (ConnectionException $e) {
                 $this->assertSame('Invalid config value "port": expected a whole number between 1 and 65535', $e->getDebugMessage());
@@ -94,17 +94,17 @@ class MySqlDriverTest extends TestCase
         foreach (['' => 3306, '   ' => 3306, " 59998\r\n" => 59998] as $value => $expected) {
             $_ENV['DB_PORT'] = $value;
             try {
-                Database::fromEnv(['driver' => 'mysql', 'host' => '127.0.0.1', 'password' => 'wrong-on-purpose']);
+                Database::fromEnv(['driver' => 'mariadb', 'host' => '127.0.0.1', 'password' => 'wrong-on-purpose']);
                 $this->fail('Expected ConnectionException: wrong password or nothing listening');
             } catch (ConnectionException $e) {
-                $this->assertStringContainsString("MySQL connection to 127.0.0.1:{$expected} failed", (string) $e->getDebugMessage());
+                $this->assertStringContainsString("MariaDB connection to 127.0.0.1:{$expected} failed", (string) $e->getDebugMessage());
             }
         }
 
         // A port given in the config is judged the same way
         foreach ([0, '0', '', ' 3306'] as $port) {
             try {
-                Database::mysql(['host' => '127.0.0.1', 'port' => $port]);
+                Database::mariadb(['host' => '127.0.0.1', 'port' => $port]);
                 $this->fail('Expected ConnectionException for port ' . var_export($port, true));
             } catch (ConnectionException $e) {
                 $this->assertSame('Invalid config value "port": expected a whole number between 1 and 65535', $e->getDebugMessage());
@@ -115,10 +115,10 @@ class MySqlDriverTest extends TestCase
     public function testAcceptsANumericStringAsPort(): void
     {
         try {
-            new MySqlDriver(['host' => '127.0.0.1', 'port' => '59999', 'database' => 'app', 'username' => 'root', 'password' => 'x']);
+            new MariaDbDriver(['host' => '127.0.0.1', 'port' => '59999', 'database' => 'app', 'username' => 'root', 'password' => 'x']);
             $this->fail('Expected ConnectionException: nothing listens there');
         } catch (ConnectionException $e) {
-            $this->assertStringContainsString('MySQL connection to 127.0.0.1:59999 failed', (string) $e->getDebugMessage());
+            $this->assertStringContainsString('MariaDB connection to 127.0.0.1:59999 failed', (string) $e->getDebugMessage());
         }
     }
 
@@ -126,7 +126,7 @@ class MySqlDriverTest extends TestCase
     {
         $this->expectException(ConnectionException::class);
 
-        new MySqlDriver([
+        new MariaDbDriver([
             'database' => 'test',
             'username' => 'root',
         ]);
@@ -136,7 +136,7 @@ class MySqlDriverTest extends TestCase
     {
         $this->expectException(ConnectionException::class);
 
-        new MySqlDriver([
+        new MariaDbDriver([
             'host' => 'localhost',
             'username' => 'root',
         ]);
@@ -146,7 +146,7 @@ class MySqlDriverTest extends TestCase
     {
         $this->expectException(ConnectionException::class);
 
-        new MySqlDriver([
+        new MariaDbDriver([
             'host' => 'localhost',
             'database' => 'test',
         ]);
@@ -155,7 +155,7 @@ class MySqlDriverTest extends TestCase
     public function testExceptionHasDebugMessage(): void
     {
         try {
-            new MySqlDriver([]);
+            new MariaDbDriver([]);
         } catch (ConnectionException $e) {
             $this->assertSame('Database connection failed', $e->getMessage());
             $this->assertSame('Missing required config: host, database, or username', $e->getDebugMessage());
@@ -177,7 +177,7 @@ class MySqlDriverTest extends TestCase
 
         $this->expectException(ConnectionException::class);
 
-        Database::fromEnv(['driver' => 'mysql']);
+        Database::fromEnv(['driver' => 'mariadb']);
     }
 
     /**
@@ -192,7 +192,7 @@ class MySqlDriverTest extends TestCase
         $this->expectException(ConnectionException::class);
 
         try {
-            Database::fromEnv(['driver' => 'mysql']);
+            Database::fromEnv(['driver' => 'mariadb']);
         } catch (ConnectionException $e) {
             $this->assertStringContainsString('getenv-host-invalid', $e->getDebugMessage() ?? '');
             throw $e;
@@ -212,7 +212,7 @@ class MySqlDriverTest extends TestCase
         $this->expectException(ConnectionException::class);
 
         try {
-            Database::fromEnv(['driver' => 'mysql']);
+            Database::fromEnv(['driver' => 'mariadb']);
         } catch (ConnectionException $e) {
             $this->assertStringContainsString('env-host-invalid', $e->getDebugMessage() ?? '');
             $this->assertStringNotContainsString('getenv-host', $e->getDebugMessage() ?? '');
@@ -228,7 +228,7 @@ class MySqlDriverTest extends TestCase
 
         // the factory takes what it is given: nothing is filled in from the environment
         try {
-            Database::mysql(['database' => 'array-db', 'username' => 'array-user']);
+            Database::mariadb(['database' => 'array-db', 'username' => 'array-user']);
             $this->fail('Expected ConnectionException: no host was passed');
         } catch (ConnectionException $e) {
             $this->assertSame('Missing required config: host, database, or username', $e->getDebugMessage());
@@ -236,7 +236,7 @@ class MySqlDriverTest extends TestCase
 
         // fromEnv(): what is passed counts instead of the variable ...
         try {
-            Database::fromEnv(['driver' => 'mysql', 'host' => 'array-host']);
+            Database::fromEnv(['driver' => 'mariadb', 'host' => 'array-host']);
             $this->fail('Expected ConnectionException: no such host');
         } catch (ConnectionException $e) {
             $this->assertStringContainsString('array-host', (string) $e->getDebugMessage());
@@ -245,7 +245,7 @@ class MySqlDriverTest extends TestCase
 
         // ... also null: an explicit null is a missing value, not "ask the environment"
         try {
-            Database::fromEnv(['driver' => 'mysql', 'host' => null]);
+            Database::fromEnv(['driver' => 'mariadb', 'host' => null]);
             $this->fail('Expected ConnectionException: the host was passed as null');
         } catch (ConnectionException $e) {
             $this->assertSame('Missing required config: host, database, or username', $e->getDebugMessage());
@@ -257,7 +257,7 @@ class MySqlDriverTest extends TestCase
         $this->expectException(ConnectionException::class);
 
         try {
-            new MySqlDriver([
+            new MariaDbDriver([
                 'host' => 'localhost',
                 'database' => 'test',
                 'username' => 'root',
@@ -273,7 +273,7 @@ class MySqlDriverTest extends TestCase
         $this->expectException(ConnectionException::class);
 
         try {
-            new MySqlDriver([
+            new MariaDbDriver([
                 'host' => 'localhost',
                 'database' => 'test',
                 'username' => 'root',
@@ -293,7 +293,7 @@ class MySqlDriverTest extends TestCase
         $_ENV['DB_PORT'] = '3308';
 
         try {
-            Database::fromEnv(['driver' => 'mysql', 'port' => 59997, 'password' => 'wrong-on-purpose']);
+            Database::fromEnv(['driver' => 'mariadb', 'port' => 59997, 'password' => 'wrong-on-purpose']);
             $this->fail('Expected ConnectionException: nothing listens there');
         } catch (ConnectionException $e) {
             $this->assertStringContainsString(':59997', (string) $e->getDebugMessage());
@@ -311,7 +311,7 @@ class MySqlDriverTest extends TestCase
         $this->expectException(ConnectionException::class);
 
         try {
-            Database::fromEnv(['driver' => 'mysql']);
+            Database::fromEnv(['driver' => 'mariadb']);
         } catch (ConnectionException $e) {
             $this->assertStringContainsString(':3308', $e->getDebugMessage() ?? '');
             throw $e;

@@ -7,7 +7,7 @@ namespace Sodaho\PdoWrapper\Tests\Driver\MariaDb;
 use Throwable;
 
 /**
- * What a lock scenario of MySqlDriverIntegrationTest measured on its connection.
+ * What a lock scenario of MariaDbDriverIntegrationTest measured on its connection.
  */
 final class LockMeasurements
 {

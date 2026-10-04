@@ -53,8 +53,8 @@ class SecurityTest extends ContractTestCase
 
     public function testEscapeLikeHoldsWithEmulatedPrepares(): void
     {
-        $this->db = Database::mysql([
-            ...TestEnvironment::mysql(),
+        $this->db = Database::mariadb([
+            ...TestEnvironment::mariadb(),
             'options' => [\PDO::ATTR_EMULATE_PREPARES => true],
         ]);
         $this->seedLikeNames();

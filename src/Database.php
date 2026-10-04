@@ -5,20 +5,20 @@ declare(strict_types=1);
 namespace Sodaho\PdoWrapper;
 
 use PDO;
-use Sodaho\PdoWrapper\Driver\MySqlDriver;
+use Sodaho\PdoWrapper\Driver\MariaDbDriver;
 use Sodaho\PdoWrapper\Exception\ConnectionException;
 use Sodaho\PdoWrapper\Query\RawExpression;
 
 /**
  * Factory class for creating database connections.
  *
- * mysql() and connect() use what they are given and nothing else: they never read the
+ * mariadb() and connect() use what they are given and nothing else: they never read the
  * environment. fromEnv() is the one entry that does - DB_DRIVER, DB_HOST, DB_PORT, DB_DATABASE,
  * DB_USERNAME and DB_PASSWORD, from $_ENV first, then getenv().
  *
  * Usage:
- * - Database::mysql(['host' => '...', 'database' => '...', 'username' => '...', ...])
- * - Database::connect(['driver' => 'mysql', 'host' => '...', ...])
+ * - Database::mariadb(['host' => '...', 'database' => '...', 'username' => '...', ...])
+ * - Database::connect(['driver' => 'mariadb', 'host' => '...', ...])
  * - Database::fromEnv() or Database::fromEnv(['password' => $secret])
  *
  * Every factory creates the PDO object itself, with the library's defaults. Its class can be
@@ -28,24 +28,25 @@ use Sodaho\PdoWrapper\Query\RawExpression;
 class Database
 {
     /**
-     * Create a MySQL/MariaDB connection from the given config (see MySqlDriver for the keys).
+     * Create a MariaDB connection from the given config (see MariaDbDriver for the keys).
      * Nothing is read from the environment: use fromEnv() for that.
      *
      * @param array{host?: string|null, database?: string|null, username?: string|null, password?: string|null, port?: int|string, charset?: string, options?: array<int, mixed>, pdoClass?: class-string<PDO>|null} $config
      *
      * @throws Exception\ConnectionException When a required value is missing or the connection fails
      */
-    public static function mysql(#[\SensitiveParameter] array $config): MySqlDriver
+    public static function mariadb(#[\SensitiveParameter] array $config): MariaDbDriver
     {
-        return new MySqlDriver($config);
+        return new MariaDbDriver($config);
     }
 
     /**
      * Create a connection for the driver named in the config.
      *
-     * 'mysql' (also 'mariadb') delegates to mysql() with the same config keys. The drivers for
-     * PostgreSQL and SQLite were removed in 3.0: 'pgsql', 'postgres', 'postgresql' and 'sqlite'
-     * throw, saying so. Nothing is read from the environment: use fromEnv() for that.
+     * 'mariadb' delegates to mariadb() with the same config keys. The library supports MariaDB only
+     * since 3.0: 'mysql' (the name of the driver before) and the removed drivers 'pgsql',
+     * 'postgres', 'postgresql' and 'sqlite' throw, saying so. Nothing is read from the
+     * environment: use fromEnv() for that.
      *
      * @param array{driver?: string|null, host?: string|null, database?: string|null, username?: string|null, password?: string|null, port?: int|string, charset?: string, options?: array<int, mixed>, pdoClass?: class-string<PDO>|null} $config
      *
@@ -56,7 +57,11 @@ class Database
         $driver = strtolower(trim($config['driver'] ?? ''));
 
         return match ($driver) {
-            'mysql', 'mariadb' => self::mysql($config),
+            'mariadb' => self::mariadb($config),
+            'mysql' => throw new ConnectionException(
+                message: 'Database connection failed',
+                debugMessage: 'The driver "mysql" is called "mariadb" since 3.0, and MySQL servers are not supported: this library supports MariaDB only'
+            ),
             'pgsql', 'postgres', 'postgresql', 'sqlite' => throw new ConnectionException(
                 message: 'Database connection failed',
                 debugMessage: sprintf('The driver "%s" was removed in 3.0: this library supports MariaDB only', $driver)
@@ -64,8 +69,8 @@ class Database
             default => throw new ConnectionException(
                 message: 'Database connection failed',
                 debugMessage: $driver === ''
-                    ? 'No database driver given: pass \'driver\' (mysql), or set DB_DRIVER for fromEnv()'
-                    : sprintf('Unknown database driver "%s": use mysql', $driver)
+                    ? 'No database driver given: pass \'driver\' (mariadb), or set DB_DRIVER for fromEnv()'
+                    : sprintf('Unknown database driver "%s": use mariadb', $driver)
             ),
         };
     }
@@ -74,7 +79,7 @@ class Database
      * Create a connection from the environment: the one place in this library that reads it.
      *
      * Variables, $_ENV first, then the process environment (getenv() with local_only, so not
-     * what a web server sends with the request): DB_DRIVER (mysql), DB_HOST, DB_PORT, DB_DATABASE,
+     * what a web server sends with the request): DB_DRIVER (mariadb), DB_HOST, DB_PORT, DB_DATABASE,
      * DB_USERNAME, DB_PASSWORD. A variable that is set but empty counts as not set (`DB_HOST=` in
      * a dotenv template): a required value is then reported as missing, DB_PORT takes the
      * driver's default.

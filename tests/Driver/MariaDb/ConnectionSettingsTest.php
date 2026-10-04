@@ -7,7 +7,7 @@ namespace Sodaho\PdoWrapper\Tests\Driver\MariaDb;
 use PHPUnit\Framework\TestCase;
 use Sodaho\PdoWrapper\Driver\AbstractDriver;
 use Sodaho\PdoWrapper\Driver\ConnectionSettings;
-use Sodaho\PdoWrapper\Driver\MySqlDriver;
+use Sodaho\PdoWrapper\Driver\MariaDbDriver;
 use Sodaho\PdoWrapper\Tests\Support\RecordingPdo;
 
 /**
@@ -39,7 +39,7 @@ class ConnectionSettingsTest extends TestCase
     {
         $config = ['host' => 'db.internal', 'database' => 'app', 'username' => 'dump-user-2', 'password' => 'dump-secret-2', 'pdoClass' => RecordingPdo::class, 'options' => [1002 => "SET @marker = 'dump-option-2'"]];
         $drivers = [
-            'mysql:host=db.internal;port=3306;dbname=app;charset=utf8mb4' => static fn (): AbstractDriver => new MySqlDriver($config),
+            'mysql:host=db.internal;port=3306;dbname=app;charset=utf8mb4' => static fn (): AbstractDriver => new MariaDbDriver($config),
         ];
 
         foreach ($drivers as $dsn => $create) {

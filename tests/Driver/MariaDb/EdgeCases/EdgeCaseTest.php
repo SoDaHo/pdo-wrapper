@@ -7,7 +7,7 @@ namespace Sodaho\PdoWrapper\Tests\Driver\MariaDb\EdgeCases;
 use PDO;
 use PDOException;
 use PDOStatement;
-use Sodaho\PdoWrapper\Driver\MySqlDriver;
+use Sodaho\PdoWrapper\Driver\MariaDbDriver;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Exception\UniqueViolationException;
 use Sodaho\PdoWrapper\Tests\Contract\ContractTestCase;
@@ -34,7 +34,7 @@ class EdgeCaseTest extends ContractTestCase
 
     public function testInsertReadsTheIdItselfWhenAnOverriddenQueryBypassesTheDriver(): void
     {
-        $driver = new class (TestEnvironment::mysql()) extends MySqlDriver {
+        $driver = new class (TestEnvironment::mariadb()) extends MariaDbDriver {
             public int $reads = 0;
 
             public function query(string $sql, array $params = []): PDOStatement
@@ -68,7 +68,7 @@ class EdgeCaseTest extends ContractTestCase
 
     public function testInsertReturnsItsIdWhenAnOverriddenQuerySendsAStatementAhead(): void
     {
-        $driver = new class (TestEnvironment::mysql()) extends MySqlDriver {
+        $driver = new class (TestEnvironment::mariadb()) extends MariaDbDriver {
             public int $reads = 0;
 
             public function query(string $sql, array $params = []): PDOStatement
@@ -122,7 +122,7 @@ class EdgeCaseTest extends ContractTestCase
     public function testAListenerRepeatingTheInsertWhenAStatementSentAheadIsToldDoesNotReplaceTheId(): void
     {
         // A driver that sends a statement ahead, and a listener that mirrors the insert when that one is told
-        $driver = new class (TestEnvironment::mysql()) extends MySqlDriver {
+        $driver = new class (TestEnvironment::mariadb()) extends MariaDbDriver {
             public int $reads = 0;
 
             public function query(string $sql, array $params = []): PDOStatement
@@ -158,20 +158,18 @@ class EdgeCaseTest extends ContractTestCase
     }
 
     // =========================================================================
-    // UNIQUE VIOLATIONS, AS THE SERVERS REPORT THEM (replayed)
+    // UNIQUE VIOLATIONS, AS THE SERVER REPORTS THEM (replayed)
     // =========================================================================
 
     /**
-     * The driver on a connection whose prepare() fails the way the given server would.
+     * The driver on a connection whose prepare() fails the way the server would.
      *
      * @param array{string, int, string}|null $errorInfo
-     * @param string $serverVersion What the connection reports as PDO::ATTR_SERVER_VERSION
      */
-    private function failWith(string $message, ?array $errorInfo, string $serverVersion = '8.0.46'): QueryException
+    private function failWith(string $message, ?array $errorInfo): QueryException
     {
         ReplayingPdo::$failure = new PDOException($message);
         ReplayingPdo::$failure->errorInfo = $errorInfo;
-        ReplayingPdo::$serverVersion = $serverVersion;
         $driver = $this->connect(['pdoClass' => ReplayingPdo::class]);
 
         try {
@@ -182,43 +180,24 @@ class EdgeCaseTest extends ContractTestCase
         $this->fail('Expected QueryException');
     }
 
-    public function testTheDriversReadTheViolatedKeyFromTheServersMessage(): void
+    public function testTheDriverReadsTheViolatedKeyFromTheServersMessage(): void
     {
-        $mysql = '8.0.46';
-        $mariadb = '11.4.12-MariaDB-ubu2404';
         $cases = [
-            // MySQL since 8.0.19 puts the table in front: exactly one dot, the key is behind it
-            [['23000', 1062, "Duplicate entry 'a@test.com' for key 'users.email'"], 'email', $mysql],
-            [['23000', 1062, "Duplicate entry '7' for key 'users.PRIMARY'"], 'PRIMARY', $mysql],
-            [['23000', 1062, "Duplicate entry 'a@test.com' for key 'users.email'"], 'email', '8.0.19'],
-            [['23000', 1062, "Duplicate entry 'a@test.com' for key 'users.email'"], 'email', '8.4.3-log'],
-            // more than one dot there: the table (`a.b`) or the key (`my.key`) contains one - no name rather than a wrong one
-            [['23000', 1062, "Duplicate entry 'a' for key 'a.b.email'"], null, $mysql],
-            [['23000', 1062, "Duplicate entry 'n' for key 'probe_k.my.key'"], null, $mysql],
+            // MariaDB prints the key alone (measured on 10.11, 11.4 and 12.3)
+            [['23000', 1062, "Duplicate entry 'a@test.com' for key 'email'"], 'email'],
+            [['23000', 1062, "Duplicate entry '7' for key 'PRIMARY'"], 'PRIMARY'],
+            // a dot belongs to the name
+            [['23000', 1062, "Duplicate entry 'n' for key 'my.key'"], 'my.key'],
             // the duplicate value comes from outside: only the end of the message counts
-            [['23000', 1062, "Duplicate entry 'x' for key 'evil' for key 'users.email'"], 'email', $mysql],
+            [['23000', 1062, "Duplicate entry 'x' for key 'evil' for key 'email'"], 'email'],
             // another message language (lc_messages): a duplicate, the name is not readable
-            [['23000', 1062, "Doppelter Eintrag 'a@test.com' für Schlüssel 'email'"], null, $mysql],
-            // MySQL up to 8.0.18 prints the key alone, a dot in it belongs to the name (measured on 5.7.44 and 8.0.18)
-            [['23000', 1062, "Duplicate entry 'a@test.com' for key 'email'"], 'email', '5.7.44'],
-            [['23000', 1062, "Duplicate entry 'n' for key 'my.key'"], 'my.key', '5.7.44'],
-            [['23000', 1062, "Duplicate entry 'n' for key 'my.key'"], 'my.key', '8.0.18'],
-            // so does MariaDB
-            [['23000', 1062, "Duplicate entry 'a@test.com' for key 'email'"], 'email', $mariadb],
-            [['23000', 1062, "Duplicate entry '7' for key 'PRIMARY'"], 'PRIMARY', $mariadb],
-            [['23000', 1062, "Duplicate entry 'n' for key 'my.key'"], 'my.key', $mariadb],
-            [['23000', 1062, "Duplicate entry 'n' for key 'my.key'"], 'my.key', '5.5.5-10.4.8-MariaDB'],
-            // the version cannot be read, or is no version number: a name without a dot is the key, one with a dot cannot be told
-            [['23000', 1062, "Duplicate entry 'a@test.com' for key 'email'"], 'email', 'unreadable'],
-            [['23000', 1062, "Duplicate entry 'a@test.com' for key 'users.email'"], null, 'unreadable'],
-            [['23000', 1062, "Duplicate entry 'a@test.com' for key 'users.email'"], null, 'some proxy'],
-            [['23000', 1062, "Duplicate entry 'a@test.com' for key 'users.email'"], null, 'not a string'],
+            [['23000', 1062, "Doppelter Eintrag 'a@test.com' für Schlüssel 'email'"], null],
         ];
 
-        foreach ($cases as [$errorInfo, $constraint, $serverVersion]) {
-            $e = $this->failWith('SQLSTATE[' . $errorInfo[0] . ']: ' . $errorInfo[2], $errorInfo, $serverVersion);
+        foreach ($cases as [$errorInfo, $constraint]) {
+            $e = $this->failWith('SQLSTATE[' . $errorInfo[0] . ']: ' . $errorInfo[2], $errorInfo);
             $this->assertInstanceOf(UniqueViolationException::class, $e, $errorInfo[2]);
-            $this->assertSame($constraint, $e->constraint, $serverVersion . ' | ' . $errorInfo[2]);
+            $this->assertSame($constraint, $e->constraint, $errorInfo[2]);
         }
     }
 
@@ -246,7 +225,7 @@ class EdgeCaseTest extends ContractTestCase
 
     public function testADriverThatBindsStreamsDecidesWhatItLetsThrough(): void
     {
-        $driver = new class (TestEnvironment::mysql()) extends MySqlDriver {
+        $driver = new class (TestEnvironment::mariadb()) extends MariaDbDriver {
             protected function unbindableParameter(array $params): ?string
             {
                 return parent::unbindableParameter(array_filter($params, static fn (mixed $value): bool => !is_resource($value)));

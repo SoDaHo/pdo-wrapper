@@ -10,7 +10,7 @@ use PDOException;
 use PDOStatement;
 use PHPUnit\Framework\TestCase;
 use Sodaho\PdoWrapper\DatabaseInterface;
-use Sodaho\PdoWrapper\Driver\MySqlDriver;
+use Sodaho\PdoWrapper\Driver\MariaDbDriver;
 use Sodaho\PdoWrapper\Exception\CommitFailedException;
 use Sodaho\PdoWrapper\Exception\CommitHookException;
 use Sodaho\PdoWrapper\Exception\DatabaseException;
@@ -24,19 +24,19 @@ class DriverIntegrationTest extends TestCase
 {
     use ReadsPdoErrorInfo;
 
-    private MySqlDriver $driver;
+    private MariaDbDriver $driver;
 
     /**
      * @return array{host: string, port: int, database: string, username: string, password: string}
      */
     private static function getConfig(): array
     {
-        return TestEnvironment::mysql();
+        return TestEnvironment::mariadb();
     }
 
     protected function setUp(): void
     {
-        $this->driver = new MySqlDriver(self::getConfig());
+        $this->driver = new MariaDbDriver(self::getConfig());
     }
 
     public function testImplementsDatabaseInterface(): void
@@ -227,7 +227,7 @@ class DriverIntegrationTest extends TestCase
             $this->assertFalse($listenerRan);
             $this->assertSame(['committed'], $ends, 'the transaction itself is committed');
             $this->assertTrue($db->inTransaction(), 'the chained transaction is open');
-            $observer = new MySqlDriver(self::getConfig());
+            $observer = new MariaDbDriver(self::getConfig());
             $this->assertSame(1, $observer->table('chain_rows')->count(), 'committed: another connection sees the row');
         } finally {
             $db->execute('SET SESSION completion_type = NO_CHAIN');
@@ -348,7 +348,7 @@ class DriverIntegrationTest extends TestCase
             $this->assertSame(1064, $e->errorInfo[1] ?? null);
         }
 
-        $emulated = new MySqlDriver(self::getConfig() + ['options' => [PDO::ATTR_EMULATE_PREPARES => true]]);
+        $emulated = new MariaDbDriver(self::getConfig() + ['options' => [PDO::ATTR_EMULATE_PREPARES => true]]);
         try {
             $emulated->query($two);
             $this->fail('Expected a syntax error with emulated prepares');
@@ -356,7 +356,7 @@ class DriverIntegrationTest extends TestCase
             $this->assertSame(1064, $this->errorInfoBehind($e, 1));
         }
 
-        $optedIn = new MySqlDriver(self::getConfig() + ['options' => [\Pdo\Mysql::ATTR_MULTI_STATEMENTS => true]]);
+        $optedIn = new MariaDbDriver(self::getConfig() + ['options' => [\Pdo\Mysql::ATTR_MULTI_STATEMENTS => true]]);
         $this->assertSame(0, $optedIn->getPdo()->exec($two));
     }
 
@@ -395,7 +395,7 @@ class DriverIntegrationTest extends TestCase
         $blocked = [];
         $hooks = [];
         [$e, $listenerRuns, $measured] = $this->runSwallowedDeadlock(
-            afterwards: function (MySqlDriver $db) use (&$blocked, &$hooks): void {
+            afterwards: function (MariaDbDriver $db) use (&$blocked, &$hooks): void {
                 $db->on('query', static function (array $data) use (&$hooks): void {
                     $hooks[] = $data['sql'];
                 });
@@ -435,7 +435,7 @@ class DriverIntegrationTest extends TestCase
     public function testRawStatementsAfterASwallowedDeadlockAreCommittedOnTheirOwn(): void
     {
         [$e, $listenerRuns, $measured] = $this->runSwallowedDeadlock(
-            afterwards: static fn (MySqlDriver $db): int|false => $db->getPdo()->exec("UPDATE lock_users SET name = 'after the deadlock' WHERE id = 2")
+            afterwards: static fn (MariaDbDriver $db): int|false => $db->getPdo()->exec("UPDATE lock_users SET name = 'after the deadlock' WHERE id = 2")
         );
 
         $this->assertSame(1213, $this->errorInfoBehind($e, 1));
@@ -453,7 +453,7 @@ class DriverIntegrationTest extends TestCase
     public function testRawPdoRevealingTheEndDoesNotLiftTheBlock(): void
     {
         [$e, , $measured] = $this->runSwallowedDeadlock(
-            afterwards: function (MySqlDriver $db): void {
+            afterwards: function (MariaDbDriver $db): void {
                 $db->getPdo()->exec('DO 1');
                 $this->assertFalse($db->inTransaction());
                 try {
@@ -487,7 +487,7 @@ class DriverIntegrationTest extends TestCase
     public function testRollbackEndsADeadTransactionThatPdoNoLongerReports(): void
     {
         [$e, $listenerRuns, $measured] = $this->runSwallowedDeadlock(
-            afterwards: static function (MySqlDriver $db): void {
+            afterwards: static function (MariaDbDriver $db): void {
                 $db->getPdo()->exec('DO 1');
                 $db->rollback();
             },
@@ -508,7 +508,7 @@ class DriverIntegrationTest extends TestCase
     public function testAfterADeadlockOnlyRollbackLiftsTheBlock(): void
     {
         [$e, $listenerRuns, $measured] = $this->runSwallowedDeadlock(
-            afterwards: function (MySqlDriver $db): void {
+            afterwards: function (MariaDbDriver $db): void {
                 $db->getPdo()->rollBack();
                 $db->getPdo()->beginTransaction();
                 try {
@@ -535,7 +535,7 @@ class DriverIntegrationTest extends TestCase
     public function testATransactionAnEndListenerBeginsAfterARefusalIsLeftAlone(): void
     {
         [$e, $listenerRuns, $measured] = $this->runSwallowedDeadlock(
-            afterwards: static function (MySqlDriver $db): void {
+            afterwards: static function (MariaDbDriver $db): void {
                 $db->getPdo()->exec("UPDATE lock_users SET name = 'after the deadlock' WHERE id = 2");
                 $db->on('transaction.end', static function (array $data) use ($db): void {
                     if ($data['outcome'] === 'lost') {
@@ -557,7 +557,7 @@ class DriverIntegrationTest extends TestCase
     public function testAnEndListenerMayCommitATransactionOfItsOwnAfterARefusal(): void
     {
         [$e, $listenerRuns, $measured] = $this->runSwallowedDeadlock(
-            afterwards: static function (MySqlDriver $db): void {
+            afterwards: static function (MariaDbDriver $db): void {
                 $db->getPdo()->exec('DO 1');
                 $db->on('transaction.end', static function (array $data) use ($db): void {
                     if ($data['outcome'] === 'lost') {
@@ -580,7 +580,7 @@ class DriverIntegrationTest extends TestCase
      */
     public function testNothingReplacesARememberedDeadlock(): void
     {
-        $db = new class (self::getConfig()) extends MySqlDriver {
+        $db = new class (self::getConfig()) extends MariaDbDriver {
             public function note(int $driverCode, string $state): void
             {
                 $e = new \PDOException('synthetic failure', 0);
@@ -610,7 +610,7 @@ class DriverIntegrationTest extends TestCase
     public function testASwallowedDeadlockIsRefusedWithAutocommitOffToo(): void
     {
         [$e, $listenerRuns, $measured] = $this->runSwallowedDeadlock(
-            afterwards: function (MySqlDriver $db): void {
+            afterwards: function (MariaDbDriver $db): void {
                 $db->getPdo()->exec("UPDATE lock_users SET name = 'after the deadlock' WHERE id = 2");
                 $this->assertTrue($db->inTransaction(), 'the raw statement opened a new transaction');
                 try {
@@ -641,7 +641,7 @@ class DriverIntegrationTest extends TestCase
     public function testARefusedManualCommitOfATransactionThatIsGoneTellsItsEnd(): void
     {
         [$e, $listenerRuns, $measured] = $this->runSwallowedDeadlock(
-            afterwards: static fn (MySqlDriver $db): int|false => $db->getPdo()->exec("UPDATE lock_users SET name = 'after the deadlock' WHERE id = 2"),
+            afterwards: static fn (MariaDbDriver $db): int|false => $db->getPdo()->exec("UPDATE lock_users SET name = 'after the deadlock' WHERE id = 2"),
             manual: true
         );
 
@@ -662,8 +662,8 @@ class DriverIntegrationTest extends TestCase
     public function testCommitAfterAFailedStatementOnALostConnectionIsRefused(): void
     {
         foreach ([PDO::ERRMODE_EXCEPTION, PDO::ERRMODE_SILENT] as $mode) {
-            $db = new MySqlDriver(self::getConfig() + ['options' => [PDO::ATTR_ERRMODE => $mode]]);
-            $killer = new MySqlDriver(self::getConfig());
+            $db = new MariaDbDriver(self::getConfig() + ['options' => [PDO::ATTR_ERRMODE => $mode]]);
+            $killer = new MariaDbDriver(self::getConfig());
             $connectionId = (int) $db->query('SELECT CONNECTION_ID()')->fetchColumn();
             $ends = [];
             $db->on('transaction.end', static function (array $data) use (&$ends): void {
@@ -671,7 +671,7 @@ class DriverIntegrationTest extends TestCase
             });
 
             try {
-                $db->transaction(function (MySqlDriver $db) use ($killer, $connectionId): void {
+                $db->transaction(function (MariaDbDriver $db) use ($killer, $connectionId): void {
                     $killer->execute('KILL ' . $connectionId);
                     $gone = false;
                     for ($i = 0; $i < 100 && !$gone; $i++) {
@@ -700,7 +700,7 @@ class DriverIntegrationTest extends TestCase
     }
 
     /**
-     * @param (Closure(MySqlDriver): mixed)|null $afterwards What the callback does after it swallowed the deadlock
+     * @param (Closure(MariaDbDriver): mixed)|null $afterwards What the callback does after it swallowed the deadlock
      * @param bool $manual beginTransaction()/commit() instead of transaction(), followed by one more (empty) transaction
      *
      * @return array{DatabaseException, int, LockMeasurements}
@@ -716,7 +716,7 @@ class DriverIntegrationTest extends TestCase
                 $pdo->commit();
                 echo 'committed';
                 PHP,
-            function (MySqlDriver $db, Closure $startChild) use ($afterwards, $autocommitOff, $manual): array {
+            function (MariaDbDriver $db, Closure $startChild) use ($afterwards, $autocommitOff, $manual): array {
                 $measured = new LockMeasurements();
                 $db->on('transaction.end', static function (array $data) use ($measured): void {
                     $measured->ends[] = $data;
@@ -724,7 +724,7 @@ class DriverIntegrationTest extends TestCase
                 if ($autocommitOff) {
                     $db->execute('SET autocommit = 0');
                 }
-                $work = static function (MySqlDriver $db) use ($startChild, $measured, $afterwards): void {
+                $work = static function (MariaDbDriver $db) use ($startChild, $measured, $afterwards): void {
                     $db->execute('UPDATE lock_users SET name = ? WHERE id = 1', ['renamed']);
                     $startChild();
                     try {
@@ -779,13 +779,13 @@ class DriverIntegrationTest extends TestCase
                 $pdo->commit();
                 echo 'committed';
                 PHP,
-            function (MySqlDriver $db, Closure $startChild): array {
+            function (MariaDbDriver $db, Closure $startChild): array {
                 $measured = new LockMeasurements();
                 $db->on('transaction.end', static function (array $data) use ($measured): void {
                     $measured->ends[] = $data;
                 });
                 try {
-                    $db->transaction(static function (MySqlDriver $db) use ($startChild, $measured): void {
+                    $db->transaction(static function (MariaDbDriver $db) use ($startChild, $measured): void {
                         $db->query('SELECT id FROM lock_users WHERE id = 1 FOR UPDATE')->fetchAll();
                         $startChild(); // the child locks its rows only after this connection holds the users row
                         try {
@@ -827,14 +827,14 @@ class DriverIntegrationTest extends TestCase
                 $pdo->commit();
                 echo 'committed';
                 PHP,
-            function (MySqlDriver $db, Closure $startChild): array {
+            function (MariaDbDriver $db, Closure $startChild): array {
                 $db->execute('SET SESSION innodb_lock_wait_timeout = 1');
                 $measured = new LockMeasurements();
                 $db->on('transaction.end', static function (array $data) use ($measured): void {
                     $measured->ends[] = $data;
                 });
                 try {
-                    $db->transaction(static function (MySqlDriver $db) use ($startChild, $measured): void {
+                    $db->transaction(static function (MariaDbDriver $db) use ($startChild, $measured): void {
                         $db->execute('UPDATE lock_users SET name = ? WHERE id = 1', ['touched']);
                         $startChild();
                         try {
@@ -871,7 +871,7 @@ class DriverIntegrationTest extends TestCase
     {
         [$e, $listenerRuns, $measured] = $this->runLockScenario(
             null,
-            function (MySqlDriver $db): array {
+            function (MariaDbDriver $db): array {
                 $config = self::getConfig();
                 $killer = new PDO(
                     sprintf('mysql:host=%s;port=%d;dbname=%s', $config['host'], $config['port'], $config['database']),
@@ -885,7 +885,7 @@ class DriverIntegrationTest extends TestCase
                     $measured->ends[] = $data;
                 });
                 try {
-                    $db->transaction(static function (MySqlDriver $db) use ($killer, $connectionId, $measured): void {
+                    $db->transaction(static function (MariaDbDriver $db) use ($killer, $connectionId, $measured): void {
                         $db->execute('UPDATE lock_users SET name = ? WHERE id = 1', ['touched']);
                         $killer->exec('KILL ' . $connectionId);
                         // wait until the server has dropped the connection (not just scheduled the kill)
@@ -931,7 +931,7 @@ class DriverIntegrationTest extends TestCase
      * $pdo, $marker and $awaitRelease() are available there - and returns once the child touched
      * $marker ("I hold my locks"); the child is released after the scenario and ended with a deadline.
      *
-     * @param Closure(MySqlDriver, Closure(): void): array{DatabaseException, LockMeasurements} $scenario
+     * @param Closure(MariaDbDriver, Closure(): void): array{DatabaseException, LockMeasurements} $scenario
      *
      * @return array{DatabaseException, int, LockMeasurements, string} exception, rollback listener runs, measurements, child output
      */
@@ -952,7 +952,7 @@ class DriverIntegrationTest extends TestCase
             unlink($marker);
             unlink($release);
 
-            $db = new MySqlDriver($config);
+            $db = new MariaDbDriver($config);
             $db->execute('DROP TABLE IF EXISTS lock_attempts');
             $db->execute('DROP TABLE IF EXISTS lock_users');
             $db->execute('CREATE TABLE lock_users (id INT PRIMARY KEY, name VARCHAR(20) NOT NULL) ENGINE=InnoDB');

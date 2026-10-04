@@ -64,7 +64,7 @@ class FailureCodesTest extends ContractTestCase
             $previous = $e->getPrevious();
             $this->assertInstanceOf(PDOException::class, $previous);
             $this->assertSame(
-                sprintf("PDO::prepare() returned false: Table '%s.missing_table' doesn't exist (SQLSTATE 42S02)", TestEnvironment::mysql()['database']),
+                sprintf("PDO::prepare() returned false: Table '%s.missing_table' doesn't exist (SQLSTATE 42S02)", TestEnvironment::mariadb()['database']),
                 $previous->getMessage()
             );
             $this->assertSame('42S02', $previous->errorInfo[0] ?? null);

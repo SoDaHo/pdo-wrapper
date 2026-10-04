@@ -26,7 +26,7 @@ class PdoClassTest extends ContractTestCase
     public function testAnotherDriversClassFailsAsAFailedConnection(): void
     {
         try {
-            Database::mysql(TestEnvironment::mysql() + ['pdoClass' => Sqlite::class]);
+            Database::mariadb(TestEnvironment::mariadb() + ['pdoClass' => Sqlite::class]);
             $this->fail('Expected ConnectionException');
         } catch (ConnectionException $e) {
             $this->assertSame('Database connection failed', $e->getMessage());

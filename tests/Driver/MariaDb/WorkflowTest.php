@@ -7,7 +7,7 @@ namespace Sodaho\PdoWrapper\Tests\Driver\MariaDb;
 use PDO;
 use PDOException;
 use Sodaho\PdoWrapper\Database;
-use Sodaho\PdoWrapper\Driver\MySqlDriver;
+use Sodaho\PdoWrapper\Driver\MariaDbDriver;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Exception\TransactionException;
 use Sodaho\PdoWrapper\Exception\UniqueViolationException;
@@ -39,10 +39,10 @@ class WorkflowTest extends ContractTestCase
     public function testInsertIgnoreRefusesAConnectionThatCountsFoundRows(): void
     {
         $option = \Pdo\Mysql::ATTR_FOUND_ROWS;
-        $config = TestEnvironment::mysql();
+        $config = TestEnvironment::mariadb();
         $this->db->insert('users', ['email' => 'a@test.com', 'name' => 'A']);
 
-        $counting = Database::mysql($config + ['options' => [$option => true]]);
+        $counting = Database::mariadb($config + ['options' => [$option => true]]);
         $this->assertSame(0, $this->db->update('users', ['name' => 'A'], ['email' => 'a@test.com']), 'the default: changed rows');
         $this->assertSame(1, $counting->update('users', ['name' => 'A'], ['email' => 'a@test.com']), 'with the option: matched rows');
 
@@ -64,7 +64,7 @@ class WorkflowTest extends ContractTestCase
         }
         $this->assertSame(0, $sent, 'nothing is sent');
 
-        $explicitlyOff = Database::mysql($config + ['options' => [$option => false]]);
+        $explicitlyOff = Database::mariadb($config + ['options' => [$option => false]]);
         $this->assertSame(0, $explicitlyOff->insertIgnore('users', ['email' => 'a@test.com', 'name' => 'B']));
         $this->assertSame(1, $this->db->table('users')->count());
     }
@@ -131,7 +131,7 @@ class WorkflowTest extends ContractTestCase
      */
     public function testFailedCommitWrapperBranchWithPdoSubclass(): void
     {
-        $c = TestEnvironment::mysql();
+        $c = TestEnvironment::mariadb();
         $pdo = new class (
             sprintf('mysql:host=%s;port=%d;dbname=%s;charset=utf8mb4', $c['host'], $c['port'], $c['database']),
             $c['username'],
@@ -143,7 +143,7 @@ class WorkflowTest extends ContractTestCase
                 throw new PDOException('Simulated commit failure');
             }
         };
-        $db = new class ($pdo) extends MySqlDriver {
+        $db = new class ($pdo) extends MariaDbDriver {
             public function __construct(PDO $pdo)
             {
                 $this->pdo = $pdo;

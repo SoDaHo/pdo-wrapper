@@ -7,7 +7,7 @@ namespace Sodaho\PdoWrapper\Tests\Driver\MariaDb;
 use PDO;
 use PHPUnit\Framework\TestCase;
 use Sodaho\PdoWrapper\Database;
-use Sodaho\PdoWrapper\Driver\MySqlDriver;
+use Sodaho\PdoWrapper\Driver\MariaDbDriver;
 use Sodaho\PdoWrapper\Exception\ConnectionException;
 use Sodaho\PdoWrapper\Tests\Support\ScenarioPdo;
 use Sodaho\PdoWrapper\Tests\Support\TestEnvironment;
@@ -43,10 +43,10 @@ class FactoryTest extends TestCase
 
     public function testConnectAndMysqlReturnTheDriver(): void
     {
-        $this->assertInstanceOf(MySqlDriver::class, Database::mysql(TestEnvironment::mysql()));
-        foreach (['mysql', 'mariadb'] as $driver) {
-            $db = Database::connect(['driver' => $driver, ...TestEnvironment::mysql()]);
-            $this->assertInstanceOf(MySqlDriver::class, $db);
+        $this->assertInstanceOf(MariaDbDriver::class, Database::mariadb(TestEnvironment::mariadb()));
+        foreach (['mariadb', ' MariaDB '] as $driver) {
+            $db = Database::connect(['driver' => $driver, ...TestEnvironment::mariadb()]);
+            $this->assertInstanceOf(MariaDbDriver::class, $db);
             $this->assertSame(1, (int) $db->query('SELECT 1')->fetchColumn(), $driver);
         }
     }
@@ -60,7 +60,7 @@ class FactoryTest extends TestCase
         $this->fromTheEnvironment();
 
         $db = Database::fromEnv();
-        $this->assertInstanceOf(MySqlDriver::class, $db);
+        $this->assertInstanceOf(MariaDbDriver::class, $db);
         $this->assertSame(1, (int) $db->query('SELECT 1')->fetchColumn());
 
         $this->expectException(ConnectionException::class);
@@ -93,8 +93,8 @@ class FactoryTest extends TestCase
 
     private function fromTheEnvironment(): void
     {
-        $test = TestEnvironment::mysql();
-        $_ENV['DB_DRIVER'] = 'mysql';
+        $test = TestEnvironment::mariadb();
+        $_ENV['DB_DRIVER'] = 'mariadb';
         $_ENV['DB_HOST'] = $test['host'];
         $_ENV['DB_PORT'] = (string) $test['port'];
         $_ENV['DB_DATABASE'] = $test['database'];

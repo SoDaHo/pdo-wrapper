@@ -42,11 +42,11 @@
 
     <php>
         <!-- The MariaDB test database (Unit needs none; Contract and Driver do) -->
-        <env name="MYSQL_HOST" value="127.0.0.1"/>
-        <env name="MYSQL_PORT" value="3306"/>
-        <env name="MYSQL_DATABASE" value="pdo_wrapper_test"/>
-        <env name="MYSQL_USERNAME" value="root"/>
-        <env name="MYSQL_PASSWORD" value="root"/>
+        <env name="MARIADB_HOST" value="127.0.0.1"/>
+        <env name="MARIADB_PORT" value="3306"/>
+        <env name="MARIADB_DATABASE" value="pdo_wrapper_test"/>
+        <env name="MARIADB_USERNAME" value="root"/>
+        <env name="MARIADB_PASSWORD" value="root"/>
 
     </php>
 </phpunit>

@@ -7,7 +7,7 @@ namespace Sodaho\PdoWrapper\Tests\Support;
 use UnexpectedValueException;
 
 /**
- * Connection settings of the test database, read from the MYSQL_* variables
+ * Connection settings of the test database, read from the MARIADB_* variables
  * (phpunit.xml.dist holds the defaults). A variable that is set to something unusable fails the
  * test instead of being cast into a value nobody asked for.
  */
@@ -16,14 +16,14 @@ final class TestEnvironment
     /**
      * @return array{host: string, port: int, database: string, username: string, password: string}
      */
-    public static function mysql(): array
+    public static function mariadb(): array
     {
         return [
-            'host' => self::text('MYSQL_HOST', '127.0.0.1'),
-            'port' => self::port('MYSQL_PORT', 3306),
-            'database' => self::text('MYSQL_DATABASE', 'pdo_wrapper_test'),
-            'username' => self::text('MYSQL_USERNAME', 'root'),
-            'password' => self::text('MYSQL_PASSWORD', 'root'),
+            'host' => self::text('MARIADB_HOST', '127.0.0.1'),
+            'port' => self::port('MARIADB_PORT', 3306),
+            'database' => self::text('MARIADB_DATABASE', 'pdo_wrapper_test'),
+            'username' => self::text('MARIADB_USERNAME', 'root'),
+            'password' => self::text('MARIADB_PASSWORD', 'root'),
         ];
     }
 

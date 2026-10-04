@@ -11,21 +11,30 @@ use Sodaho\PdoWrapper\Exception\QueryException;
 use Throwable;
 
 /**
- * MySQL database driver.
+ * MariaDB database driver: MariaDB 10.11 or later, through pdo_mysql built on mysqlnd.
  *
- * Connects to MySQL databases using PDO with utf8mb4 charset by default.
- * Database::mysql() does the same; Database::fromEnv() reads the config from the environment.
+ * Connects with the utf8mb4 charset by default. Database::mariadb() does the same;
+ * Database::fromEnv() reads the config from the environment.
+ *
+ * What comes back from a query is pinned when the connection opens: the server must be MariaDB
+ * 10.11 or later and the client mysqlnd, and fetched values are not turned into strings
+ * (ATTR_STRINGIFY_FETCHES off). Then INT and BIGINT arrive as int (a BIGINT UNSIGNED above
+ * PHP_INT_MAX as string), FLOAT and DOUBLE as float, DECIMAL - and SUM()/AVG() of integers, which
+ * are DECIMAL - as string, TINYINT(1)/BOOLEAN as int, DATETIME, VARCHAR, TEXT and JSON as string,
+ * NULL as null - in native and in emulated prepares alike (measured on MariaDB 10.11, 11.4 and
+ * 12.3 with PHP 8.5 and mysqlnd). These are mysqlnd's types; pdo_mysql built on another client
+ * library is not held to them, and is refused.
  */
-class MySqlDriver extends AbstractDriver
+class MariaDbDriver extends AbstractDriver
 {
     /** True when the connection was opened with the driver's ATTR_FOUND_ROWS option: the server then counts matched rows, not changed ones */
     private bool $countsFoundRows = false;
 
     /**
-     * Create a MySQL database connection.
+     * Create a MariaDB database connection.
      *
      * Config keys:
-     * - host: MySQL server hostname (required)
+     * - host: MariaDB server hostname (required)
      * - database: Database name (required)
      * - username: Database username (required)
      * - password: Database password (optional)
@@ -43,7 +52,7 @@ class MySqlDriver extends AbstractDriver
      *
      * @param array{host?: string|null, database?: string|null, username?: string|null, password?: string|null, port?: int|string, charset?: string, options?: array<int, mixed>, pdoClass?: class-string<PDO>|null} $config
      *
-     * @throws ConnectionException When required config is missing, 'pdoClass' names no class that extends PDO, or connection fails
+     * @throws ConnectionException When required config is missing, 'pdoClass' names no class that extends PDO, 'options' turn ATTR_STRINGIFY_FETCHES on, the connection fails, or the server is no MariaDB 10.11 or later or the client no mysqlnd
      */
     public function __construct(#[\SensitiveParameter] array $config)
     {
@@ -85,63 +94,68 @@ class MySqlDriver extends AbstractDriver
             PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
             PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
             PDO::ATTR_EMULATE_PREPARES => false,
+            PDO::ATTR_STRINGIFY_FETCHES => false, // the PHP types of the results are the library's promise (see the class)
+            \Pdo\Mysql::ATTR_MULTI_STATEMENTS => false,
         ];
 
-        // Without pdo_mysql the class Pdo\Mysql does not exist; the connection then fails below
-        // with PDO's own "could not find driver".
-        if (extension_loaded('pdo_mysql')) {
-            $defaultOptions[\Pdo\Mysql::ATTR_MULTI_STATEMENTS] = false;
-        }
-
         $options = array_replace($defaultOptions, $config['options'] ?? []);
+        if (!in_array($options[PDO::ATTR_STRINGIFY_FETCHES], [false, 0], true)) {
+            throw new ConnectionException(
+                message: 'Database connection failed',
+                debugMessage: 'The option ATTR_STRINGIFY_FETCHES would turn every fetched value into a string: the library promises the PHP types of the results (see MariaDbDriver). Cast in the application instead.'
+            );
+        }
 
         // Remembered here: PDO does not let the option be read back from the connection
-        if (extension_loaded('pdo_mysql')) {
-            $this->countsFoundRows = (bool) ($options[\Pdo\Mysql::ATTR_FOUND_ROWS] ?? false);
-        }
+        $this->countsFoundRows = (bool) ($options[\Pdo\Mysql::ATTR_FOUND_ROWS] ?? false);
 
         // Kept for reconnect(); credentials and options in an object that no dump of the driver shows
         $settings = new ConnectionSettings($username, $password, $options);
         parent::__construct(static function () use ($pdoClass, $dsn, $settings, $host, $port): PDO {
             try {
-                return new $pdoClass($dsn, $settings->username(), $settings->password(), $settings->options());
+                $pdo = new $pdoClass($dsn, $settings->username(), $settings->password(), $settings->options());
             } catch (PDOException $e) {
                 throw new ConnectionException(
                     message: 'Database connection failed',
                     previous: $e,
-                    debugMessage: sprintf('MySQL connection to %s:%d failed: %s', $host, $port, $e->getMessage())
+                    debugMessage: sprintf('MariaDB connection to %s:%d failed: %s', $host, $port, $e->getMessage())
                 );
             }
+            self::refuseAnUnsupportedConnection($pdo, $host, $port);
+
+            return $pdo;
         });
     }
 
     /**
      * Most statement errors undo only the statement. Some end the whole transaction on the server:
-     * a deadlock (error 1213), a lock wait timeout under innodb_rollback_on_timeout. PDO keeps
-     * reporting the transaction until the next successful statement; a COMMIT right after a
-     * deadlock succeeds and commits nothing, and statements sent after it would be committed one
-     * by one (measured on MySQL 8.0, MariaDB 10.11 and 11.4). Every failure is remembered, the
-     * latest one - except that nothing replaces a deadlock: it settles the matter
-     * (transactionIsOver()), for the others transactionEndedBy() asks the server. After a lock
-     * wait timeout that ended the transaction, the refusal names the latest failure, which need
-     * not be that timeout.
+     * a deadlock (error 1213), a row another transaction changed since this one's snapshot under
+     * innodb_snapshot_isolation (error 1020, on by default since MariaDB 11.6.2), a lock wait
+     * timeout under innodb_rollback_on_timeout. PDO keeps reporting the transaction until the next
+     * successful statement; a COMMIT right after such a failure commits nothing, and statements
+     * sent after it would be committed one by one (measured on MariaDB 10.11, 11.4 and 12.3).
+     * Every failure is remembered, the latest one - except that nothing replaces a deadlock or a
+     * 1020: they settle the matter (transactionIsOver()), for the others transactionEndedBy() asks
+     * the server. After a lock wait timeout that ended the transaction, the refusal names the
+     * latest failure, which need not be that timeout.
      */
     protected function failureToRemember(?PDOException $remembered, PDOException $failure): PDOException
     {
-        return $remembered !== null && self::isDeadlock($remembered) ? $remembered : $failure;
+        return $remembered !== null && self::endsTheTransaction($remembered) !== null ? $remembered : $failure;
     }
 
     /**
-     * A deadlock is the one failure after which the transaction is gone for certain. A lock wait
-     * timeout is not: by default the server undoes only that statement and the transaction lives on.
+     * A deadlock and a 1020 are the failures after which the transaction is gone for certain. A
+     * lock wait timeout is not: by default the server undoes only that statement and the
+     * transaction lives on.
      */
     protected function transactionIsOver(PDOException $failure): bool
     {
-        return self::isDeadlock($failure);
+        return self::endsTheTransaction($failure) !== null;
     }
 
     /**
-     * After a deadlock the transaction is gone, whatever PDO or the server report now: with
+     * After a deadlock or a 1020 the transaction is gone, whatever PDO or the server report now: with
      * autocommit switched off a later statement on raw PDO has silently opened a new one, which
      * holds only what came after the deadlock. For every other failure the server is asked: one no-op
      * statement on raw PDO (no hook sees it) makes mysqlnd read the current transaction status.
@@ -150,8 +164,9 @@ class MySqlDriver extends AbstractDriver
      */
     protected function transactionEndedBy(PDOException $failure): ?string
     {
-        if (self::isDeadlock($failure)) {
-            return 'The server rolled the transaction back when a statement failed with a deadlock (error 1213, the previous exception). '
+        $why = self::endsTheTransaction($failure);
+        if ($why !== null) {
+            return sprintf('The server rolled the transaction back when a statement failed with %s (the previous exception). ', $why)
                 . 'Nothing done before it can be committed. Roll back if PDO still reports a transaction, then run the whole transaction again.';
         }
 
@@ -175,7 +190,7 @@ class MySqlDriver extends AbstractDriver
      * reporting a transaction the server has ended: rolled back (a lock wait timeout under
      * innodb_rollback_on_timeout), or committed - a statement with an implicit commit commits the
      * open transaction even when it fails itself, `CREATE TABLE` for a table that exists
-     * (measured on MySQL 8.0, MariaDB 10.11 and 11.4). The question makes PDO know. When it
+     * (measured on MariaDB 10.11, 11.4 and 12.3). The question makes PDO know. When it
      * fails while the connection goes on working (a proxy that rejects the statement), PDO
      * reports what it reported before, and that is not to be relied on: false.
      */
@@ -202,7 +217,7 @@ class MySqlDriver extends AbstractDriver
      *
      * `ON DUPLICATE KEY UPDATE col = col` reports 1 affected row for an inserted row and 0 for an
      * existing one - unless the connection counts matched rows (the driver's ATTR_FOUND_ROWS
-     * option): then both report 1 (measured on MySQL 8.0, MariaDB 10.11 and 11.4), and the answer
+     * option): then both report 1 (measured on MariaDB 10.11, 11.4 and 12.3), and the answer
      * could not be told. The statement is not sent there.
      *
      * For an existing row the server runs the table's BEFORE INSERT, BEFORE UPDATE and AFTER
@@ -236,62 +251,59 @@ class MySqlDriver extends AbstractDriver
 
     /**
      * "Duplicate entry '...' for key 'name'": only the name at the very end counts - the duplicate
-     * value before it comes from outside and may itself contain "for key". What stands there
-     * depends on the server (measured): MariaDB and MySQL up to 8.0.18 print the key alone
-     * (`email`), MySQL since 8.0.19 puts the table in front (`users.email`). A name without a dot
-     * is the key on every server. With a dot the server's version decides: where the key stands
-     * alone, the name is returned as printed; where the table is in front, exactly one dot
-     * separates the two and the part behind it is the key - more than one means the table or the
-     * key contains a dot itself, and the name cannot be told. Where the version cannot be read,
-     * a name with a dot cannot be told either. Null rather than a wrong name.
+     * value before it comes from outside and may itself contain "for key". MariaDB prints the key
+     * alone, without its table (measured on 10.11, 11.4 and 12.3), a name with a dot included.
      */
     protected function violatedConstraint(PDOException $failure): ?string
     {
-        if (preg_match("/ for key '([^']+)'$/", self::driverMessage($failure), $match) !== 1) {
-            return null;
-        }
-        $name = $match[1];
-        if (!str_contains($name, '.')) {
-            return $name;
-        }
+        return preg_match("/ for key '([^']+)'$/", self::driverMessage($failure), $match) === 1 ? $match[1] : null;
+    }
 
-        return match ($this->printsTheTableBeforeTheKey()) {
-            false => $name,
-            true => substr_count($name, '.') === 1 ? substr($name, (int) strpos($name, '.') + 1) : null,
-            null => null,
+    /**
+     * What a failure that has ended the whole transaction on the server was, or null for every
+     * other failure: a deadlock (1213), or a row changed since the snapshot (1020).
+     */
+    private static function endsTheTransaction(PDOException $failure): ?string
+    {
+        return match ($failure->errorInfo[1] ?? null) {
+            1213 => 'a deadlock (error 1213)',
+            1020 => 'a row another transaction changed since this one read it (error 1020, innodb_snapshot_isolation)',
+            default => null,
         };
     }
 
     /**
-     * Whether this server prints `table.key` in its duplicate entry message: MySQL since 8.0.19
-     * does, MariaDB and older MySQL versions do not. Read from the version string the client got
-     * in the handshake (nothing is sent); null when it cannot be read or is no version number.
-     * A proxy that reports another server's version, or a MySQL-compatible server whose version
-     * does not tell its message format, makes this answer wrong: every key then comes out as
-     * `table.key`, or a key name with a dot is cut.
+     * The library promises MariaDB 10.11 or later and the PHP types mysqlnd delivers: a server or
+     * a client that cannot keep that promise is refused at once, before any statement - the same
+     * at reconnect(). The version is the one the client got in the handshake (nothing is sent);
+     * MariaDB before 11 prefixes it with "5.5.5-" for old MySQL clients.
+     *
+     * @throws ConnectionException
      */
-    private function printsTheTableBeforeTheKey(): ?bool
+    private static function refuseAnUnsupportedConnection(PDO $pdo, string $host, int $port): void
     {
-        try {
-            $version = $this->pdo->getAttribute(PDO::ATTR_SERVER_VERSION);
-        } catch (Throwable) {
-            return null;
+        $client = $pdo->getAttribute(PDO::ATTR_CLIENT_VERSION);
+        $server = $pdo->getAttribute(PDO::ATTR_SERVER_VERSION);
+        $problem = match (true) {
+            !is_string($client) || !str_starts_with($client, 'mysqlnd ') => sprintf(
+                'pdo_mysql is not built on mysqlnd (client "%s"): the PHP types of the fetched values would not be the ones this library promises. Use a PHP build whose pdo_mysql uses mysqlnd.',
+                is_string($client) ? $client : get_debug_type($client)
+            ),
+            !is_string($server) || preg_match('/^(?:5\.5\.5-)?(\d+\.\d+\.\d+)-MariaDB/i', $server, $version) !== 1 => sprintf(
+                'The server is no MariaDB (it reports "%s"): this library supports MariaDB 10.11 and later only.',
+                is_string($server) ? $server : get_debug_type($server)
+            ),
+            version_compare($version[1], '10.11.0', '<') => sprintf(
+                'MariaDB %s is older than 10.11, the oldest version this library supports.',
+                $version[1]
+            ),
+            default => null,
+        };
+        if ($problem !== null) {
+            throw new ConnectionException(
+                message: 'Database connection failed',
+                debugMessage: sprintf('MariaDB connection to %s:%d refused: %s', $host, $port, $problem)
+            );
         }
-        if (!is_string($version)) {
-            return null;
-        }
-        if (stripos($version, 'MariaDB') !== false) {
-            return false;
-        }
-        if (preg_match('/^\d+\.\d+\.\d+/', $version, $number) !== 1) {
-            return null;
-        }
-
-        return version_compare($number[0], '8.0.19', '>=');
-    }
-
-    private static function isDeadlock(PDOException $failure): bool
-    {
-        return ($failure->errorInfo[1] ?? null) === 1213;
     }
 }
