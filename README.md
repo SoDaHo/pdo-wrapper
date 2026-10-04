@@ -724,6 +724,21 @@ With a manual `commit()`, a failing commit hook likewise throws `CommitHookExcep
 
 A session that chains transactions (`completion_type=CHAIN`) is not supported: every `COMMIT` and `ROLLBACK` opens the next transaction, which nobody would commit. The library reports it instead of continuing silently: after a commit as `CommitHookException` (first failure `Connection is in a new transaction`, commit hooks skipped, `connectionInTransaction` true), after a rollback as `TransactionException` once the rollback and end hooks ran (through the `error` hook instead where another exception reaches you: the callback's on the automatic rollback in `transaction()`, or a rollback hook's; after a `ROLLBACK` that confirmed nothing only the end hooks run, with `lost`). The hooks of such a commit or rollback already run inside the chained transaction.
 
+## Schema
+
+`$db->schema()` (on `MariaDbDriver`) reads what the current database holds from `information_schema` - for a check that a deployment has the tables, columns and indexes it expects. Read only: no DDL.
+
+```php
+$schema = $db->schema();
+$schema->tables();                 // ['sessions', 'users'] - base tables, no views
+$schema->hasTable('users');        // true
+$schema->columns('users');         // [['name' => 'id', 'type' => 'bigint(20)', 'nullable' => false, 'default' => null, 'extra' => 'auto_increment'], ...]
+$schema->indexes('users');         // [['name' => 'PRIMARY', 'columns' => ['id'], 'unique' => true, 'primary' => true], ...]
+$schema->constraints('users');     // [['name' => 'PRIMARY', 'type' => 'PRIMARY KEY'], ['name' => 'email', 'type' => 'UNIQUE'], ...]
+```
+
+Columns come in their order; `type` and `default` are as MariaDB writes them: the default as SQL - `NULL`, a quoted string (`'it''s'`), a number, an expression (`current_timestamp()`) - and `null` when the column has none. A `JSON` column is `longtext` with a `CHECK` constraint of its name. Indexes and constraints list the primary key first, then by name. `columns()`, `indexes()` and `constraints()` throw a `QueryException` for a table the current database does not have (a view included).
+
 ## Named Locks
 
 A named lock (`GET_LOCK()`) is a lock on a name, not on rows: "at most one of these at a time", across requests and processes.
