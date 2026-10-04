@@ -123,6 +123,28 @@ class NamedLockTest extends ContractTestCase
         $this->assertTrue($this->second->namedLock('job', 2));
     }
 
+    /**
+     * A listener that calls reconnect() while a named-lock statement runs: the statement ran on
+     * the old session, which went with its locks - the method throws instead of answering for it.
+     */
+    public function testAReconnectWhileTheStatementRunsThrows(): void
+    {
+        foreach (['namedLock' => fn (): bool => $this->first->namedLock('job'), 'isNamedLockHeld' => fn (): bool => $this->first->isNamedLockHeld('job'), 'releaseNamedLock' => fn (): bool => $this->first->releaseNamedLock('job')] as $method => $call) {
+            $listener = function () use (&$listener): void {
+                $this->first->off('query', $listener);
+                $this->first->reconnect();
+            };
+            $this->first->on('query', $listener);
+            try {
+                $call();
+                $this->fail('Expected QueryException: ' . $method);
+            } catch (QueryException $e) {
+                $this->assertSame(sprintf('%s(): the connection was replaced while the statement ran (reconnect() in a listener); a named lock belongs to its session, and that session is gone', $method), $e->getDebugMessage());
+            }
+        }
+        $this->assertTrue($this->second->namedLock('job', 2), 'the lock went with the old session');
+    }
+
     public function testWhatIsRefused(): void
     {
         foreach ([
@@ -130,6 +152,9 @@ class NamedLockTest extends ContractTestCase
             'releaseNamedLock() needs a name' => fn (): bool => $this->first->releaseNamedLock(''),
             'isNamedLockHeld() needs a name' => fn (): bool => $this->first->isNamedLockHeld(''),
             'namedLock() takes a timeout of 0 or more seconds, not -1 (MariaDB answers a negative one with NULL)' => fn (): bool => $this->first->namedLock('job', -1),
+            'namedLock(): a name with a NUL byte - MariaDB cuts the name there, and different names would be one lock. Encode a binary name (bin2hex()).' => fn (): bool => $this->first->namedLock("k\0a"),
+            'releaseNamedLock(): a name with a NUL byte - MariaDB cuts the name there, and different names would be one lock. Encode a binary name (bin2hex()).' => fn (): bool => $this->first->releaseNamedLock("k\0b"),
+            'isNamedLockHeld(): a name with a NUL byte - MariaDB cuts the name there, and different names would be one lock. Encode a binary name (bin2hex()).' => fn (): bool => $this->first->isNamedLockHeld("\0"),
         ] as $message => $call) {
             try {
                 $call();

@@ -17,12 +17,15 @@ use Sodaho\PdoWrapper\Exception\QueryException;
  * expression under ONLY_FULL_GROUP_BY (error 1055, measured on 10.11, 11.4 and 12.3), and the
  * text of the statement would not show which field it reads. It is therefore checked: `$`
  * followed by `.name` steps (a letter or underscore, then letters, digits, underscores) and
- * `[n]` steps (an array index) - nothing else, no quotes, no wildcards.
+ * `[n]` steps (an array index of up to 9 digits: MariaDB reads a larger one modulo 2^32, so that
+ * `$[4294967296]` would be element 0 - measured) - nothing else, no quotes, no wildcards.
  *
  * What MariaDB returns (measured on 10.11, 11.4 and 12.3): a string, a number or a boolean of
  * the document as text ('net-a', '5', '1.50', 'true'); SQL NULL for a missing field, a document
- * that is no valid JSON and a NULL column - so a row without the field never matches a
- * comparison -; and the text 'null' for a JSON null.
+ * that is no valid JSON and a NULL column - so a row without the field matches no comparison
+ * but IS / IS NOT -; and the text 'null' for a JSON null. It is compared and ordered as text
+ * under utf8mb4_bin: '12' < '5', '1.5' <> '1.50', case and accents count. Cast for a number
+ * (Database::raw('CAST(' . $json . ' AS DECIMAL(20,6))')).
  *
  * (string) is the expression itself, the same a virtual column can be declared with; see the
  * README on using its index.
@@ -30,7 +33,7 @@ use Sodaho\PdoWrapper\Exception\QueryException;
 final class JsonExpression extends RawExpression
 {
     /** A JSON path of `.name` and `[n]` steps after `$` */
-    private const PATH = '/^\$(?:\.[A-Za-z_][A-Za-z0-9_]*|\[\d+\])*$/D';
+    private const PATH = '/^\$(?:\.[A-Za-z_][A-Za-z0-9_]*|\[\d{1,9}\])*$/D';
 
     /**
      * @param string $column The JSON column ("payload", "events.payload")
@@ -47,7 +50,7 @@ final class JsonExpression extends RawExpression
         if (preg_match(self::PATH, $path) !== 1) {
             throw new QueryException(
                 message: 'Query failed',
-                debugMessage: sprintf('Invalid JSON path "%s": write $ followed by .name and [n] steps (a name starts with a letter or an underscore and holds letters, digits and underscores)', $path)
+                debugMessage: sprintf('Invalid JSON path "%s": write $ followed by .name and [n] steps (a name starts with a letter or an underscore and holds letters, digits and underscores; an index has up to 9 digits)', $path)
             );
         }
 

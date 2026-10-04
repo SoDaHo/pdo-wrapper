@@ -241,8 +241,9 @@ class QueryBuilder
     /**
      * Add a raw WHERE condition with bound values.
      *
-     * For conditions the other where*() methods cannot express: an expression on the left
-     * (LOWER(email) = ?), an OR group, a database function. The SQL is used as given, in
+     * For conditions the other where*() methods cannot express: an OR group, a database function
+     * with values of its own (an expression without bindings on the left goes into where() itself:
+     * where(Database::raw('LOWER(email)'), $email)). The SQL is used as given, in
      * parentheses, joined to the other conditions with AND; the values are bound to its ?
      * placeholders in order (positional placeholders only, like the rest of the builder).
      *

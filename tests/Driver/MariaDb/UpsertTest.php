@@ -93,6 +93,32 @@ class UpsertTest extends ContractTestCase
     }
 
     /**
+     * On a persistent connection PDO may hand back a connection an earlier request opened with
+     * ATTR_FOUND_ROWS - its pool ignores the options (measured) -, so the counting methods are
+     * refused there as well; the RETURNING forms work.
+     */
+    public function testAPersistentConnectionIsRefusedForCounts(): void
+    {
+        $db = $this->connect(['options' => [PDO::ATTR_PERSISTENT => 'pdo-wrapper-upsert-test']]);
+        $why = 'on a persistent connection: PDO may hand back one an earlier request opened with ATTR_FOUND_ROWS, and the server then reports 1 affected row for both';
+
+        foreach ([
+            'upsert() cannot tell an inserted row from an unchanged existing one ' . $why . '. Use the RETURNING form instead.' => static fn (): int => $db->table('counters')->upsert(['name' => 'a', 'n' => 1], ['n' => 1]),
+            'insertWhen() with $update cannot tell an inserted row from an unchanged existing one ' . $why . '. Use the RETURNING form instead.' => static fn (): int => $db->table('counters')->insertWhen(['name' => 'a', 'n' => 1], '1 = 1', [], ['n' => 1]),
+            'insertIgnore() cannot tell an inserted row from an existing one ' . $why . '. Use insert() and catch UniqueViolationException instead.' => static fn (): int => $db->table('counters')->insertIgnore(['name' => 'a', 'n' => 1]),
+        ] as $message => $call) {
+            try {
+                $call();
+                $this->fail('Expected QueryException: ' . $message);
+            } catch (QueryException $e) {
+                $this->assertSame($message, $e->getDebugMessage());
+            }
+        }
+        $this->assertSame('a', $db->table('counters')->upsertReturning(['name' => 'a', 'n' => 1], ['n' => 1], ['name'])['name']);
+        $this->assertSame(1, $db->table('counters')->insertWhen(['name' => 'b', 'n' => 1], '1 = 1'));
+    }
+
+    /**
      * MariaDB returns the row after every upsert; a statement that returned none is reported, not
      * passed off as a row. Replayed with a statement class that finds no row.
      */

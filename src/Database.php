@@ -146,7 +146,8 @@ class Database
 
     /**
      * The value a row would have been inserted with, inside the update of upsert(),
-     * upsertReturning() and insertWhen() with $update: `VALUE(`col`)`.
+     * upsertReturning(), insertWhen() and insertWhenReturning() with $update: `VALUE(`col`)`.
+     * Only there: anywhere else (update(), insert(), the row itself) MariaDB reads it as NULL.
      *
      * @example
      * $db->table('counters')->upsert(['key' => 'a', 'n' => 5], ['n' => Database::raw('n + VALUE(n)')]);

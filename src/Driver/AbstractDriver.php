@@ -208,7 +208,8 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      * A parameter must be null, a scalar or a Stringable object. An array, a resource or any other
      * object is a failure before the statement is sent (PDO would bind an array as the text "Array"
      * and a resource as "Resource id #n"): pass an enum's value, a formatted date, an encoded array.
-     * So is a RawExpression: bound, it would arrive as its own text; write it into the SQL.
+     * So is a RawExpression: bound, it would arrive as its own text; write it into the SQL. And so
+     * is a float INF or NAN: MariaDB has no such number, and as text it would compare as 0.
      *
      * After a failure that ended the open transaction on the server for certain (a MariaDB
      * deadlock or a 1020, see transactionIsOver()) nothing is sent until that transaction is ended here -

@@ -16,8 +16,8 @@ use Sodaho\PdoWrapper\Exception\QueryException;
  *
  * An expression may carry values of its own: ? placeholders in the SQL and their values in
  * $bindings, in order. They are bound exactly where the expression stands among the statement's
- * other values. Only an expression used as a value may carry them; select(), groupBy() and the
- * column of having() refuse one that does.
+ * other values. Only an expression used as a value may carry them; select(), groupBy(),
+ * orderBy(), the column of having() and of the where*() methods and RETURNING refuse one that does.
  *
  * SECURITY WARNING: Never pass untrusted user input to RawExpression.
  * This bypasses identifier quoting and, as a value, parameter binding:

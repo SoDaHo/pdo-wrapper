@@ -53,7 +53,8 @@ interface InternalMethods
      * values are bound after the condition's. The return is then MariaDB's count: 1 inserted,
      * 2 updated, 0 neither - the condition was false, or the row already held those values
      * (insertWhenReturning() tells them apart). On a connection opened with ATTR_FOUND_ROWS an
-     * unchanged row counts 1 like an insert, and the method throws when $update is given.
+     * unchanged row counts 1 like an insert, and the method throws when $update is given; so it
+     * does on a persistent connection, which an earlier request may have opened with that option.
      *
      * @param string $table Table name
      * @param array<string, mixed> $data Column => value pairs of the row
@@ -61,7 +62,7 @@ interface InternalMethods
      * @param array<array-key, mixed> $bindings Values for the condition's placeholders, in order
      * @param array<string, mixed> $update Column => value pairs to set on a duplicate, in this order
      *
-     * @throws Exception\QueryException When $data or the condition is empty, a binding is a RawExpression, $update is given on a connection with ATTR_FOUND_ROWS, or the query fails
+     * @throws Exception\QueryException When $data or the condition is empty, a binding is a RawExpression, $update is given on a connection with ATTR_FOUND_ROWS or a persistent one, or the query fails
      *
      * @return int Inserted rows, 1 or 0; with $update MariaDB's count (1 inserted, 2 updated, 0 neither)
      */
@@ -95,17 +96,19 @@ interface InternalMethods
      * (`n = n + 1, m = n` gives m the new n). A value may be Database::raw() with bindings, and
      * Database::value('col') is the value the row would have been inserted with. Binding order:
      * the row's values, then the update's. The update runs the table's update triggers and locks
-     * the existing row until the transaction ends.
+     * the existing row until the transaction ends; a BEFORE UPDATE trigger that changes the row
+     * makes an unchanged upsert count 2.
      *
      * Returns MariaDB's count: 1 inserted, 2 updated, 0 the existing row already held those
      * values. On a connection opened with ATTR_FOUND_ROWS the server reports 1 for an unchanged
-     * row as well, and the method throws.
+     * row as well, and the method throws - also on a persistent connection, which PDO may hand
+     * back opened with that option by an earlier request.
      *
      * @param string $table Table name
      * @param array<string, mixed> $row Column => value pairs of the row
      * @param array<string, mixed> $update Column => value pairs to set on a duplicate, in this order
      *
-     * @throws Exception\QueryException When $row or $update is empty, the connection counts matched rows (ATTR_FOUND_ROWS), or the query fails
+     * @throws Exception\QueryException When $row or $update is empty, the connection counts matched rows (ATTR_FOUND_ROWS) or may (a persistent one), or the query fails
      *
      * @return int 1 inserted, 2 updated, 0 unchanged
      */
@@ -134,7 +137,8 @@ interface InternalMethods
      * which would also swallow other errors); that form locks the existing row until the
      * transaction ends and runs the table's update triggers for it. On a connection opened with
      * the driver's ATTR_FOUND_ROWS option the method throws: the server reports 1 affected row for
-     * an existing row as well. Every other failure (NOT NULL, foreign key, unknown column) throws
+     * an existing row as well; so it does on a persistent connection, which an earlier request
+     * may have opened with that option. Every other failure (NOT NULL, foreign key, unknown column) throws
      * as in insert().
      *
      * Returns the inserted rows, 1 or 0, not an id: after a return of 0, lastInsertId() is
@@ -144,7 +148,7 @@ interface InternalMethods
      * @param string $table Table name
      * @param array<string, mixed> $data Column => value pairs of the row
      *
-     * @throws Exception\QueryException When $data is empty, the query fails for another reason than a duplicate, or the connection counts matched rows (ATTR_FOUND_ROWS)
+     * @throws Exception\QueryException When $data is empty, the query fails for another reason than a duplicate, or the connection counts matched rows (ATTR_FOUND_ROWS) or may (a persistent one)
      *
      * @return int Inserted rows: 1 or 0
      */

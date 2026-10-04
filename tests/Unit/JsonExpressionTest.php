@@ -33,6 +33,7 @@ class JsonExpressionTest extends TestCase
         $this->assertSame("JSON_UNQUOTE(JSON_EXTRACT(`events`.`payload`, '$.items[0].id'))", (string) Database::json('events.payload', '$.items[0].id'));
         $this->assertSame("JSON_UNQUOTE(JSON_EXTRACT(`pay``load`, '$'))", (string) Database::json('pay`load', '$'), 'a backtick in the name is doubled');
         $this->assertSame("JSON_UNQUOTE(JSON_EXTRACT(`p`, '$[12][0]._x.A9'))", (string) Database::json('p', '$[12][0]._x.A9'));
+        $this->assertSame("JSON_UNQUOTE(JSON_EXTRACT(`p`, '$[999999999]'))", (string) Database::json('p', '$[999999999]'), 'nine digits');
         $this->assertInstanceOf(RawExpression::class, Database::json('p', '$'));
         $this->assertSame([], Database::json('p', '$.a')->bindings, 'the path is written into the SQL, nothing is bound');
     }
@@ -74,6 +75,8 @@ class JsonExpressionTest extends TestCase
             'a last index' => ['$[last]'],
             'text before the $' => ["x') OR 1 = 1 -- $"],
             'a $ inside' => ['a$.b'],
+            'an index MariaDB would wrap' => ['$[4294967296]'],
+            'an index of ten digits' => ['$[1000000000]'],
         ];
     }
 
@@ -85,7 +88,7 @@ class JsonExpressionTest extends TestCase
             $this->fail('Expected QueryException');
         } catch (QueryException $e) {
             $this->assertSame('Query failed', $e->getMessage());
-            $this->assertSame(sprintf('Invalid JSON path "%s": write $ followed by .name and [n] steps (a name starts with a letter or an underscore and holds letters, digits and underscores)', $path), $e->getDebugMessage());
+            $this->assertSame(sprintf('Invalid JSON path "%s": write $ followed by .name and [n] steps (a name starts with a letter or an underscore and holds letters, digits and underscores; an index has up to 9 digits)', $path), $e->getDebugMessage());
         }
     }
 

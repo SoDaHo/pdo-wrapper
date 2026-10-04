@@ -109,6 +109,10 @@ class UpsertTest extends ContractTestCase
         $this->db->table('counters')->insertWhen(['name' => 'b', 'n' => 1], '? = 1', [1], ['n' => 50]);
 
         $this->assertSame(['a' => ['code' => 'A', 'n' => 51, 'm' => 0], 'b' => ['code' => null, 'n' => 1, 'm' => null]], $this->rows());
+
+        // Database::value() in the update of the INSERT ... SELECT form: the value of the row
+        $this->db->table('counters')->insertWhen(['name' => 'a', 'n' => 7], '? = 1', [1], ['n' => Database::raw('n + VALUE(n)'), 'm' => Database::value('n')]);
+        $this->assertSame(['code' => 'A', 'n' => 58, 'm' => 7], $this->rows()['a']);
     }
 
     public function testInsertWhenReturning(): void

@@ -225,7 +225,8 @@ class MariaDbDriver extends AbstractDriver
      * `ON DUPLICATE KEY UPDATE col = col` reports 1 affected row for an inserted row and 0 for an
      * existing one - unless the connection counts matched rows (the driver's ATTR_FOUND_ROWS
      * option): then both report 1 (measured on MariaDB 10.11, 11.4 and 12.3), and the answer
-     * could not be told. The statement is not sent there.
+     * could not be told. The statement is not sent there, nor on a persistent connection, which
+     * may count them without this driver knowing (see whyCountsAreUnclear()).
      *
      * For an existing row the server runs the table's BEFORE INSERT, BEFORE UPDATE and AFTER
      * UPDATE triggers, although nothing is updated. A BEFORE UPDATE trigger that changes the row
@@ -233,14 +234,15 @@ class MariaDbDriver extends AbstractDriver
      *
      * @param array<string, mixed> $data Column => value pairs
      *
-     * @throws QueryException When the connection was opened with ATTR_FOUND_ROWS, $data is empty or the query fails for another reason than a duplicate
+     * @throws QueryException When the connection was opened with ATTR_FOUND_ROWS or is persistent, $data is empty or the query fails for another reason than a duplicate
      */
     public function insertIgnore(string $table, array $data): int
     {
-        if ($this->countsFoundRows) {
+        $unclear = $this->whyCountsAreUnclear();
+        if ($unclear !== null) {
             throw new QueryException(
                 message: 'Insert failed',
-                debugMessage: 'insertIgnore() cannot tell an inserted row from an existing one on a connection opened with ATTR_FOUND_ROWS: the server reports 1 affected row for both. Use insert() and catch UniqueViolationException instead.'
+                debugMessage: sprintf('insertIgnore() cannot tell an inserted row from an existing one %s. Use insert() and catch UniqueViolationException instead.', $unclear)
             );
         }
 
@@ -253,12 +255,13 @@ class MariaDbDriver extends AbstractDriver
      *
      * On a connection that counts matched rows (ATTR_FOUND_ROWS) the server reports 1 for an
      * unchanged existing row, as for an inserted one (measured on 10.11, 11.4 and 12.3): the
-     * statement is not sent there. upsertReturning() is not affected.
+     * statement is not sent there, nor on a persistent connection (see whyCountsAreUnclear()).
+     * upsertReturning() is not affected.
      *
      * @param array<string, mixed> $row Column => value pairs of the row
      * @param array<string, mixed> $update Column => value pairs to set on a duplicate, in this order
      *
-     * @throws QueryException When the connection was opened with ATTR_FOUND_ROWS, $row or $update is empty, or the query fails
+     * @throws QueryException When the connection was opened with ATTR_FOUND_ROWS or is persistent, $row or $update is empty, or the query fails
      */
     public function upsert(string $table, array $row, array $update): int
     {
@@ -275,7 +278,7 @@ class MariaDbDriver extends AbstractDriver
      * @param array<array-key, mixed> $bindings Values for the condition's placeholders, in order
      * @param array<string, mixed> $update Column => value pairs to set on a duplicate, in this order
      *
-     * @throws QueryException When $update is given on a connection opened with ATTR_FOUND_ROWS, $data or the condition is empty, a binding is a RawExpression, or the query fails
+     * @throws QueryException When $update is given on a connection opened with ATTR_FOUND_ROWS or a persistent one, $data or the condition is empty, a binding is a RawExpression, or the query fails
      */
     public function insertWhen(string $table, array $data, string $condition, array $bindings = [], array $update = []): int
     {
@@ -303,11 +306,18 @@ class MariaDbDriver extends AbstractDriver
      * connection already holds throws a NamedLockReentryException, a QueryException of its own
      * class (ask isNamedLockHeld() first where that can happen).
      *
+     * A persistent connection does not end with the request: a lock a request dies holding stays
+     * held until that pooled connection ends. Two connections that wait for each other's lock end
+     * in a deadlock: MariaDB fails one GET_LOCK() with 1213 and keeps the transaction (measured),
+     * but this library takes 1213 for a deadlock that ended it and refuses further statements
+     * until rollback() - fail-closed. Take named locks outside transactions or in one order, and
+     * after a deadlock or a 1020 roll back before releaseNamedLock() (refused until then).
+     *
      * @param string $name The lock's name, without the prefix
      * @param int $timeout Seconds to wait while another connection holds it (0: do not wait)
      *
      * @throws NamedLockReentryException When this connection holds the lock already
-     * @throws QueryException When the name is empty, the timeout negative, or the server answers NULL (an error such as a killed thread)
+     * @throws QueryException When the name is empty or holds a NUL byte, the timeout is negative, the server answers NULL (an error such as a killed thread), or a listener replaced the connection while the statement ran
      *
      * @return bool True when taken, false when another connection held it beyond the timeout
      */
@@ -322,7 +332,7 @@ class MariaDbDriver extends AbstractDriver
         }
 
         // One statement: whether this connection holds it already, and if not the attempt itself
-        $taken = $this->query('SELECT CASE WHEN IS_USED_LOCK(?) = CONNECTION_ID() THEN -1 ELSE GET_LOCK(?, ?) END', [$lock, $lock, $timeout])->fetchColumn();
+        $taken = $this->lockStatement('namedLock', 'SELECT CASE WHEN IS_USED_LOCK(?) = CONNECTION_ID() THEN -1 ELSE GET_LOCK(?, ?) END', [$lock, $lock, $timeout]);
 
         return match ($taken) {
             1 => true,
@@ -351,7 +361,7 @@ class MariaDbDriver extends AbstractDriver
      */
     public function releaseNamedLock(string $name): bool
     {
-        return $this->query('SELECT RELEASE_LOCK(?)', [$this->lockName('releaseNamedLock', $name)])->fetchColumn() === 1;
+        return $this->lockStatement('releaseNamedLock', 'SELECT RELEASE_LOCK(?)', [$this->lockName('releaseNamedLock', $name)]) === 1;
     }
 
     /**
@@ -363,7 +373,31 @@ class MariaDbDriver extends AbstractDriver
      */
     public function isNamedLockHeld(string $name): bool
     {
-        return $this->query('SELECT IS_USED_LOCK(?) = CONNECTION_ID()', [$this->lockName('isNamedLockHeld', $name)])->fetchColumn() === 1;
+        return $this->lockStatement('isNamedLockHeld', 'SELECT IS_USED_LOCK(?) = CONNECTION_ID()', [$this->lockName('isNamedLockHeld', $name)]) === 1;
+    }
+
+    /**
+     * The answer of a named-lock statement - asked of the session the lock belongs to. A listener
+     * of the 'query' hook may call reconnect() while the statement runs: the statement then ran
+     * on the old session, which ends with it and takes its locks along, so its answer would speak
+     * of a session that is gone.
+     *
+     * @param list<mixed> $params
+     *
+     * @throws QueryException When the query fails or the connection was replaced while it ran
+     */
+    private function lockStatement(string $method, string $sql, array $params): mixed
+    {
+        $pdo = $this->getPdo();
+        $answer = $this->query($sql, $params)->fetchColumn();
+        if ($this->getPdo() !== $pdo) {
+            throw new QueryException(
+                message: 'Query failed',
+                debugMessage: sprintf('%s(): the connection was replaced while the statement ran (reconnect() in a listener); a named lock belongs to its session, and that session is gone', $method)
+            );
+        }
+
+        return $answer;
     }
 
     /**
@@ -379,21 +413,46 @@ class MariaDbDriver extends AbstractDriver
                 debugMessage: sprintf('%s() needs a name', $method)
             );
         }
+        if (str_contains($name, "\0")) {
+            // MariaDB keys the lock by the name up to its first NUL: "k\0a" and "k\0b" would be one lock (measured)
+            throw new QueryException(
+                message: 'Query failed',
+                debugMessage: sprintf('%s(): a name with a NUL byte - MariaDB cuts the name there, and different names would be one lock. Encode a binary name (bin2hex()).', $method)
+            );
+        }
 
         return $this->lockPrefix . $name;
     }
 
     /**
-     * @throws QueryException When the connection was opened with the driver's ATTR_FOUND_ROWS option
+     * @throws QueryException When the server's count cannot tell the rows apart (whyCountsAreUnclear())
      */
     private function refuseACountOfMatchedRows(string $what): void
     {
-        if ($this->countsFoundRows) {
+        $unclear = $this->whyCountsAreUnclear();
+        if ($unclear !== null) {
             throw new QueryException(
                 message: 'Insert failed',
-                debugMessage: sprintf('%s cannot tell an inserted row from an unchanged existing one on a connection opened with ATTR_FOUND_ROWS: the server reports 1 affected row for both. Use the RETURNING form instead.', $what)
+                debugMessage: sprintf('%s cannot tell an inserted row from an unchanged existing one %s. Use the RETURNING form instead.', $what, $unclear)
             );
         }
+    }
+
+    /**
+     * Why the server's count of affected rows does not tell an existing row from an inserted one
+     * on this connection, or null when it does. With ATTR_FOUND_ROWS the server counts matched
+     * rows. A persistent connection may have been opened with that option by an earlier request:
+     * PDO keys its pool by DSN and credentials, not by the options, and hands such a connection
+     * back without it (measured on 10.11, 11.4 and 12.3) - what this driver was told then says
+     * nothing.
+     */
+    private function whyCountsAreUnclear(): ?string
+    {
+        return match (true) {
+            $this->countsFoundRows => 'on a connection opened with ATTR_FOUND_ROWS: the server reports 1 affected row for both',
+            $this->getPdo()->getAttribute(PDO::ATTR_PERSISTENT) === true => 'on a persistent connection: PDO may hand back one an earlier request opened with ATTR_FOUND_ROWS, and the server then reports 1 affected row for both',
+            default => null,
+        };
     }
 
     /**
