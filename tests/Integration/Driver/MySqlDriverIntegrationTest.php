@@ -378,7 +378,7 @@ class MySqlDriverIntegrationTest extends TestCase
         $this->assertSame('Failed to commit transaction', $e->getMessage());
         $this->assertSame($measured->swallowed, $e->getPrevious());
         $this->assertStringContainsString('deadlock (error 1213', (string) $e->getDebugMessage());
-        $this->assertSame([['outcome' => 'rolled_back', 'error' => $e]], $measured->ends);
+        $this->assertSame([['outcome' => 'rolled_back', 'error' => $e, 'transaction' => 1, 'depth' => 1]], $measured->ends);
         $this->assertInstanceOf(CommitFailedException::class, $e);
         $this->assertSame('rolled_back', $e->outcome, 'refused before it was sent and the rollback is confirmed: nothing is committed');
         $this->assertSame(1, $listenerRuns);
@@ -424,7 +424,7 @@ class MySqlDriverIntegrationTest extends TestCase
         }
         $this->assertSame([], $hooks, 'not sent: neither query nor error hook');
         $this->assertSame('Anna', $measured->user2Name, 'nothing was written outside the transaction');
-        $this->assertSame([['outcome' => 'rolled_back', 'error' => $e]], $measured->ends);
+        $this->assertSame([['outcome' => 'rolled_back', 'error' => $e, 'transaction' => 1, 'depth' => 1]], $measured->ends);
         $this->assertSame(1, $listenerRuns);
         $this->assertStringContainsString('deadlock (error 1213', (string) $e->getDebugMessage());
     }
@@ -441,7 +441,7 @@ class MySqlDriverIntegrationTest extends TestCase
         );
 
         $this->assertSame(1213, $this->errorInfoBehind($e, 1));
-        $this->assertSame([['outcome' => 'lost', 'error' => $e]], $measured->ends);
+        $this->assertSame([['outcome' => 'lost', 'error' => $e, 'transaction' => 1, 'depth' => 1]], $measured->ends);
         $this->assertSame(0, $listenerRuns);
         $this->assertSame('Max', $measured->user1Name, 'before the deadlock: rolled back by the server');
         $this->assertSame('after the deadlock', $measured->user2Name, 'after the deadlock, on raw PDO: committed on its own');
@@ -476,7 +476,7 @@ class MySqlDriverIntegrationTest extends TestCase
 
         $this->assertSame('Failed to commit transaction', $e->getMessage());
         $this->assertStringContainsString('deadlock (error 1213', (string) $e->getDebugMessage());
-        $this->assertSame([['outcome' => 'lost', 'error' => $e]], $measured->ends);
+        $this->assertSame([['outcome' => 'lost', 'error' => $e, 'transaction' => 1, 'depth' => 1]], $measured->ends);
         $this->assertInstanceOf(CommitFailedException::class, $e);
         $this->assertSame('lost', $e->outcome);
         $this->assertSame('Anna', $measured->user2Name, 'nothing was written after the deadlock');
@@ -525,7 +525,7 @@ class MySqlDriverIntegrationTest extends TestCase
         );
 
         $this->assertStringStartsWith('Not committed: the transaction this call began has already been ended through this driver', (string) $e->getDebugMessage(), 'the callback ended the transaction itself');
-        $this->assertSame([['outcome' => 'rolled_back', 'error' => null]], $measured->ends, "the callback's own rollback() told the end");
+        $this->assertSame([['outcome' => 'rolled_back', 'error' => null, 'transaction' => 1, 'depth' => 1]], $measured->ends, "the callback's own rollback() told the end");
         $this->assertSame(1, $listenerRuns);
         $this->assertSame('after rollback()', $measured->user2Name);
     }
@@ -547,7 +547,7 @@ class MySqlDriverIntegrationTest extends TestCase
             }
         );
 
-        $this->assertSame([['outcome' => 'lost', 'error' => $e]], $measured->ends);
+        $this->assertSame([['outcome' => 'lost', 'error' => $e, 'transaction' => 1, 'depth' => 1]], $measured->ends);
         $this->assertSame(0, $listenerRuns, 'no rollback was sent for the listener\'s transaction');
         $this->assertTrue($measured->inTransactionAfterwards, "the listener's transaction is still open");
     }
@@ -627,7 +627,7 @@ class MySqlDriverIntegrationTest extends TestCase
 
         $this->assertSame(1213, $this->errorInfoBehind($e, 1));
         $this->assertStringContainsString('deadlock (error 1213', (string) $e->getDebugMessage());
-        $this->assertSame([['outcome' => 'rolled_back', 'error' => $e]], $measured->ends);
+        $this->assertSame([['outcome' => 'rolled_back', 'error' => $e, 'transaction' => 1, 'depth' => 1]], $measured->ends);
         $this->assertInstanceOf(CommitFailedException::class, $e);
         $this->assertSame('rolled_back', $e->outcome);
         $this->assertSame(1, $listenerRuns);
@@ -694,7 +694,7 @@ class MySqlDriverIntegrationTest extends TestCase
             } catch (TransactionException $e) {
                 $this->assertSame('Failed to commit transaction', $e->getMessage());
                 $this->assertStringContainsString('the server could not be asked whether it still exists', (string) $e->getDebugMessage());
-                $this->assertSame([['outcome' => 'lost', 'error' => $e]], $ends);
+                $this->assertSame([['outcome' => 'lost', 'error' => $e, 'transaction' => 1, 'depth' => 1]], $ends);
                 $this->assertInstanceOf(CommitFailedException::class, $e);
                 $this->assertSame('lost', $e->outcome);
             }
@@ -809,7 +809,7 @@ class MySqlDriverIntegrationTest extends TestCase
         $this->assertSame(1213, $this->errorInfoBehind($e, 1), 'ER_LOCK_DEADLOCK: this connection was the victim');
         $this->assertTrue($measured->inTransactionAfterError, 'PDO still reports the transaction after the server rolled it back');
         $this->assertSame(1, $listenerRuns, 'transaction() rolled back and fired the listener');
-        $this->assertSame([['outcome' => 'rolled_back', 'error' => $e]], $measured->ends, 'transaction.end: rolled back, with the deadlock exception');
+        $this->assertSame([['outcome' => 'rolled_back', 'error' => $e, 'transaction' => 1, 'depth' => 1]], $measured->ends, 'transaction.end: rolled back, with the deadlock exception');
         $this->assertFalse($measured->inTransactionAfterwards);
         $this->assertSame('committed', $childOutput);
     }
@@ -858,7 +858,7 @@ class MySqlDriverIntegrationTest extends TestCase
         $this->assertSame(1205, $this->errorInfoBehind($e, 1), 'ER_LOCK_WAIT_TIMEOUT');
         $this->assertTrue($measured->inTransactionAfterError, 'only the statement was rolled back, the transaction is open');
         $this->assertSame(1, $listenerRuns);
-        $this->assertSame([['outcome' => 'rolled_back', 'error' => $e]], $measured->ends, 'transaction.end: rolled back, with the timeout exception');
+        $this->assertSame([['outcome' => 'rolled_back', 'error' => $e, 'transaction' => 1, 'depth' => 1]], $measured->ends, 'transaction.end: rolled back, with the timeout exception');
         $this->assertFalse($measured->inTransactionAfterwards);
         $this->assertSame('committed', $childOutput);
         $this->assertSame('Max', $measured->user1Name, "the test connection's own update was rolled back");
@@ -921,7 +921,7 @@ class MySqlDriverIntegrationTest extends TestCase
 
         $this->assertContains($this->errorInfoBehind($e, 1), [2006, 2013], 'server has gone away / lost connection');
         $this->assertSame(0, $listenerRuns, 'the rollback failed with the connection: no listener');
-        $this->assertSame([['outcome' => 'lost', 'error' => $e]], $measured->ends, 'transaction.end reports lost with the statement exception');
+        $this->assertSame([['outcome' => 'lost', 'error' => $e, 'transaction' => 1, 'depth' => 1]], $measured->ends, 'transaction.end reports lost with the statement exception');
         $this->assertSame('Max', $measured->user1Name, 'the server rolled the killed connection back');
         $this->assertTrue($measured->inTransactionAfterError, 'PDO still reports the transaction right after the error');
         $this->assertTrue($measured->inTransactionAfterwards, 'and still after the failed rollback');

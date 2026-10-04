@@ -82,15 +82,19 @@ class PostgresDriver extends AbstractDriver
 
         $options = array_replace($defaultOptions, $config['options'] ?? []);
 
-        try {
-            $this->pdo = new $pdoClass($dsn, $username, $password, $options);
-        } catch (PDOException $e) {
-            throw new ConnectionException(
-                message: 'Database connection failed',
-                previous: $e,
-                debugMessage: sprintf('PostgreSQL connection to %s:%d failed: %s', $host, $port, $e->getMessage())
-            );
-        }
+        // Kept for reconnect(); the credentials in an object that var_dump() and print_r() do not show
+        $credentials = new Credentials($username, $password);
+        parent::__construct(static function () use ($pdoClass, $dsn, $credentials, $options, $host, $port): PDO {
+            try {
+                return new $pdoClass($dsn, $credentials->username(), $credentials->password(), $options);
+            } catch (PDOException $e) {
+                throw new ConnectionException(
+                    message: 'Database connection failed',
+                    previous: $e,
+                    debugMessage: sprintf('PostgreSQL connection to %s:%d failed: %s', $host, $port, $e->getMessage())
+                );
+            }
+        });
     }
 
     /**

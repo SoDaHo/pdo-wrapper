@@ -110,6 +110,7 @@ class MySqlTransactionEndScenariosTest extends AbstractTransactionEndScenarios
         $this->events = [];
         $this->ends = [];
         $ran = false;
+        $sent = $this->pdo->rollBackCalls;
 
         try {
             $this->db->transaction(static function (DatabaseInterface $db) use (&$ran): void {
@@ -125,6 +126,7 @@ class MySqlTransactionEndScenariosTest extends AbstractTransactionEndScenarios
             $this->db->getPdo()->exec('DROP TABLE IF EXISTS end_scenarios_ddl');
         }
         $this->assertFalse($ran);
+        $this->assertSame($sent, $this->pdo->rollBackCalls, 'PDO reports no transaction: nothing is sent');
         $this->assertVisible([]);
     }
 

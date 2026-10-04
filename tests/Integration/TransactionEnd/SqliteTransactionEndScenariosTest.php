@@ -244,7 +244,7 @@ class SqliteTransactionEndScenariosTest extends AbstractTransactionEndScenarios
             $this->assertNull($e->outcome);
         }
         $db->rollback();
-        $this->assertSame([['outcome' => DatabaseInterface::TRANSACTION_ROLLED_BACK, 'error' => null]], $ends->all());
+        $this->assertSame([['outcome' => DatabaseInterface::TRANSACTION_ROLLED_BACK, 'error' => null, 'transaction' => 1, 'depth' => 1]], $ends->all());
 
         // no longer reported by PDO: the refusal tells 'lost', with itself as the error
         $ends->clear();
@@ -255,7 +255,7 @@ class SqliteTransactionEndScenariosTest extends AbstractTransactionEndScenarios
             $db->commit();
             $this->fail('Expected TransactionException');
         } catch (CommitFailedException $e) {
-            $this->assertSame([['outcome' => DatabaseInterface::TRANSACTION_LOST, 'error' => $e]], $ends->all());
+            $this->assertSame([['outcome' => DatabaseInterface::TRANSACTION_LOST, 'error' => $e, 'transaction' => 2, 'depth' => 1]], $ends->all());
             $this->assertSame(DatabaseInterface::TRANSACTION_LOST, $e->outcome);
         } finally {
             $this->pdo->hideTransaction = false;
@@ -271,7 +271,7 @@ class SqliteTransactionEndScenariosTest extends AbstractTransactionEndScenarios
             });
             $this->fail('Expected TransactionException');
         } catch (TransactionException $e) {
-            $this->assertSame([['outcome' => DatabaseInterface::TRANSACTION_LOST, 'error' => $e]], $ends->all());
+            $this->assertSame([['outcome' => DatabaseInterface::TRANSACTION_LOST, 'error' => $e, 'transaction' => 3, 'depth' => 1]], $ends->all());
         } finally {
             $this->pdo->hideTransaction = false;
         }
@@ -393,7 +393,7 @@ class SqliteTransactionEndScenariosTest extends AbstractTransactionEndScenarios
         }
         $this->assertSame([], $ends);
         $db->rollback();
-        $this->assertSame([['outcome' => DatabaseInterface::TRANSACTION_LOST, 'error' => $failure]], $ends, 'nothing to roll back: the end is told as lost, with the failure');
+        $this->assertSame([['outcome' => DatabaseInterface::TRANSACTION_LOST, 'error' => $failure, 'transaction' => 2, 'depth' => 1]], $ends, 'nothing to roll back: the end is told as lost, with the failure');
         $db->insert(self::TABLE, ['id' => 3, 'name' => 'after rollback()']);
 
         // with an unreadable state rollback() sends the ROLLBACK as usual
@@ -1033,7 +1033,7 @@ class SqliteTransactionEndScenariosTest extends AbstractTransactionEndScenarios
         $ends->clear();
 
         // a failure that settles the matter by itself is not asked about: the transaction is over on
-        // the server, the begin fails and is undone - no end, as for every begin that fails
+        // the server, the begin fails and is undone - its begin was told, so its end is: rolled back
         $listener->table = 'fatal_table';
         $sent = $this->pdo->rollBackCalls;
         try {
@@ -1047,7 +1047,8 @@ class SqliteTransactionEndScenariosTest extends AbstractTransactionEndScenarios
         $this->assertSame(2, $db->asked);
         $this->assertSame($sent + 1, $this->pdo->rollBackCalls);
         $this->assertFalse($this->pdo->reallyInTransaction());
-        $this->assertSame([], $ends->all());
+        $this->assertSame([[DatabaseInterface::TRANSACTION_ROLLED_BACK, $e]], $ends->all(), 'with the exception the caller gets');
+        $ends->clear();
 
         // swallowed, and the transaction is gone: the begin fails, the end is 'lost'
         $listener->table = 'harmless_table';
@@ -1129,16 +1130,20 @@ class SqliteTransactionEndScenariosTest extends AbstractTransactionEndScenarios
         }
 
         // ... and an error handler inside that failing ROLLBACK commits the transaction through the
-        // driver: that commit tells the end, the cleanup tells nothing more
+        // driver: that commit tells the end, with the number of the begin; the cleanup tells nothing more
         $pdo->duringRollBack = static function () use ($db): void {
             $db->commit();
         };
         $pdo->rollBackReturnsFalse = true;
+        $numbers = new Recorder(static fn (array $data): mixed => $data['transaction']);
+        $db->on('transaction.end', $numbers);
         try {
             $db->beginTransaction();
             $this->fail('Expected QueryException');
         } catch (QueryException) {
             $this->assertSame([[DatabaseInterface::TRANSACTION_COMMITTED, null]], $ends->all());
+            $this->assertCount(1, $numbers->all());
+            $this->assertIsInt($numbers->all()[0], 'the end the handler told carries the number of the begin, not the null of a transaction begun on raw PDO');
         }
         $pdo->rollBackReturnsFalse = false;
         $this->assertFalse($this->pdo->reallyInTransaction());
@@ -1160,6 +1165,7 @@ class SqliteTransactionEndScenariosTest extends AbstractTransactionEndScenarios
             $this->assertInstanceOf(PDOException::class, $e->getPrevious());
             $this->assertNull($e->sqlState, 'nothing is certain about that transaction: no codes to act on');
             $this->assertSame([[DatabaseInterface::TRANSACTION_LOST, $e]], $ends->all());
+            $this->assertIsInt($numbers->pop(), 'told with the number of its begin, read before the ROLLBACK cleared the mark');
         }
         $this->assertSame($asked + 1, $db->asked, 'asked once');
         $this->assertSame($sent + 1, $this->pdo->rollBackCalls);

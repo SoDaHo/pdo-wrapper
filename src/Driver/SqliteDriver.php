@@ -68,16 +68,23 @@ class SqliteDriver extends AbstractDriver
             PDO::ATTR_EMULATE_PREPARES => false,
         ];
 
-        try {
-            $this->pdo = new $pdoClass($dsn, null, null, array_replace($defaultOptions, $options));
-            $this->pdo->exec('PRAGMA foreign_keys = ON');
-        } catch (PDOException $e) {
-            throw new ConnectionException(
-                message: 'Database connection failed',
-                previous: $e,
-                debugMessage: sprintf('SQLite connection failed: %s', $e->getMessage())
-            );
-        }
+        $options = array_replace($defaultOptions, $options);
+
+        // Kept for reconnect()
+        parent::__construct(static function () use ($pdoClass, $dsn, $options): PDO {
+            try {
+                $pdo = new $pdoClass($dsn, null, null, $options);
+                $pdo->exec('PRAGMA foreign_keys = ON');
+
+                return $pdo;
+            } catch (PDOException $e) {
+                throw new ConnectionException(
+                    message: 'Database connection failed',
+                    previous: $e,
+                    debugMessage: sprintf('SQLite connection failed: %s', $e->getMessage())
+                );
+            }
+        });
     }
 
     protected function getDialect(): string

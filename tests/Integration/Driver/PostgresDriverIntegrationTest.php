@@ -340,7 +340,7 @@ class PostgresDriverIntegrationTest extends TestCase
         }
 
         $this->driver->rollback();
-        $this->assertSame([['outcome' => 'rolled_back', 'error' => null]], $ends);
+        $this->assertSame([['outcome' => 'rolled_back', 'error' => null, 'transaction' => 1, 'depth' => 1]], $ends);
         $this->assertSame(0, $this->driver->table('test_aborted')->count());
         $this->assertNotContains('SELECT 1', $queries, 'the probe is not a statement of the caller');
 
@@ -946,7 +946,7 @@ class PostgresDriverIntegrationTest extends TestCase
             $measured->inTransactionAfterwards = $db->inTransaction();
         }
 
-        $this->assertSame([['outcome' => 'lost', 'error' => $e]], $events, 'no rollback listener, transaction.end reports lost with the statement exception');
+        $this->assertSame([['outcome' => 'lost', 'error' => $e, 'transaction' => 1, 'depth' => 1]], $events, 'no rollback listener, transaction.end reports lost with the statement exception');
         $this->assertSame(0, $killer->table('end_probe')->count(), 'the server rolled the terminated backend back');
         // measured on PostgreSQL 15 with pdo_pgsql: like mysqlnd, PDO keeps reporting the transaction
         $this->assertTrue($measured->inTransactionAfterError, 'PDO still reports the transaction right after the error');
@@ -982,7 +982,8 @@ class PostgresDriverIntegrationTest extends TestCase
                 } catch (CommitFailedException $e) {
                     $this->assertSame('23503', $e->getPrevious()?->getCode(), $begunOn);
                     $this->assertFalse($db->inTransaction(), $begunOn);
-                    $this->assertSame([['outcome' => 'lost', 'error' => $e]], $ends, $begunOn);
+                    $number = $begunOn === 'library' ? 1 : null; // begun on raw PDO: no begin was told, no number
+                    $this->assertSame([['outcome' => 'lost', 'error' => $e, 'transaction' => $number, 'depth' => $number]], $ends, $begunOn);
                     $this->assertSame('lost', $e->outcome, $begunOn);
                 }
             }
@@ -1025,7 +1026,7 @@ class PostgresDriverIntegrationTest extends TestCase
         }
 
         $this->assertFalse($db->inTransaction(), 'pdo_pgsql no longer reports the transaction after the failed COMMIT');
-        $this->assertSame([['outcome' => 'lost', 'error' => $e]], $events, "no rollback listener; lost with the commit's exception");
+        $this->assertSame([['outcome' => 'lost', 'error' => $e, 'transaction' => 1, 'depth' => 1]], $events, "no rollback listener; lost with the commit's exception");
         $this->assertSame(0, $db->table('end_child')->count(), 'the server rolled back');
         $db->execute('DROP TABLE IF EXISTS end_child');
         $db->execute('DROP TABLE IF EXISTS end_parent');

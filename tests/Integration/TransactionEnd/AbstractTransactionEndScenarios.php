@@ -2154,6 +2154,7 @@ abstract class AbstractTransactionEndScenarios extends TestCase
             }
         });
 
+        $sent = $this->pdo->rollBackCalls;
         try {
             $this->db->beginTransaction();
             $this->fail('Expected the listener exception');
@@ -2161,7 +2162,14 @@ abstract class AbstractTransactionEndScenarios extends TestCase
             $this->assertSame($failure, $e);
         }
         $this->assertSame([['outcome' => self::LOST, 'error' => $failure]], $this->ends);
+        $this->assertSame($sent, $this->pdo->rollBackCalls, 'PDO reports no transaction: nothing is sent');
         $this->assertVisible([1], 'what the listener committed itself');
+
+        // gone for certain, not "may still be open": a transaction begun on raw PDO afterwards tells its end
+        $this->ends = [];
+        $this->pdo->beginTransaction();
+        $this->db->rollback();
+        $this->assertSame([['outcome' => self::ROLLED_BACK, 'error' => null]], $this->ends);
 
         $state->mode = 'commit and throw a PDOException';
         $this->ends = [];
@@ -2183,10 +2191,12 @@ abstract class AbstractTransactionEndScenarios extends TestCase
         } catch (RuntimeException $e) {
             $this->assertSame($failure, $e);
         }
-        $this->assertSame([], $this->events, 'still open when the listener threw: rolled back raw, no event');
+        $this->assertSame(['end'], $this->events, 'still open when the listener threw: rolled back raw - no rollback listener, but its begin was told, so its end is');
+        $this->assertSame([['outcome' => self::ROLLED_BACK, 'error' => $failure]], $this->ends, 'with the exception the caller gets');
         $this->assertVisible([1]);
 
         $state->mode = 'none';
+        $this->events = [];
         $this->db->transaction(static fn (): null => null);
         $this->assertSame(['commit', 'end'], $this->events, 'no end of an earlier transaction is owed any more');
     }
@@ -2256,15 +2266,26 @@ abstract class AbstractTransactionEndScenarios extends TestCase
         return $left;
     }
 
-    public function testThePayloadHasExactlyOutcomeAndError(): void
+    public function testThePayloadsHaveExactlyTheirKeys(): void
     {
-        $this->db->on('transaction.end', function (array $data): void {
-            $this->events[] = implode(',', array_keys($data));
-        });
+        foreach (['transaction.begin', 'transaction.commit', 'transaction.rollback', 'transaction.end'] as $event) {
+            $this->db->on($event, function (array $data) use ($event): void {
+                $this->events[] = $event . ': ' . implode(',', array_keys($data));
+            });
+        }
         $this->db->beginTransaction();
         $this->db->commit();
+        $this->db->beginTransaction();
+        $this->db->rollback();
 
-        $this->assertSame(['commit', 'end', 'outcome,error'], $this->events);
+        $this->assertSame([
+            'transaction.begin: transaction,depth',
+            'commit', 'transaction.commit: transaction,depth',
+            'end', 'transaction.end: outcome,error,transaction,depth',
+            'transaction.begin: transaction,depth',
+            'rollback', 'transaction.rollback: transaction,depth',
+            'end', 'transaction.end: outcome,error,transaction,depth',
+        ], $this->events);
     }
 
     // ---- foreign code in the middle of a PDO call --------------------------------------------------
@@ -2737,6 +2758,452 @@ abstract class AbstractTransactionEndScenarios extends TestCase
 
         $this->assertSame([['outcome' => self::ROLLED_BACK, 'error' => null]], $this->ends, 'told once, by the rollback that ended it');
         $this->assertVisible([]);
+    }
+
+    // ---- the number and depth of a transaction in its events ----------------------------------------
+
+    /**
+     * Every event names its transaction: the number counts the transactions begun through this
+     * driver, the depth is 1 for one begun while no other end was owed.
+     */
+    public function testEveryEventNamesItsTransaction(): void
+    {
+        $seen = $this->recordNumbers();
+
+        $this->db->beginTransaction();
+        $this->db->commit();
+        $this->db->beginTransaction();
+        $this->db->rollback();
+        $this->db->transaction(static fn (): null => null);
+
+        $this->assertSame([
+            'begin 1/1', 'commit 1/1', 'end committed 1/1',
+            'begin 2/1', 'rollback 2/1', 'end rolled_back 2/1',
+            'begin 3/1', 'commit 3/1', 'end committed 3/1',
+        ], $seen->getArrayCopy());
+    }
+
+    /**
+     * A transaction a commit listener runs is begun while the committed one still owes its end:
+     * one level deeper. Its end comes first; the numbers tell the two apart, whatever the order.
+     */
+    public function testATransactionACommitListenerRunsIsOneLevelDeeper(): void
+    {
+        $seen = $this->recordNumbers();
+        $once = true;
+        $this->db->on('transaction.commit', function () use (&$once): void {
+            if ($once) {
+                $once = false;
+                $this->db->transaction(fn (): int => $this->db->insert(self::TABLE, ['id' => 2, 'name' => 'listener']));
+            }
+        });
+
+        $this->db->transaction(fn (): int => $this->db->insert(self::TABLE, ['id' => 1, 'name' => 'outer']));
+        $this->db->transaction(static fn (): null => null);
+
+        $this->assertSame([
+            'begin 1/1', 'commit 1/1',
+            'begin 2/2', 'commit 2/2', 'end committed 2/2',
+            'end committed 1/1',
+            'begin 3/1', 'commit 3/1', 'end committed 3/1',
+        ], $seen->getArrayCopy(), 'back at depth 1 afterwards');
+        $this->assertVisible([1, 2]);
+    }
+
+    /**
+     * An end listener runs once the end is told: a transaction it runs is not nested in the one
+     * that ended.
+     */
+    public function testATransactionAnEndListenerRunsIsNotNested(): void
+    {
+        $seen = $this->recordNumbers();
+        $once = true;
+        $this->db->on('transaction.end', function () use (&$once): void {
+            if ($once) {
+                $once = false;
+                $this->db->transaction(static fn (): null => null);
+            }
+        });
+
+        $this->db->transaction(static fn (): null => null);
+
+        $this->assertSame([
+            'begin 1/1', 'commit 1/1', 'end committed 1/1',
+            'begin 2/1', 'commit 2/1', 'end committed 2/1',
+        ], $seen->getArrayCopy());
+    }
+
+    /**
+     * A transaction begun on raw PDO was not told begun: its events carry no number and no depth,
+     * and it uses none up.
+     */
+    public function testATransactionBegunOnRawPdoHasNoNumber(): void
+    {
+        $seen = $this->recordNumbers();
+
+        $this->pdo->beginTransaction();
+        $this->db->commit();
+        $this->pdo->beginTransaction();
+        $this->db->rollback();
+        $this->db->beginTransaction();
+        $this->db->commit();
+
+        $this->assertSame([
+            'commit -/-', 'end committed -/-',
+            'rollback -/-', 'end rolled_back -/-',
+            'begin 1/1', 'commit 1/1', 'end committed 1/1',
+        ], $seen->getArrayCopy());
+    }
+
+    /**
+     * When PDO's own BEGIN fails, no transaction exists: nothing is told - no begin, no end - and
+     * no number is used up.
+     */
+    public function testABeginThatFailsInPdoTellsNothing(): void
+    {
+        $seen = $this->recordNumbers();
+        $this->pdo->beginTransaction(); // PDO refuses a second one
+
+        try {
+            $this->db->beginTransaction();
+            $this->fail('Expected TransactionException');
+        } catch (TransactionException $e) {
+            $this->assertSame('Failed to begin transaction', $e->getMessage());
+        }
+        $this->assertSame([], $seen->getArrayCopy());
+
+        $this->pdo->rollBack();
+        $this->db->transaction(static fn (): null => null);
+        $this->assertSame(['begin 1/1', 'commit 1/1', 'end committed 1/1'], $seen->getArrayCopy());
+    }
+
+    /**
+     * A throwing begin listener: the begin was told, so the end is - rolled back on raw PDO (no
+     * rollback listener), with the number of that begin and the exception the caller gets.
+     */
+    public function testAThrowingBeginListenerEndsTheTransactionItWasToldAbout(): void
+    {
+        $seen = $this->recordNumbers();
+        $failure = new RuntimeException('begin listener failed');
+        $once = true;
+        $this->db->on('transaction.begin', function () use (&$once, $failure): void {
+            if ($once) {
+                $once = false;
+                $this->db->insert(self::TABLE, ['id' => 1, 'name' => 'rolled back']);
+                throw $failure;
+            }
+        });
+
+        try {
+            $this->db->transaction(static fn (): null => null);
+            $this->fail('Expected the listener exception');
+        } catch (RuntimeException $e) {
+            $this->assertSame($failure, $e);
+        }
+        $this->db->transaction(static fn (): null => null);
+
+        $this->assertSame(['begin 1/1', 'end rolled_back 1/1', 'begin 2/1', 'commit 2/1', 'end committed 2/1'], $seen->getArrayCopy());
+        $this->assertSame([['outcome' => self::ROLLED_BACK, 'error' => $failure], ['outcome' => self::COMMITTED, 'error' => null]], $this->ends);
+        $this->assertVisible([]);
+    }
+
+    /**
+     * The raw ROLLBACK after a throwing begin listener fails: the transaction may still be open,
+     * so its end is 'lost' - and its later rollback() runs the rollback listeners with its number,
+     * but tells no second end.
+     */
+    public function testAThrowingBeginListenerWhoseRollbackFailsEndsAsLost(): void
+    {
+        $seen = $this->recordNumbers();
+        $failure = new RuntimeException('begin listener failed');
+        $once = true;
+        $this->db->on('transaction.begin', function () use (&$once, $failure): void {
+            if ($once) {
+                $once = false;
+                $this->pdo->failRollBackAlways = true;
+                throw $failure;
+            }
+        });
+
+        try {
+            $this->db->beginTransaction();
+            $this->fail('Expected the listener exception');
+        } catch (RuntimeException $e) {
+            $this->assertSame($failure, $e);
+        }
+        $this->assertSame(['begin 1/1', 'end lost 1/1'], $seen->getArrayCopy());
+        $this->assertTrue($this->pdo->reallyInTransaction(), 'the ROLLBACK did not go through');
+
+        $this->pdo->failRollBackAlways = false;
+        $this->db->rollback();
+        $this->db->transaction(static fn (): null => null);
+
+        $this->assertSame(
+            ['begin 1/1', 'end lost 1/1', 'rollback 1/1', 'begin 2/1', 'commit 2/1', 'end committed 2/1'],
+            $seen->getArrayCopy(),
+            'the later rollback() is the same transaction; no second end'
+        );
+        $this->assertVisible([]);
+    }
+
+    /**
+     * A transaction a commit listener begins through the driver and ends on raw PDO was told
+     * begun: it gets its end, 'lost' - it ended outside the library -, before the outer one.
+     */
+    public function testATransactionACommitListenerEndsOnRawPdoGetsItsEndAsLost(): void
+    {
+        $seen = $this->recordNumbers();
+        $once = true;
+        $this->db->on('transaction.commit', function () use (&$once): void {
+            if ($once) {
+                $once = false;
+                $this->db->beginTransaction();
+                $this->db->insert(self::TABLE, ['id' => 2, 'name' => 'listener']);
+                $this->pdo->commit();
+            }
+        });
+
+        $this->db->transaction(fn (): int => $this->db->insert(self::TABLE, ['id' => 1, 'name' => 'outer']));
+
+        $this->assertSame(['begin 1/1', 'commit 1/1', 'begin 2/2', 'end lost 2/2', 'end committed 1/1'], $seen->getArrayCopy());
+        $this->assertInstanceOf(TransactionException::class, $this->ends[0]['error']);
+        $this->assertSame('Transaction ended outside this library', $this->ends[0]['error']->getMessage());
+        $this->assertVisible([1, 2], 'the listener committed its row itself');
+    }
+
+    /**
+     * A transaction a commit listener leaves open is rolled back raw and gets its end with its own
+     * number, before the outer one.
+     */
+    public function testATransactionACommitListenerLeavesOpenEndsWithItsNumber(): void
+    {
+        $seen = $this->recordNumbers();
+        $once = true;
+        $this->db->on('transaction.commit', function () use (&$once): void {
+            if ($once) {
+                $once = false;
+                $this->db->beginTransaction();
+            }
+        });
+
+        try {
+            $this->db->transaction(static fn (): null => null);
+            $this->fail('Expected CommitHookException');
+        } catch (CommitHookException $e) {
+            $this->assertSame('listener left a transaction open', $e->failures[0]->getMessage());
+        }
+
+        $this->assertSame(['begin 1/1', 'commit 1/1', 'begin 2/2', 'end rolled_back 2/2', 'end committed 1/1'], $seen->getArrayCopy());
+        $this->assertVisible([]);
+    }
+
+    /**
+     * A transaction that vanished behind the driver's back is told as 'lost' by the next begin,
+     * with its own number, before the next one is told begun.
+     */
+    public function testTheNextBeginTellsAVanishedTransactionWithItsNumber(): void
+    {
+        $seen = $this->recordNumbers();
+        $this->db->beginTransaction();
+        $this->pdo->rollBack(); // behind the driver's back
+
+        $this->db->beginTransaction();
+        $this->db->commit();
+
+        $this->assertSame(['begin 1/1', 'end lost 1/1', 'begin 2/1', 'commit 2/1', 'end committed 2/1'], $seen->getArrayCopy());
+    }
+
+    /**
+     * transaction() whose ROLLBACK fails tells 'lost' while the transaction may still be open; the
+     * rollback() that finally ends it runs its rollback listeners with the same number and tells
+     * no second end.
+     */
+    public function testALostTransactionKeepsItsNumberForItsLaterRollback(): void
+    {
+        $seen = $this->recordNumbers();
+        $cause = new RuntimeException('callback failed');
+        $this->pdo->failRollBackAlways = true;
+        try {
+            $this->db->transaction(static function () use ($cause): void {
+                throw $cause;
+            });
+            $this->fail('Expected the callback exception');
+        } catch (RuntimeException $e) {
+            $this->assertSame($cause, $e);
+        }
+        $this->pdo->failRollBackAlways = false;
+        $this->db->rollback();
+        $this->db->transaction(static fn (): null => null);
+
+        $this->assertSame(
+            ['begin 1/1', 'end lost 1/1', 'rollback 1/1', 'begin 2/1', 'commit 2/1', 'end committed 2/1'],
+            $seen->getArrayCopy()
+        );
+    }
+
+    /**
+     * Every told begin gets exactly one end: after many runs through the paths that end a
+     * transaction outside the plain commit and rollback, a plain transaction is at depth 1 and has
+     * the next number - nothing was left owed, nothing told twice.
+     */
+    public function testTheDepthDoesNotDriftAfterManyUnusualEnds(): void
+    {
+        $seen = $this->recordNumbers();
+        $state = new class () {
+            public string $mode = '';
+        };
+        $this->db->on('transaction.begin', function () use ($state): void {
+            if ($state->mode === 'begin listener throws') {
+                $state->mode = '';
+                throw new RuntimeException('begin listener failed');
+            }
+        });
+        $this->db->on('transaction.commit', function () use ($state): void {
+            if ($state->mode === 'inner ended raw') {
+                $state->mode = '';
+                $this->db->beginTransaction();
+                $this->pdo->rollBack();
+            } elseif ($state->mode === 'inner left open') {
+                $state->mode = '';
+                $this->db->beginTransaction();
+            }
+        });
+
+        $begun = 0;
+        for ($round = 0; $round < 5; $round++) {
+            foreach (['begin listener throws', 'inner ended raw', 'inner left open', 'vanished', 'raw', 'callback throws'] as $mode) {
+                $state->mode = $mode;
+                try {
+                    if ($mode === 'vanished') {
+                        $this->db->beginTransaction();
+                        $this->pdo->rollBack();
+                        $begun += 1;
+                    } elseif ($mode === 'raw') {
+                        $this->pdo->beginTransaction();
+                        $this->db->rollback();
+                    } elseif ($mode === 'callback throws') {
+                        $begun += 1;
+                        $this->db->transaction(static function (): void {
+                            throw new LogicException('callback failed');
+                        });
+                    } else {
+                        $begun += $mode === 'begin listener throws' ? 1 : 2;
+                        $this->db->transaction(static fn (): null => null);
+                    }
+                } catch (RuntimeException | LogicException | CommitHookException) {
+                    // what each path throws is checked by the tests above
+                }
+            }
+        }
+        $this->db->transaction(static fn (): null => null);
+        $begun += 1;
+
+        $numbers = $seen->getArrayCopy();
+        $this->assertSame(sprintf('end committed %d/1', $begun), end($numbers), 'the next number, at depth 1');
+        $begins = count(array_filter($numbers, static fn (string $event): bool => str_starts_with($event, 'begin ')));
+        $ends = count(array_filter($numbers, static fn (string $event): bool => str_starts_with($event, 'end ') && !str_ends_with($event, ' -/-')));
+        $this->assertSame($begun, $begins, 'every transaction begun through the driver was told begun');
+        $this->assertSame($begins, $ends, 'and told ended, exactly once');
+        $this->assertFalse($this->pdo->reallyInTransaction());
+    }
+
+    /**
+     * Foreign code inside the raw ROLLBACK after a throwing begin listener - an error handler for a
+     * PDO warning - ends the transaction through the driver: that call tells the end, with the
+     * number of the begin; the cleanup tells nothing more.
+     */
+    public function testAnErrorHandlerThatRollsBackDuringTheCleanupOfAFailedBeginTellsTheEndWithItsNumber(): void
+    {
+        $seen = $this->recordNumbers();
+        $failure = new RuntimeException('begin listener failed');
+        $once = true;
+        $this->db->on('transaction.begin', function () use (&$once, $failure): void {
+            if ($once) {
+                $once = false;
+                $this->pdo->duringRollBack = function (): void {
+                    $this->db->rollback();
+                };
+                throw $failure;
+            }
+        });
+
+        try {
+            $this->db->beginTransaction();
+            $this->fail('Expected the listener exception');
+        } catch (RuntimeException $e) {
+            $this->assertSame($failure, $e);
+        }
+        $this->db->transaction(static fn (): null => null);
+
+        $this->assertSame(
+            ['begin 1/1', 'rollback 1/1', 'end rolled_back 1/1', 'begin 2/1', 'commit 2/1', 'end committed 2/1'],
+            $seen->getArrayCopy(),
+            'told once, by the rollback() of the handler, with its number; back at depth 1'
+        );
+        $this->assertFalse($this->pdo->reallyInTransaction());
+    }
+
+    /**
+     * The raw ROLLBACK after a throwing begin listener fails, and the error handler that runs then
+     * ends the transaction and begins one of its own through the driver: that one keeps its mark -
+     * its commit later tells its own number.
+     */
+    public function testATransactionAnErrorHandlerBeginsDuringTheCleanupOfAFailedBeginKeepsItsMark(): void
+    {
+        $seen = $this->recordNumbers();
+        $once = true;
+        $this->db->on('transaction.begin', function () use (&$once): void {
+            if ($once) {
+                $once = false;
+                $this->pdo->duringRollBack = function (): void {
+                    $this->db->rollback();
+                    $this->db->beginTransaction();
+                    $this->pdo->failRollBackAlways = true; // the ROLLBACK the handler runs in fails: nothing is sent
+                };
+                throw new RuntimeException('begin listener failed');
+            }
+        });
+
+        try {
+            $this->db->beginTransaction();
+            $this->fail('Expected the listener exception');
+        } catch (RuntimeException) {
+        }
+        $this->pdo->failRollBackAlways = false;
+        $this->assertTrue($this->pdo->reallyInTransaction(), "the handler's transaction is open");
+        $this->db->commit();
+
+        $this->assertSame(
+            ['begin 1/1', 'rollback 1/1', 'end rolled_back 1/1', 'begin 2/1', 'commit 2/1', 'end committed 2/1'],
+            $seen->getArrayCopy()
+        );
+    }
+
+    /**
+     * Records every transaction event as "<event> <number>/<depth>" ("-" for null), the ends as
+     * "end <outcome> <number>/<depth>".
+     *
+     * @return ArrayObject<int, string>
+     */
+    private function recordNumbers(): ArrayObject
+    {
+        /** @var ArrayObject<int, string> $seen */
+        $seen = new ArrayObject();
+        $show = static fn (mixed $value): string => match (true) {
+            $value === null => '-',
+            is_int($value) => (string) $value,
+            default => 'invalid',
+        };
+        foreach (['transaction.begin' => 'begin', 'transaction.commit' => 'commit', 'transaction.rollback' => 'rollback'] as $event => $name) {
+            $this->db->on($event, static function (array $data) use ($seen, $show, $name): void {
+                $seen[] = sprintf('%s %s/%s', $name, $show(array_key_exists('transaction', $data) ? $data['transaction'] : 'missing'), $show(array_key_exists('depth', $data) ? $data['depth'] : 'missing'));
+            });
+        }
+        $this->db->on('transaction.end', static function (array $data) use ($seen, $show): void {
+            $seen[] = sprintf('end %s %s/%s', is_string($data['outcome']) ? $data['outcome'] : 'invalid', $show($data['transaction']), $show($data['depth']));
+        });
+
+        return $seen;
     }
 
     // ---- helpers -----------------------------------------------------------------------------------

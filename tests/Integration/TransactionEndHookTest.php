@@ -566,7 +566,11 @@ class TransactionEndHookTest extends TestCase
         $this->assertSame(['committed', 'rolled_back'], array_column($this->ends, 'outcome'));
     }
 
-    public function testAThrowingBeginListenerFiresNoEndAndTheNextTransactionEndsExactlyOnce(): void
+    /**
+     * The begin of the first transaction was told, so after its listener threw it gets its end:
+     * rolled back on raw PDO, without rollback listeners, with the exception the caller gets.
+     */
+    public function testAThrowingBeginListenerEndsItsTransactionOnceAndTheNextOneEndsExactlyOnce(): void
     {
         $db = $this->driver();
         $failOnce = true;
@@ -583,7 +587,8 @@ class TransactionEndHookTest extends TestCase
         } catch (RuntimeException $e) {
             $this->assertSame('begin listener failed', $e->getMessage());
         }
-        $this->assertSame([], $this->events, 'the raw rollback after a throwing begin listener fires nothing');
+        $this->assertSame(['end'], $this->events, 'the raw rollback runs no rollback listener, but the end is told');
+        $this->assertSame([['outcome' => 'rolled_back', 'error' => $e]], $this->ends);
         $this->assertFalse($db->inTransaction());
 
         // the next transaction on the same connection, ended by the callback's own rollback, owes exactly one end
@@ -594,7 +599,7 @@ class TransactionEndHookTest extends TestCase
             });
         } catch (RuntimeException) {
         }
-        $this->assertSame(['rollback', 'end'], $this->events);
+        $this->assertSame(['end', 'rollback', 'end'], $this->events);
     }
 
     public function testUpdateMultipleFiresEndForItsOwnTransaction(): void
@@ -685,7 +690,7 @@ class TransactionEndHookTest extends TestCase
         $this->assertSame(2, $db->table('users')->count());
     }
 
-    public function testThePayloadHasExactlyOutcomeAndError(): void
+    public function testThePayloadHasExactlyOutcomeErrorTransactionAndDepth(): void
     {
         $db = $this->driver();
         $db->on('transaction.end', function (array $data): void {
@@ -694,7 +699,7 @@ class TransactionEndHookTest extends TestCase
         $db->beginTransaction();
         $db->commit();
 
-        $this->assertSame(['commit', 'end', 'outcome,error'], $this->events);
+        $this->assertSame(['commit', 'end', 'outcome,error,transaction,depth'], $this->events);
         $this->assertSame('committed', DatabaseInterface::TRANSACTION_COMMITTED);
         $this->assertSame('rolled_back', DatabaseInterface::TRANSACTION_ROLLED_BACK);
         $this->assertSame('lost', DatabaseInterface::TRANSACTION_LOST);
@@ -746,7 +751,8 @@ class TransactionEndHookTest extends TestCase
 
     /**
      * The callback ends its transaction itself, then starts one whose begin listener throws: the
-     * raw rollback after that listener leaves nothing behind, so the outer cleanup reports no 'lost'.
+     * raw rollback after that listener tells that one's end and leaves nothing behind, so the outer
+     * cleanup reports no 'lost'.
      */
     public function testASelfRolledBackCallbackWhoseInnerTransactionFailsToStartReportsNoLost(): void
     {
@@ -772,8 +778,12 @@ class TransactionEndHookTest extends TestCase
             $this->assertSame('begin listener failed', $e->getMessage());
         }
 
-        $this->assertSame(['rollback', 'end'], $this->events);
-        $this->assertSame([['outcome' => 'rolled_back', 'error' => null]], $this->ends, 'one end for the explicit rollback, no stray lost');
+        $this->assertSame(['rollback', 'end', 'end'], $this->events);
+        $this->assertSame(
+            [['outcome' => 'rolled_back', 'error' => null], ['outcome' => 'rolled_back', 'error' => $e]],
+            $this->ends,
+            'one end for the explicit rollback, one for the transaction whose begin failed, no stray lost'
+        );
         $this->assertFalse($db->inTransaction());
     }
 
@@ -1312,7 +1322,8 @@ class TransactionEndHookTest extends TestCase
 
     /**
      * A commit listener begins a transaction through the library and ends it raw; a later commit
-     * listener leaves a transaction begun on raw PDO open. The raw one gets no end of its own: the
+     * listener leaves a transaction begun on raw PDO open. The first one was told begun, so it gets
+     * its end - 'lost': it ended outside the library. The raw one gets no end of its own: the
      * library's mark from the first listener's transaction was cleared when PDO confirmed no
      * transaction after it.
      */
@@ -1343,8 +1354,10 @@ class TransactionEndHookTest extends TestCase
             $this->assertFalse($e->connectionInTransaction);
         }
 
-        $this->assertSame(['commit', 'end'], $this->events);
-        $this->assertSame([['outcome' => 'committed', 'error' => null]], $this->ends, 'only the committed transaction tells its end');
+        $this->assertSame(['commit', 'end', 'end'], $this->events);
+        $this->assertSame(['lost', 'committed'], array_column($this->ends, 'outcome'), "the listener's transaction, then the committed one; the raw one tells none");
+        $this->assertInstanceOf(TransactionException::class, $this->ends[0]['error']);
+        $this->assertSame('Transaction ended outside this library', $this->ends[0]['error']->getMessage());
         $this->assertFalse($db->inTransaction());
     }
 
