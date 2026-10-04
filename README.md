@@ -48,13 +48,13 @@ $db = Database::mariadb([
 ]);
 ```
 
-`options` replace the library's PDO defaults, the security-relevant ones included: exceptions as error mode, native prepared statements (`PDO::ATTR_EMULATE_PREPARES => false`) and multi-statements switched off. No statement of the library needs multi-statements; switched on, a string that reaches raw PDO (`getPdo()->exec()`) or an emulated prepare could carry a second statement. `Pdo\Mysql::ATTR_MULTI_STATEMENTS => true` brings them back, for example for a migration that sends a whole file in one call. One option is refused: `PDO::ATTR_STRINGIFY_FETCHES` switched on (see "What Comes Back"). Set the connection charset with the `charset` key, never with `SET NAMES` at runtime: PDO's own escaping (emulated prepares, `PDO::quote()`) only knows the charset of the DSN. `port` must be a whole number between 1 and 65535, also when `Database::fromEnv()` reads it from `DB_PORT` (an invalid value throws a `ConnectionException` instead of falling back to the default).
+`options` replace the library's PDO defaults, the security-relevant ones included: exceptions as error mode, native prepared statements (`PDO::ATTR_EMULATE_PREPARES => false`) and multi-statements switched off. No statement of the library needs multi-statements; switched on, a string that reaches raw PDO (`getPdo()->exec()`) or an emulated prepare could carry a second statement. `Pdo\Mysql::ATTR_MULTI_STATEMENTS => true` brings them back, for example for a migration that sends a whole file in one call. Two options are pinned: `PDO::ATTR_STRINGIFY_FETCHES` stays off and `PDO::ATTR_ORACLE_NULLS` stays `PDO::NULL_NATURAL` (see "What Comes Back"). Set the connection charset with the `charset` key, never with `SET NAMES` at runtime: PDO's own escaping (emulated prepares, `PDO::quote()`) only knows the charset of the DSN. `port` must be a whole number between 1 and 65535, also when `Database::fromEnv()` reads it from `DB_PORT` (an invalid value throws a `ConnectionException` instead of falling back to the default).
 
-**What is refused when the connection opens.** The server must be MariaDB 10.11 or later, and pdo_mysql must be built on mysqlnd. Both are read from what the client got in the handshake, without sending anything: a MySQL server, an older MariaDB or another client library throws a `ConnectionException` at once ("MariaDB connection to host:port refused: ..."), and so does `reconnect()` when the new connection is one of them.
+**What is refused when the connection opens.** The server must be MariaDB 10.11 or later, and pdo_mysql must be built on mysqlnd. Both are read from what the client got in the handshake, without sending anything: a MySQL server, an older MariaDB or another client library throws a `ConnectionException` before the library sends a statement ("MariaDB connection to host:port refused: ..."; a `Pdo\Mysql::ATTR_INIT_COMMAND` has run in the handshake already), and so does `reconnect()` when the new connection is one of them. The version string may carry MariaDB's prefix for old clients (`5.5.5-10.11.9-MariaDB`) and MariaDB Enterprise's build number (`11.4.5-3-MariaDB-enterprise`); a proxy in between (MaxScale, ProxySQL) passes when it reports the server's version string, `-MariaDB` included. The check reads what the PDO object reports: a `pdoClass` of yours that reports something else is trusted, like the rest of your code.
 
 ### What Comes Back
 
-The PHP type of a fetched value is pinned, the same on MariaDB 10.11, 11.4 and 12.3, with native and with emulated prepares (measured with PHP 8.5 and mysqlnd):
+The PHP type of a fetched value is pinned, the same on MariaDB 10.11, 11.4 and 12.3, with native and with emulated prepares (measured with PHP 8.5 and mysqlnd, on 64-bit PHP - where an `int` has 32 bits, a `BIGINT` beyond it cannot arrive as one):
 
 | Column or expression | PHP type |
 |---|---|
@@ -65,7 +65,7 @@ The PHP type of a fetched value is pinned, the same on MariaDB 10.11, 11.4 and 1
 | `VARCHAR`, `TEXT`, `DATETIME`, `TIMESTAMP`, `JSON`, `JSON_UNQUOTE(JSON_EXTRACT(...))` | `string` |
 | `NULL` | `null` |
 
-The driver sets `PDO::ATTR_STRINGIFY_FETCHES` off and refuses `options` that switch it on: the setting would turn every value into a string, and the types above would no longer hold. Where an application needs strings, it casts. Whether a value arrives as `int` or as a string depends on the client, not on the server: these are mysqlnd's types, which is why another client library is refused.
+The driver sets `PDO::ATTR_STRINGIFY_FETCHES` off and refuses `options` that switch it on: the setting would turn every value into a string, and the types above would no longer hold. Likewise `PDO::ATTR_ORACLE_NULLS` stays `PDO::NULL_NATURAL`: `NULL_TO_STRING` would deliver `NULL` as `''`, `NULL_EMPTY_STRING` `''` as `null` - a connection with another mode is refused (the mode is read back from the connection, so every spelling counts). Where an application needs strings, it casts. Whether a value arrives as `int` or as a string depends on the client, not on the server: these are mysqlnd's types, which is why another client library is refused.
 
 ### One Config for Every Environment
 
@@ -262,7 +262,7 @@ $db->updateMultiple('users', [
 ], 'id');  // key column
 ```
 
-A row that holds nothing but the key column is skipped (nothing to update). **Note:** This method executes one UPDATE query per row within a transaction. Best suited for batch sizes under ~100 rows. For larger datasets, consider using `execute()` with database-specific bulk update syntax (e.g., `INSERT ... ON DUPLICATE KEY UPDATE` for MySQL).
+A row that holds nothing but the key column is skipped (nothing to update). **Note:** This method executes one UPDATE query per row within a transaction. Best suited for batch sizes under ~100 rows. For larger datasets, consider `execute()` with a bulk statement (`INSERT ... ON DUPLICATE KEY UPDATE`).
 
 ## Query Builder
 
@@ -406,7 +406,7 @@ $users = $db->table('users')
 
 The direction is `ASC` or `DESC` (any case, surrounding whitespace ignored); anything else (`'DESCENDING'`, `'down'`) throws a `QueryException` instead of silently sorting ascending.
 
-A string is always a column name, quoted - also one that came from a request. To order by an expression, pass it as an object; it may not carry bindings:
+A string is always a column name, quoted - also one that came from a request, and `'title as x'` is the name of one column there, not an alias. To order by an expression, pass it as an object; it may not carry bindings:
 
 ```php
 $db->table('tasks')->orderBy(Database::raw("FIELD(status, 'open', 'blocked', 'done')"))->get();
@@ -426,7 +426,7 @@ $db->transaction(function ($db) use ($id) {
 });
 ```
 
-The builder renders `FOR UPDATE` / `LOCK IN SHARE MODE`. `exists()` keeps the lock (`SELECT 1 ... LIMIT 1`); aggregates such as `count()` drop it - an aggregate returns no row a caller could go on to change. A lock combined with `distinct()`, `groupBy()` or `having()` throws a `QueryException`: such a result is not the rows the lock would hold.
+The builder renders `FOR UPDATE` / `LOCK IN SHARE MODE`. `exists()` (`SELECT 1 ... LIMIT 1`) and the aggregates keep the lock: `count()` under `lockForUpdate()` locks the rows it reads - in `REPEATABLE READ`, the default, the gaps between them too -, so "count, then insert" in one transaction is not overtaken by another transaction's insert. A lock combined with `distinct()`, `groupBy()` or `having()` throws a `QueryException`, for the aggregates too: such a result is not the rows the lock would hold.
 
 ### Group By, Having
 
@@ -467,9 +467,9 @@ $authors   = $db->table('posts')->groupBy('user_id')->having(Database::raw('COUN
 $revenue   = $db->table('orders')->distinct()->sum('amount');                      // SUM(DISTINCT amount)
 ```
 
-`sum()` and `avg()` return the number as the database delivers it, not converted to a float: what the database computed exactly - a sum of `BIGINT` values beyond 2^53, a `DECIMAL` sum of money - arrives exactly. That is an integer, a float or a numeric string, depending on the database and the column type (see [Database Differences](#database-differences)), and `null` when there is nothing to add up (no rows, or only `NULL`). Cast where a number is wanted - `(float) $db->table('orders')->sum('total')` -, or hand the string to an arbitrary-precision function (`bcadd()`).
+`sum()` and `avg()` return the number as the database delivers it, not converted to a float: what the database computed exactly - a sum of `BIGINT` values beyond 2^53, a `DECIMAL` sum of money - arrives exactly. MariaDB delivers a numeric string for integer and `DECIMAL` columns and a float for `FLOAT`/`DOUBLE` (see [What Comes Back](#what-comes-back)), and `null` when there is nothing to add up (no rows, or only `NULL`); any other type throws a `QueryException` instead of passing for "no value". Cast where a number is wanted - `(float) $db->table('orders')->sum('total')` -, or hand the string to an arbitrary-precision function (`bcadd()`).
 
-`sum()`, `avg()`, `min()` and `max()` combined with `groupBy()` throw a `QueryException`: one value per group is ambiguous, select the aggregate explicitly with `Database::raw()` and `get()` instead. `distinct()->count()` counts a derived table, which needs unique output names (MariaDB rejects repeated ones): two columns named alike (`users.id`, `orders.id`), a wildcard next to other entries, or a bare `*` over a join throw a `QueryException` - alias the columns (`orders.id as order_id`) or use `count('column')`; a single `table.*` is fine, `Database::raw()` entries are not inspected. With `groupBy()`, only aliased `select()` entries (`'country as c'`, `Database::raw('LOWER(name) AS ln')`, `Database::raw('COUNT(*) AS n')`) stay in the counted query, so `groupBy('ln')` works everywhere and `having('n', '>', 1)` (MariaDB accepts select aliases in `HAVING`). `having()` without `groupBy()` treats the whole result as one group: `count()` returns its row count, and `distinct()` only applies to `count('column')` then.
+`sum()`, `avg()`, `min()` and `max()` combined with `groupBy()` throw a `QueryException`: one value per group is ambiguous, select the aggregate explicitly with `Database::raw()` and `get()` instead. `distinct()->count()` counts a derived table, which needs unique output names (MariaDB rejects repeated ones): two columns named alike (`users.id`, `orders.id`), a wildcard next to other entries, or a bare `*` over a join throw a `QueryException` - alias the columns (`orders.id as order_id`) or use `count('column')`; a single `table.*` is fine, `Database::raw()` entries are not inspected. With `groupBy()`, only aliased `select()` entries (`'country as c'`, `Database::raw('LOWER(name) AS ln')`, `Database::raw('COUNT(*) AS n')`) stay in the counted query, so `groupBy('ln')` and `having('n', '>', 1)` work (MariaDB accepts select aliases in `GROUP BY` and `HAVING`); MariaDB compares aliases without case, quoted or not, so `'country as C'` and `Database::raw('COUNT(*) AS c')` are one name. `having()` without `groupBy()` treats the whole result as one group: `count()` returns its row count, and `distinct()` only applies to `count('column')` then.
 
 ### Insert, Update, Delete via Query Builder
 
@@ -529,7 +529,7 @@ $inserted = $db->table('subscriptions')->insertIgnore(['user_id' => $userId, 'to
 
 `insertWhen()` renders `INSERT INTO codes (...) SELECT ?, ? FROM DUAL WHERE (condition)`. The condition is trusted developer SQL, like `whereRaw()`: never build it from user input. Check and insert see one snapshot, but two concurrent calls can still both insert: an invariant like "one open code per user" needs a `UNIQUE` constraint, a row lock (`lockForUpdate()` on the user row) or `SERIALIZABLE` on top. After a return of 0, `lastInsertId()` is meaningless. Clauses set on the builder (`where*()`, joins, `groupBy()`/`having()`, `orderBy()`, `limit()`/`offset()`, `distinct()`, locks) are not part of the statement and make `insertWhen()` and `insertIgnore()` throw; a `select()` is ignored.
 
-`increment()` and `decrement()` follow the rules of `update()` (a `where()` is required; `limit()` with `orderBy()`), bind the step, set `$extra` in the same statement after the column, and return the affected rows; `$extra` must not set the column itself. `whereIn()` with an empty list renders `1 = 0`; `whereNotIn()` with an empty list throws - "not in nothing" would match every row, in a `delete()` every row of the table.
+`increment()` and `decrement()` follow the rules of `update()` (a `where()` is required; `limit()` with `orderBy()`), set `$extra` in the same statement after the column, and return the affected rows; `$extra` must not set the column itself, also not in another case or as `table.column`. The step is bound and cast, so that the server adds it exactly (`col + CAST(? AS SIGNED)` for an `int`, `CAST(? AS DECIMAL(65,30))` for a `float`): bound as text it would make MariaDB add in `DOUBLE`, and a `BIGINT` beyond 2^53 or a `DECIMAL` with more digits than a double holds would come back rounded. A float the cast would change throws a `QueryException`: `INF`, `NAN`, a magnitude from `1e35` (beyond the 35 integer digits), and one below `1e-13` other than `0` (the up to 17 digits PHP writes for a float could reach past the 30th decimal place); add it with `update()` and `Database::raw()`. `whereIn()` with an empty list renders `1 = 0`; `whereNotIn()` with an empty list throws - "not in nothing" would match every row, in a `delete()` every row of the table.
 
 ### Debug Query
 
@@ -946,7 +946,7 @@ The suite has three parts:
 - `tests/Contract` is what every driver of this library must do the same way. These tests name no database and write no DDL: they reach the database only through a **binding** (`tests/Support/Binding/DriverBinding.php`) - how to connect, the tables from a small set of column types, and the few facts that do differ between databases (error codes, the types of aggregates, the order of a SET list). The binding is chosen with `PDO_WRAPPER_TEST_DRIVER` (default `mariadb`).
 - `tests/Driver/MariaDb` is what only MariaDB has: deadlocks and error 1020, implicit commits, the version and client checks, the pinned result types.
 
-**The contract for a new driver:** a driver for another database comes with a binding of its own, and it passes all of `tests/Contract` with it, unchanged - plus tests of its own for what only its database does. Only then is it part of the library.
+**The contract for a new driver:** a driver for another database comes with a binding of its own (registered in `ContractTestCase::binding()`), and it passes all of `tests/Contract` with it, unchanged - plus tests of its own for what only its database does. Only then is it part of the library. The contract tests what a driver does, not the SQL text: the SQL the builder renders is tested in `tests/Unit` and `tests/Driver/MariaDb`. It runs the shared base (`AbstractDriver`, `QueryBuilder`) through the driver, and that base renders MariaDB's SQL (backtick quoting, `FROM DUAL`, `ON DUPLICATE KEY UPDATE`): a driver for a database with another dialect first brings a dialect seam back into it.
 
 ## Acknowledgments
 

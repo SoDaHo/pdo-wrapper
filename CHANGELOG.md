@@ -7,23 +7,26 @@
 ### Removed
 - The SQLite and PostgreSQL drivers (`SqliteDriver`, `PostgresDriver`, `Database::sqlite()`, `Database::postgres()`, `DB_SQLITE_PATH`), and with them the dialect switch of the query builder (`QueryBuilder::DIALECT_*`, its third and fourth constructor argument) and the drivers' `getQuoteChar()` / `getDialect()`.
 - MySQL: a MySQL server is refused when the connection opens.
-- From `DatabaseInterface`: `insertIgnore()`, `insertWhen()`, `updateMultiple()`, `lastInsertId()`, `utcNow()` - they stay public on every driver and are declared in the `@internal` interface `InternalMethods` (the builder's `insertIgnore()` / `insertWhen()` are unchanged).
+- From `DatabaseInterface`: `insertIgnore()`, `insertWhen()`, `updateMultiple()`, `lastInsertId()`, `utcNow()` - they stay public on every driver and are declared in the `@internal` interface `InternalMethods` (the builder's `insertIgnore()` / `insertWhen()` are unchanged). `Database::connect()` and `fromEnv()` return `MariaDbDriver`, which has them.
+- `AbstractDriver::validPdoClass()` is protected (it was public for the SQLite factory).
 
 ### Changed
 - The driver is `MariaDbDriver`, created with `Database::mariadb()` or `connect()` / `fromEnv()` with the driver name `mariadb`. `mysql` throws, saying the driver is called `mariadb` now; so do `pgsql`, `postgres`, `postgresql` and `sqlite`.
 - When the connection opens (and at `reconnect()`): the server must be MariaDB 10.11 or later and pdo_mysql built on mysqlnd, read from the handshake without a statement; otherwise a `ConnectionException`.
-- The PHP types of fetched values are pinned (README, "What Comes Back"): `ATTR_STRINGIFY_FETCHES` is set off, and `options` that switch it on are refused.
+- The PHP types of fetched values are pinned (README, "What Comes Back"): `ATTR_STRINGIFY_FETCHES` is set off, and `options` that switch it on are refused; `ATTR_ORACLE_NULLS` is `NULL_NATURAL`, and a connection with another mode is refused (`NULL` would arrive as `''`, or `''` as `null`).
 - Error 1020 (a row another transaction changed since this one read it, under `innodb_snapshot_isolation`, on by default since MariaDB 11.6.2) ends the transaction like a deadlock: nothing more is sent until `rollback()`, and the commit is refused.
 - `limit()` on `update()` and `delete()` needs an `orderBy()`: without one, which rows are hit would be up to the server.
 - `whereIn()` with an empty list matches no row (`1 = 0`) instead of throwing; `whereNotIn()` with an empty list still throws.
 - `AbstractDriver::now()` / `utcNow()` are `NOW()` / `UTC_TIMESTAMP()` (were `CURRENT_TIMESTAMP` for a custom driver); `UniqueViolationException::$constraint` is the key name as MariaDB prints it.
-- `sum()` / `avg()` return `float|string|null` (was `int|float|string|null`): MariaDB delivers a numeric string for integer and `DECIMAL` columns, a float for `FLOAT`/`DOUBLE`.
+- `sum()` / `avg()` return `float|string|null` (was `int|float|string|null`): MariaDB delivers a numeric string for integer and `DECIMAL` columns, a float for `FLOAT`/`DOUBLE`; another type throws.
+- Aggregates keep a row lock: `lockForUpdate()->count()` renders `SELECT COUNT(*) ... FOR UPDATE` and locks what it reads (the lock was dropped, for PostgreSQL, which refuses it), so "count, then insert" in one transaction is not overtaken. A lock with `distinct()`, `groupBy()` or `having()` throws for aggregates as for `get()`.
+- Aliases are compared without case also when a `Database::raw()` entry quotes them (`` AS `N` ``), as MariaDB does.
 
 ### Added
 - `off($event, $callback)` on `DatabaseInterface`: removes a listener; an unknown event or a callback that is not registered throws.
 - `reconnect()` on `DatabaseInterface`.
-- `increment()` / `decrement()` on the query builder: `UPDATE ... SET col = col + ?`, with further columns in the same statement.
-- `orderBy()` takes an expression (`Database::raw()`, without bindings); a string stays a quoted column name.
+- `increment()` / `decrement()` on the query builder: `UPDATE ... SET col = col + CAST(? AS SIGNED)` (a float step: `DECIMAL(65,30)`), exact also for a `BIGINT` beyond 2^53 and a long `DECIMAL`, with further columns in the same statement.
+- `orderBy()` takes an expression (`Database::raw()`, without bindings); a string stays a quoted column name, also one that contains `as`.
 
 ### Upgrading from 2.x
 | 2.x | 3.0 |
@@ -31,10 +34,11 @@
 | `Database::mysql($config)`, `new MySqlDriver($config)` | `Database::mariadb($config)`, `new MariaDbDriver($config)` |
 | `connect(['driver' => 'mysql', ...])`, `DB_DRIVER=mysql` | `'driver' => 'mariadb'`, `DB_DRIVER=mariadb` |
 | `Database::sqlite()`, `Database::postgres()`, `DB_SQLITE_PATH` | gone: MariaDB only |
-| `$db->insertIgnore($t, $row)` on a `DatabaseInterface` | `$db->table($t)->insertIgnore($row)`, or type the driver as `MariaDbDriver` |
+| `insertIgnore()`, `insertWhen()`, `updateMultiple()`, `lastInsertId()`, `utcNow()` on a `DatabaseInterface` | type the connection as `MariaDbDriver` (what the factories return), or use the builder: `$db->table($t)->insertIgnore($row)` |
 | `->limit(n)->delete()` / `->limit(n)->update()` without `orderBy()` | add `->orderBy(...)` (a unique key) |
 | `whereIn('id', [])` threw | matches nothing: drop the `=== []` guard if it only avoided the exception |
-| `options` with `PDO::ATTR_STRINGIFY_FETCHES => true` | refused: cast in the application |
+| `options` with `PDO::ATTR_STRINGIFY_FETCHES => true` or `PDO::ATTR_ORACLE_NULLS` other than `NULL_NATURAL` | refused: cast or convert in the application |
+| `lockForUpdate()->count()` (and the other aggregates) ran unlocked | locks what it reads; drop the lock where none is wanted |
 | a custom driver overriding `getQuoteChar()` / `getDialect()` | gone: identifiers are quoted with backticks |
 | `new QueryBuilder($db, $table, $quote, $dialect)` | `$db->table($table)` (the constructor takes `$db` and `$table` only) |
 
