@@ -281,7 +281,7 @@ interface DatabaseInterface
      *
      * @throws Exception\QueryException When $where is empty (safety), a condition value is null, or the query fails (an Exception\UniqueViolationException for a duplicate key)
      *
-     * @return int Number of affected rows as the database counts them: MariaDB counts the rows actually changed
+     * @return int Number of affected rows as the database counts them: MariaDB counts the rows actually changed - the rows matched with ATTR_FOUND_ROWS, and possibly on a persistent connection an earlier request opened with it
      */
     public function update(string $table, array $data, array $where): int;
 

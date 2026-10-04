@@ -307,7 +307,8 @@ class MariaDbDriver extends AbstractDriver
      * class (ask isNamedLockHeld() first where that can happen).
      *
      * A persistent connection does not end with the request: a lock a request dies holding stays
-     * held until that pooled connection ends. Two connections that wait for each other's lock end
+     * held until that pooled connection ends, and the next request on it holds it (isNamedLockHeld()
+     * true, namedLock() throws the reentry exception). Two connections that wait for each other's lock end
      * in a deadlock: MariaDB fails one GET_LOCK() with 1213 and keeps the transaction (measured),
      * but this library takes 1213 for a deadlock that ended it and refuses further statements
      * until rollback() - fail-closed. Take named locks outside transactions or in one order, and

@@ -24,8 +24,9 @@ use Sodaho\PdoWrapper\Exception\QueryException;
  * the document as text ('net-a', '5', '1.50', 'true'); SQL NULL for a missing field, a document
  * that is no valid JSON and a NULL column - so a row without the field matches no comparison
  * but IS / IS NOT -; and the text 'null' for a JSON null. It is compared and ordered as text
- * under utf8mb4_bin: '12' < '5', '1.5' <> '1.50', case and accents count. Cast for a number
- * (Database::raw('CAST(' . $json . ' AS DECIMAL(20,6))')).
+ * under utf8mb4_bin: '12' < '5', '1.5' <> '1.50', case and accents count. Cast a field that
+ * holds numbers (Database::raw('CAST(' . $json . ' AS DECIMAL(20,6))')): text, 'true' and JSON
+ * null cast to 0 with a warning only, and the cast rounds to its places.
  *
  * (string) is the expression itself, the same a virtual column can be declared with; see the
  * README on using its index.
