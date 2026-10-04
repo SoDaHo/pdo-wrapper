@@ -22,6 +22,7 @@ use Sodaho\PdoWrapper\Query\RawExpression;
 use Sodaho\PdoWrapper\Traits\HasHooks;
 use Stringable;
 use Throwable;
+use WeakReference;
 
 /**
  * Abstract base driver implementing common database operations.
@@ -88,9 +89,12 @@ abstract class AbstractDriver implements DatabaseInterface
      * commitOwnTransaction() tells the failure of the commit() it called by both - not by the
      * class: a driver hook or an error handler may throw a CommitFailedException that belongs to
      * another commit - of an earlier transaction, or one it issued itself in the middle of this
-     * one, for this transaction or for one it began.
+     * one, for this transaction or for one it began. Held weakly: commitOwnTransaction() holds the
+     * failure it caught while it compares, and the driver must not keep it alive after that - its
+     * previous exception's trace may hold a statement of a connection reconnect() has discarded
+     * meanwhile (an end listener of the refused commit's 'lost' that reconnects).
      *
-     * @var array{CommitFailedException, int}|null
+     * @var array{WeakReference<CommitFailedException>, int}|null
      */
     private ?array $thrownByCommit = null;
 
@@ -1082,7 +1086,7 @@ abstract class AbstractDriver implements DatabaseInterface
                     debugMessage: $reason
                 );
                 $this->endFailedCommitIfGone($refusal, false, $ended, $number);
-                $this->thrownByCommit = [$refusal, $call]; // after the listeners: a failed commit() of theirs would stand here instead
+                $this->thrownByCommit = [WeakReference::create($refusal), $call]; // after the listeners: a failed commit() of theirs would stand here instead
 
                 throw $refusal;
             }
@@ -1108,7 +1112,7 @@ abstract class AbstractDriver implements DatabaseInterface
                 debugMessage: $e->getMessage()
             );
             $this->endFailedCommitIfGone($failure, $wasOpen, $ended, $number);
-            $this->thrownByCommit = [$failure, $call];
+            $this->thrownByCommit = [WeakReference::create($failure), $call];
 
             throw $failure;
         }
@@ -1122,7 +1126,7 @@ abstract class AbstractDriver implements DatabaseInterface
                 debugMessage: 'PDO::commit() returned false'
             );
             $this->endFailedCommitIfGone($failure, $wasOpen, $ended, $number);
-            $this->thrownByCommit = [$failure, $call];
+            $this->thrownByCommit = [WeakReference::create($failure), $call];
 
             throw $failure;
         }
@@ -1809,6 +1813,7 @@ abstract class AbstractDriver implements DatabaseInterface
             return null;
         }
         [$failure, $thrownBy] = $this->thrownByCommit;
+        $failure = $failure->get(); // null once nothing else holds it: then it is not $e either
 
         return $e === $failure && $thrownBy === $call ? $failure : null;
     }
@@ -1964,10 +1969,10 @@ abstract class AbstractDriver implements DatabaseInterface
             return;
         }
         unset($old); // the old connection closes at the swap below, before any end listener runs - unless someone else holds it
-        // So does what the driver keeps of it: a remembered failure and a refused commit hold the
-        // failed statement in their trace (with arguments kept), and the statement holds its PDO object
+        // So does what the driver keeps of it: a remembered failure holds the failed statement in its
+        // trace (with arguments kept), and the statement holds its PDO object. A refused commit the
+        // driver holds only weakly ($thrownByCommit).
         $this->suspectFailure = null;
-        $this->thrownByCommit = null;
 
         // What is owed is read now, not before: foreign code inside that ROLLBACK (an error handler)
         // may have ended the transaction through this driver - that call told its end - or begun

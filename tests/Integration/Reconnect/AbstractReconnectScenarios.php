@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Sodaho\PdoWrapper\Tests\Integration\Reconnect;
 
 use PDO;
+use PDOStatement;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
 use Sodaho\PdoWrapper\DatabaseInterface;
@@ -486,6 +487,46 @@ abstract class AbstractReconnectScenarios extends TestCase
         $this->db->reconnect();
 
         $this->assertSame([false], $alive);
+    }
+
+    /**
+     * The driver keeps nothing of a commit that failed - thrown, or reported by returning false -
+     * once its caller drops the exception: what its trace holds with arguments kept (here a
+     * statement of the old connection, an argument of the call commit() was made from) goes with
+     * it, and the old connection closes at reconnect().
+     */
+    public function testAFailedCommitIsNotKeptByTheDriver(): void
+    {
+        $ignoreArgs = ini_get('zend.exception_ignore_args');
+        ini_set('zend.exception_ignore_args', '0');
+        try {
+            foreach (['thrown' => true, 'returned false' => false] as $case => $thrown) {
+                $old = WeakReference::create($this->db->getPdo());
+                (function () use ($thrown): void {
+                    $this->db->beginTransaction();
+                    if ($thrown) {
+                        $this->scenarioPdo()->failCommit = true;
+                    } else {
+                        $this->scenarioPdo()->commitReturnsFalse = true;
+                    }
+                    $commit = function (PDOStatement $held): void {
+                        $this->db->commit();
+                    };
+                    try {
+                        $commit($this->db->getPdo()->prepare('SELECT 1'));
+                        $this->fail('Expected CommitFailedException');
+                    } catch (CommitFailedException) {
+                        // dropped here
+                    }
+                })();
+
+                $this->db->reconnect();
+
+                $this->assertNull($old->get(), $case);
+            }
+        } finally {
+            ini_set('zend.exception_ignore_args', (string) $ignoreArgs);
+        }
     }
 
     /**

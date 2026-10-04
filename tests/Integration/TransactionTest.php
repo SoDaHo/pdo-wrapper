@@ -1175,6 +1175,47 @@ class TransactionTest extends TestCase
     }
 
     /**
+     * 'transaction.commit' and 'transaction.end' listeners get an array of their own each, as in
+     * 2.0: one that takes it by reference cannot be called with it - PHP throws an Error, which is
+     * that listener's failure. The others are told as always, and the transaction is committed.
+     */
+    public function testACommitOrEndListenerCannotTakeItsPayloadByReference(): void
+    {
+        $told = [];
+        $this->db->on('transaction.commit', static function (array &$data): void {
+            $data['marked'] = true;
+        });
+        $this->db->on('transaction.commit', static function (array $data) use (&$told): void {
+            $told[] = $data;
+        });
+        $this->db->on('transaction.end', static function (array &$data): void {
+            $data['marked'] = true;
+        });
+        $this->db->on('transaction.end', static function (array $data) use (&$told): void {
+            $told[] = $data;
+        });
+
+        $this->db->beginTransaction();
+        $this->db->insert('users', ['name' => 'kept']);
+        try {
+            $this->db->commit();
+            $this->fail('Expected CommitHookException');
+        } catch (CommitHookException $e) {
+            $this->assertCount(2, $e->failures);
+            foreach ($e->failures as $failure) {
+                $this->assertInstanceOf(Error::class, $failure);
+                $this->assertStringContainsString('could not be passed by reference', $failure->getMessage());
+            }
+        }
+
+        $this->assertSame([
+            ['transaction' => 1, 'depth' => 1],
+            ['outcome' => 'committed', 'error' => null, 'transaction' => 1, 'depth' => 1],
+        ], $told);
+        $this->assertSame(1, $this->userCount($this->db));
+    }
+
+    /**
      * SQLite driver on a ScenarioPdo ($this->scenarioPdo): the ROLLBACKs sent are counted there -
      * after a successful commit there must be none -, and its commit() and rollBack() fail on demand.
      */

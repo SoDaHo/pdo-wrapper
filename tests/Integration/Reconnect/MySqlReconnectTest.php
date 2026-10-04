@@ -9,7 +9,10 @@ use Pdo\Mysql;
 use PHPUnit\Framework\Attributes\Group;
 use Sodaho\PdoWrapper\Database;
 use Sodaho\PdoWrapper\Driver\AbstractDriver;
+use Sodaho\PdoWrapper\Exception\CommitFailedException;
+use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Tests\Support\TestEnvironment;
+use WeakReference;
 
 #[Group('mysql')]
 class MySqlReconnectTest extends AbstractReconnectScenarios
@@ -45,6 +48,65 @@ class MySqlReconnectTest extends AbstractReconnectScenarios
                 $this->assertFalse($held->inTransaction(), 'the old connection is still open, its transaction rolled back');
             }
             unset($held);
+        }
+    }
+
+    /**
+     * A failing DDL statement commits the transaction implicitly: commit() is refused, finds the
+     * transaction gone and tells its 'lost' at once - and an end listener that reconnects on 'lost'
+     * discards the old connection while commit() is still under way. The refusal keeps the failed
+     * statement in its trace (with arguments kept), the statement its PDO object: the driver does
+     * not keep the refusal, so the old connection is closed once the caller drops it - after
+     * commit() and after transaction().
+     */
+    public function testARefusedCommitWhoseEndListenerReconnectsDoesNotKeepTheOldConnectionOpen(): void
+    {
+        $ignoreArgs = ini_get('zend.exception_ignore_args');
+        ini_set('zend.exception_ignore_args', '0');
+        try {
+            $db = $this->connect(); // no listener of the test's own: nothing here keeps the refusal
+            $outcomes = [];
+            $db->on('transaction.end', static function (array $end) use ($db, &$outcomes): void {
+                $outcomes[] = $end['outcome'];
+                if ($end['outcome'] === 'lost') {
+                    $db->reconnect();
+                }
+            });
+            $failDdl = static function () use ($db): void {
+                try {
+                    $db->execute('CREATE TABLE ' . self::TABLE . ' (id INT PRIMARY KEY)'); // exists: fails, and commits
+                } catch (QueryException) {
+                    // swallowed: the commit finds out
+                }
+            };
+
+            $old = WeakReference::create($db->getPdo());
+            (function () use ($db, $failDdl): void {
+                $db->beginTransaction();
+                $failDdl();
+                try {
+                    $db->commit();
+                    $this->fail('Expected CommitFailedException');
+                } catch (CommitFailedException $e) {
+                    $this->assertSame('lost', $e->outcome);
+                }
+            })();
+            $this->assertSame(['lost'], $outcomes);
+            $this->assertNull($old->get(), 'commit(): the old connection is closed');
+
+            $old = WeakReference::create($db->getPdo());
+            (function () use ($db, $failDdl): void {
+                try {
+                    $db->transaction($failDdl);
+                    $this->fail('Expected CommitFailedException');
+                } catch (CommitFailedException $e) {
+                    $this->assertSame('lost', $e->outcome);
+                }
+            })();
+            $this->assertSame(['lost', 'lost'], $outcomes);
+            $this->assertNull($old->get(), 'transaction(): the old connection is closed');
+        } finally {
+            ini_set('zend.exception_ignore_args', (string) $ignoreArgs);
         }
     }
 
