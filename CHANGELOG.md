@@ -18,11 +18,15 @@
 - `limit()` on `update()` and `delete()` needs an `orderBy()`: without one, which rows are hit would be up to the server.
 - `whereIn()` with an empty list matches no row (`1 = 0`) instead of throwing; `whereNotIn()` with an empty list still throws.
 - `AbstractDriver::now()` / `utcNow()` are `NOW()` / `UTC_TIMESTAMP()` (were `CURRENT_TIMESTAMP` for a custom driver); `UniqueViolationException::$constraint` is the key name as MariaDB prints it.
+- A float is bound as the shortest text that reads back as the same float, not with PHP's `precision` setting (14 digits): `0.1234567890123456` is no longer stored as `0.12345678901235`, `9007199254740994.0` in a `BIGINT` no longer as `9007199254741000`; a computed float no longer equals the `DECIMAL` it was rounded into before.
 - `sum()` / `avg()` return `float|string|null` (was `int|float|string|null`): MariaDB delivers a numeric string for integer and `DECIMAL` columns, a float for `FLOAT`/`DOUBLE`; another type throws.
 - Aggregates keep a row lock: `lockForUpdate()->count()` renders `SELECT COUNT(*) ... FOR UPDATE` and locks what it reads (the lock was dropped, for PostgreSQL, which refuses it), so "count, then insert" in one transaction is not overtaken. A lock with `distinct()`, `groupBy()` or `having()` throws for aggregates as for `get()`.
 - Aliases are compared without case also when a `Database::raw()` entry quotes them (`` AS `N` ``), as MariaDB does.
 
 ### Added
+- `Database::json($column, $path)`: a value inside a JSON column as text (`JSON_UNQUOTE(JSON_EXTRACT(...))`, the path checked and written in), with `->as($alias)` and `->orColumn($column)`; every `where*()` method takes it - or another expression without bindings - as its column.
+- `upsert($row, $update)` and `upsertReturning($row, $update, $columns)` on the query builder (`ON DUPLICATE KEY UPDATE`, the update in its order, `RETURNING`); `insertWhen()` takes an `$update`, `insertWhenReturning()` returns the row or null; `Database::value($column)` for `VALUE(col)`.
+- Named locks on `MariaDbDriver`: `namedLock($name, $timeout = 0)`, `releaseNamedLock($name)`, `isNamedLockHeld($name)` (`GET_LOCK()`, the name prefixed with the database, a second hold refused).
 - `off($event, $callback)` on `DatabaseInterface`: removes a listener; an unknown event or a callback that is not registered throws.
 - `reconnect()` on `DatabaseInterface`.
 - `increment()` / `decrement()` on the query builder: `UPDATE ... SET col = col + CAST(? AS SIGNED)` (a float step: its shortest exact decimal text as `DECIMAL(65,30)`), exact also for a `BIGINT` beyond 2^53 and a long `DECIMAL`, with further columns in the same statement (not the column itself, in any case; with them, names beyond ASCII are refused).
@@ -39,6 +43,7 @@
 | `whereIn('id', [])` threw | matches nothing: drop the `=== []` guard if it only avoided the exception |
 | `options` with `PDO::ATTR_STRINGIFY_FETCHES => true` or `PDO::ATTR_ORACLE_NULLS` other than `NULL_NATURAL` | refused: cast or convert in the application |
 | `lockForUpdate()->count()` (and the other aggregates) ran unlocked | locks what it reads; drop the lock where none is wanted |
+| `where('price', 0.1 + 0.2)` matched the `DECIMAL` 0.30 (floats went out with 14 digits) | compare and write `DECIMAL` columns with a string (`'0.30'`) or a rounded value (`round($x, 2)`) |
 | a custom driver overriding `getQuoteChar()` / `getDialect()` | gone: identifiers are quoted with backticks |
 | `new QueryBuilder($db, $table, $quote, $dialect)` | `$db->table($table)` (the constructor takes `$db` and `$table` only) |
 

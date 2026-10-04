@@ -67,6 +67,8 @@ The PHP type of a fetched value is pinned, the same on MariaDB 10.11, 11.4 and 1
 
 The driver sets `PDO::ATTR_STRINGIFY_FETCHES` off and refuses `options` that switch it on: the setting would turn every value into a string, and the types above would no longer hold. Likewise `PDO::ATTR_ORACLE_NULLS` stays `PDO::NULL_NATURAL`: `NULL_TO_STRING` would deliver `NULL` as `''`, `NULL_EMPTY_STRING` `''` as `null` - a connection with another mode is refused (the mode is read back from the connection, so every spelling counts). Where an application needs strings, it casts. Whether a value arrives as `int` or as a string depends on the client, not on the server: these are mysqlnd's types, which is why another client library is refused.
 
+**What goes in.** Every value is bound as text; a `bool` as `'1'`/`'0'`, a `float` as the shortest decimal text that reads back as the same float (`0.1` as `'0.1'`, `0.1 + 0.2` as `'0.30000000000000004'`) - not as PHP's `precision` setting writes it, which cuts after 14 digits and differs between installations. So a float keeps all its digits in a `DOUBLE` column and in a comparison. The other side: a computed float is not rounded into the `DECIMAL` it was meant to equal - `where('price', 0.1 + 0.2)` does not find `0.30`. Write and compare `DECIMAL` columns with a string (`'0.30'`) or a rounded value (`round($x, 2)`), never with a computed float.
+
 ### One Config for Every Environment
 
 `Database::connect()` picks the driver from the config (`driver`) and delegates to `mariadb()` with the same keys:
@@ -471,6 +473,28 @@ $revenue   = $db->table('orders')->distinct()->sum('amount');                   
 
 `sum()`, `avg()`, `min()` and `max()` combined with `groupBy()` throw a `QueryException`: one value per group is ambiguous, select the aggregate explicitly with `Database::raw()` and `get()` instead. `distinct()->count()` counts a derived table, which needs unique output names (MariaDB rejects repeated ones): two columns named alike (`users.id`, `orders.id`), a wildcard next to other entries, or a bare `*` over a join throw a `QueryException` - alias the columns (`orders.id as order_id`) or use `count('column')`; a single `table.*` is fine, `Database::raw()` entries are not inspected. With `groupBy()`, only aliased `select()` entries (`'country as c'`, `Database::raw('LOWER(name) AS ln')`, `Database::raw('COUNT(*) AS n')`) stay in the counted query, so `groupBy('ln')` and `having('n', '>', 1)` work (MariaDB accepts select aliases in `GROUP BY` and `HAVING`); MariaDB compares aliases without case, quoted or not, so `'country as C'` and `Database::raw('COUNT(*) AS c')` are one name. `having()` without `groupBy()` treats the whole result as one group: `count()` returns its row count, and `distinct()` only applies to `count('column')` then.
 
+### JSON Values
+
+`Database::json($column, $path)` is a value inside a JSON column, as text - `JSON_UNQUOTE(JSON_EXTRACT(`payload`, '$.net'))` - for `where*()`, `select()` (named with `->as()`), `groupBy()` and `orderBy()`; `->orColumn('ip')` falls back to a column where the document has no value (`COALESCE(..., `ip`)`):
+
+```php
+use Sodaho\PdoWrapper\Database;
+
+$db->table('events')->where(Database::json('payload', '$.user.id'), '7')->count();
+
+$net = Database::json('payload', '$.net')->orColumn('ip');
+$rows = $db->table('events')
+    ->select([$net->as('net'), Database::raw('COUNT(*) AS n')])
+    ->groupBy($net)
+    ->having('n', '>', 1)        // in having(), the alias: MariaDB does not resolve the JSON column there
+    ->orderBy($net)
+    ->get();
+```
+
+The path is written into the SQL, not bound (bound, MariaDB rejects a `GROUP BY` on it under `ONLY_FULL_GROUP_BY`), so it is checked: `$` followed by `.name` and `[n]` steps, nothing else (`$.items[0].id`); anything else throws a `QueryException`. What comes back is text: `'a'`, `'5'`, `'1.50'`, `'true'`; a missing field, a document that is no valid JSON and a `NULL` column give `null` (such a row matches no comparison; `whereNull()` finds it); a JSON `null` gives the text `'null'`. In strict mode (MariaDB's default) an `update()` or `increment()` whose condition reads a document that is no valid JSON fails with error 4038 - a select or delete only warns; a `JSON` column keeps invalid documents out.
+
+An index: declare a virtual column with the same expression and the collation the JSON functions return, and index it - `net VARCHAR(64) COLLATE utf8mb4_bin AS (JSON_UNQUOTE(JSON_EXTRACT(payload, '$.net'))) VIRTUAL, INDEX (net)`. From MariaDB 11.8 a `where()` on `Database::json('payload', '$.net')` uses that index (measured on 12.3; not with another collation, not for `orderBy()`); before 11.8, query the column itself (`where('net', ...)`).
+
 ### Insert, Update, Delete via Query Builder
 
 ```php
@@ -525,7 +549,31 @@ $inserted = $db->table('codes')->insertWhen(
 
 // Insert unless a unique key or the primary key collides
 $inserted = $db->table('subscriptions')->insertIgnore(['user_id' => $userId, 'topic' => 'news']); // 1 or 0
+
+// Insert, or change the row it collides with: 1 inserted, 2 updated, 0 unchanged
+$db->table('login_attempts')->upsert(
+    ['ip' => $ip, 'window' => $window, 'count' => 1],
+    ['count' => Database::raw('count + 1')]
+);
+
+// The same, returning the row after the statement
+$row = $db->table('login_attempts')->upsertReturning(
+    ['ip' => $ip, 'window' => $window, 'count' => 1],
+    ['count' => Database::raw('IF(count < ?, count + 1, count)', [$max])],
+    ['id', 'count']
+);
+
+// insertWhen() with an update, returning the row - or null when the condition was false
+$row = $db->table('shares')->insertWhenReturning(
+    ['user_id' => $userId, 'n' => 1],
+    '? = 1',
+    [$allowed ? 1 : 0],
+    ['n' => Database::raw('n + 1')],
+    ['n']
+);
 ```
+
+`upsert()` renders `INSERT INTO login_attempts (ip, window, count) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE count = count + 1` (names quoted); `upsertReturning()` adds `RETURNING id, count`, `insertWhen()` with an update `INSERT ... SELECT ... FROM DUAL WHERE (condition) ON DUPLICATE KEY UPDATE ...`. MariaDB has no conflict target: a collision on **any** unique key or the primary key counts as the duplicate. The update is rendered in the order of the array and applied from left to right - a later assignment sees what an earlier one set (`n = n + 1, m = n` gives `m` the new `n`); a value may be `Database::raw()` with bindings, and `Database::value('col')` is the value the row would have been inserted with (`VALUE(col)`). Bound in the order of the SQL: the row, the condition, the update. The returning forms take column names, `'*'` (the default) or expressions without bindings (`Database::raw('n * 2 AS twice')`); `upsertReturning()` returns the row in every case - inserted, updated or unchanged -, `insertWhenReturning()` null when the condition was false. On a connection opened with `Pdo\Mysql::ATTR_FOUND_ROWS` an unchanged row counts 1 like an insert: `upsert()` and `insertWhen()` with an update throw there (the returning forms work). The update runs the table's update triggers and locks the existing row until the transaction ends.
 
 `insertWhen()` renders `INSERT INTO codes (...) SELECT ?, ? FROM DUAL WHERE (condition)`. The condition is trusted developer SQL, like `whereRaw()`: never build it from user input. Check and insert see one snapshot, but two concurrent calls can still both insert: an invariant like "one open code per user" needs a `UNIQUE` constraint, a row lock (`lockForUpdate()` on the user row) or `SERIALIZABLE` on top. After a return of 0, `lastInsertId()` is meaningless. Clauses set on the builder (`where*()`, joins, `groupBy()`/`having()`, `orderBy()`, `limit()`/`offset()`, `distinct()`, locks) are not part of the statement and make `insertWhen()` and `insertIgnore()` throw; a `select()` is ignored.
 
@@ -672,6 +720,23 @@ The outcome can be read, not assigned (`$e->outcome = ...` is an `Error`): the d
 With a manual `commit()`, a failing commit hook likewise throws `CommitHookException` after the commit: the committed transaction cannot be rolled back and must not be retried. `$e->connectionInTransaction` is a fail-closed snapshot taken after the commit hooks and before the end hooks: `true` means a transaction a commit hook left open could not be cleaned up, or the connection state could not be read, so check `inTransaction()` again and roll back, or discard the connection; what an end hook leaves open is not checked.
 
 A session that chains transactions (`completion_type=CHAIN`) is not supported: every `COMMIT` and `ROLLBACK` opens the next transaction, which nobody would commit. The library reports it instead of continuing silently: after a commit as `CommitHookException` (first failure `Connection is in a new transaction`, commit hooks skipped, `connectionInTransaction` true), after a rollback as `TransactionException` once the rollback and end hooks ran (through the `error` hook instead where another exception reaches you: the callback's on the automatic rollback in `transaction()`, or a rollback hook's; after a `ROLLBACK` that confirmed nothing only the end hooks run, with `lost`). The hooks of such a commit or rollback already run inside the chained transaction.
+
+## Named Locks
+
+A named lock (`GET_LOCK()`) is a lock on a name, not on rows: "at most one of these at a time", across requests and processes.
+
+```php
+if ($db->namedLock('login-code:' . $userId)) {        // false: another connection holds it
+    try {
+        // ...
+    } finally {
+        $db->releaseNamedLock('login-code:' . $userId);
+    }
+}
+$db->namedLock('report', 5);                            // wait up to 5 seconds
+```
+
+It belongs to the connection, not to a transaction: `COMMIT` and `ROLLBACK` do not release it; `releaseNamedLock()` or the end of the connection do (`reconnect()` gives it up with the old one). The name is prefixed with the configured database and `:` on the server (`app_db:login-code:7`), because the server keeps one namespace for all its databases - a shared server included; it is compared as written (case, accents and spaces count) and may have 192 bytes with the prefix (error 1059 beyond). MariaDB lets a connection take a lock it already holds and counts the holds, so that one release would leave it held: `namedLock()` throws for a lock this connection holds instead (`isNamedLockHeld()` asks the server). `releaseNamedLock()` returns false when this connection did not hold the lock. A `NULL` from the server (an error such as a killed thread) throws; a negative timeout and an empty name throw before anything is sent. The methods are on `MariaDbDriver` (what the factories return).
 
 ## Hooks
 
@@ -824,6 +889,9 @@ What the library renders, and what MariaDB does with it, where that is worth kno
 | Rows an `update()` returns | rows actually changed (0 when the values were already there) |
 | Several assignments in one `update()` | evaluated left to right: a later one sees what an earlier one set |
 | `insertWhen()` | `... FROM DUAL WHERE` |
+| `upsert()` / `upsertReturning()` | `ON DUPLICATE KEY UPDATE` (any unique key is the duplicate), `RETURNING`; counts 1 / 2 / 0, throws with `ATTR_FOUND_ROWS` |
+| `Database::json()` | `JSON_UNQUOTE(JSON_EXTRACT(col, 'path'))`, the path written in; JSON `null` as `'null'` |
+| `namedLock()` | `GET_LOCK()`, the name prefixed with the database; held by the connection |
 | `IS` / `IS NOT` with a value | `<=>` / `NOT (... <=> ...)` |
 | `LIKE` and upper/lower case | case- and accent-insensitive with the default collations (`a%` matches `Anna` and `Ärger`) |
 | `orderBy()` and NULL | NULL first ascending, last descending |
