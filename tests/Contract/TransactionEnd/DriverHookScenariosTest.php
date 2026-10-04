@@ -11,7 +11,6 @@ use Sodaho\PdoWrapper\Exception\CommitFailedException;
 use Sodaho\PdoWrapper\Exception\CommitHookException;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Exception\TransactionException;
-use Sodaho\PdoWrapper\Tests\Support\Fetched;
 use Sodaho\PdoWrapper\Tests\Support\Recorder;
 use Sodaho\PdoWrapper\Tests\Support\ScenarioPdo;
 
@@ -410,7 +409,7 @@ class DriverHookScenariosTest extends TransactionEndTestCase
         $this->pdo->stateUnreadable = false;
         $this->pdo->rollBack();
         $db->insert(self::TABLE, ['id' => 4, 'name' => 'after a raw rollback of a raw transaction']);
-        $this->assertSame([2, 3, 4], array_map(Fetched::int(...), array_column($db->table(self::TABLE)->orderBy('id')->get(), 'id')));
+        $this->assertSame([2, 3, 4], array_column($db->table(self::TABLE)->orderBy('id')->get(), 'id'));
 
         // an 'error' listener that queries on the same connection gets the refusal in its turn
         $db->on('error', static function () use ($db): void {

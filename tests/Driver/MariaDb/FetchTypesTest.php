@@ -95,5 +95,14 @@ class FetchTypesTest extends ContractTestCase
             }
         }
         $this->assertNull($db->table('fetch_types')->where('i', 0)->sum('i'), 'null still means no value');
+
+        // A row whose value is false is a value, not "no row": it meets the same check
+        $db = $this->connect(['options' => [PDO::ATTR_STATEMENT_CLASS => [FalseValueStatement::class]]]);
+        try {
+            $db->table('fetch_types')->sum('i');
+            $this->fail('Expected QueryException: false');
+        } catch (QueryException $e) {
+            $this->assertSame('sum() got bool from the connection: MariaDB delivers a numeric string, a float or NULL here. The connection does not deliver the types this library promises (see MariaDbDriver).', $e->getDebugMessage());
+        }
     }
 }

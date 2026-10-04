@@ -870,7 +870,8 @@ class QueryBuilder
      * @param string $column Column to sum
      *
      * @return float|string|null The sum as MariaDB delivers it, or null without a value (no rows,
-     *                           or only NULL)
+     *                           only NULL, or a having() without groupBy() that filtered out the
+     *                           one group)
      */
     public function sum(string $column): float|string|null
     {
@@ -886,7 +887,7 @@ class QueryBuilder
      * @param string $column Column to average
      *
      * @return float|string|null The average as MariaDB delivers it, or null without a value (no
-     *                           rows, or only NULL)
+     *                           rows, only NULL, or a having() that filtered out the one group)
      */
     public function avg(string $column): float|string|null
     {
@@ -919,7 +920,8 @@ class QueryBuilder
      * @param string $column Column to check
      *
      * @return mixed Minimum value in the driver's native type (MariaDB returns integers for
-     *               integer columns), or null if no rows
+     *               integer columns), or null without a value (no rows, or a having() without
+     *               groupBy() that filtered out the one group)
      */
     public function min(string $column): mixed
     {
@@ -932,7 +934,8 @@ class QueryBuilder
      * @param string $column Column to check
      *
      * @return mixed Maximum value in the driver's native type (MariaDB returns integers for
-     *               integer columns), or null if no rows
+     *               integer columns), or null without a value (no rows, or a having() without
+     *               groupBy() that filtered out the one group)
      */
     public function max(string $column): mixed
     {
@@ -1098,7 +1101,8 @@ class QueryBuilder
      * is bound as the shortest decimal text that reads back as the same float (0.1, not PHP's
      * `precision` setting, which cuts after 14 digits) and cast to DECIMAL(65,30); a float whose
      * text has more than 35 integer or 30 fraction digits, INF and NAN are refused. A column that
-     * is NULL stays NULL (NULL + 1 is NULL) and does not count as changed.
+     * is NULL stays NULL (NULL + 1 is NULL); the row then counts as changed only when $extra
+     * changes something (or the connection counts matched rows).
      *
      * With $extra, the column must not be set again there - also not in another case or as
      * "table.column": MariaDB takes those for the same column, and the second assignment would
@@ -1178,33 +1182,18 @@ class QueryBuilder
     }
 
     /**
-     * The float as the shortest decimal text that reads back as the same float - what it was
-     * written as (0.1, not 0.1000000000000000055...), whatever PHP's `precision` setting says -,
-     * without an exponent; null when DECIMAL(65,30) cannot hold that text (more than 35 integer or
-     * 30 fraction digits) or the float is INF or NAN.
+     * The float's exact text (FloatText), or null when DECIMAL(65,30) cannot hold it: more than 35
+     * integer or 30 fraction digits, or INF or NAN.
      */
     private static function decimalText(float $value): ?string
     {
         if (!is_finite($value)) {
             return null;
         }
-        // %e writes "." whatever the locale; 17 significant digits always read back
-        for ($digits = 1; $digits < 17; $digits++) {
-            if ((float) sprintf('%.' . ($digits - 1) . 'e', $value) === $value) {
-                break;
-            }
-        }
-        [$mantissa, $exponent] = explode('e', sprintf('%.' . ($digits - 1) . 'e', $value));
-        $significant = str_replace(['-', '.'], '', $mantissa);
-        $point = (int) $exponent + 1; // how many of the digits stand before the decimal point
-        $integer = $point <= 0 ? '0' : str_pad(substr($significant, 0, $point), $point, '0');
-        // No trailing zero: the shortest text that reads back never ends in one
-        $fraction = $point <= 0 ? str_repeat('0', -$point) . $significant : substr($significant, $point);
-        if (strlen($integer) > 35 || strlen($fraction) > 30) {
-            return null;
-        }
+        $text = FloatText::of($value);
+        [$integer, $fraction] = explode('.', ltrim($text, '-') . '.');
 
-        return ($value < 0 ? '-' : '') . $integer . ($fraction === '' ? '' : '.' . $fraction);
+        return strlen($integer) > 35 || strlen($fraction) > 30 ? null : $text;
     }
 
     /**

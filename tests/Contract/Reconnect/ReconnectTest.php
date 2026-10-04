@@ -13,7 +13,6 @@ use Sodaho\PdoWrapper\Exception\CommitFailedException;
 use Sodaho\PdoWrapper\Exception\ConnectionException;
 use Sodaho\PdoWrapper\Exception\TransactionException;
 use Sodaho\PdoWrapper\Tests\Contract\ContractTestCase;
-use Sodaho\PdoWrapper\Tests\Support\Fetched;
 use Sodaho\PdoWrapper\Tests\Support\RefusingPdo;
 use Sodaho\PdoWrapper\Tests\Support\ScenarioPdo;
 use Throwable;
@@ -88,10 +87,10 @@ class ReconnectTest extends ContractTestCase
         return $pdo;
     }
 
-    /** @return array<int, int> */
+    /** @return list<mixed> The ids as delivered (int, by the type rule of the contract) */
     protected function visible(): array
     {
-        return array_map(static fn (array $row): int => Fetched::int($row['id']), $this->observer->table(self::TABLE)->orderBy('id')->get());
+        return array_column($this->observer->table(self::TABLE)->orderBy('id')->get(), 'id');
     }
 
     // ---- the new connection ----------------------------------------------------------------------

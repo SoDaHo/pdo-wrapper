@@ -186,9 +186,11 @@ class QueryBuilderStatementsTest extends ContractTestCase
         $this->db->table('counters')->where('id', 1)->decrement('score', 0.6234567890123456);
         $this->db->table('counters')->where('id', 1)->increment('score', 9.9e34);
         $this->assertSame(9.9e34, $score());
+        $this->db->table('counters')->where('id', 1)->increment('score', -9.9e34);
+        $this->assertSame(0.0, $score(), 'thirty-five integer digits with a sign');
 
         $updates = array_values(array_filter($sent->all(), static fn (array $sent): bool => str_starts_with($sent[0], 'UPDATE')));
-        $this->assertSame([['0', 1], ['0', 1], ['0.000000000000012345678901234567', 1], ['-0.000000000000012345678901234567', 1], ['0.1234567890123456', 1], ['0.6234567890123456', 1], ['99000000000000000000000000000000000', 1]], array_column($updates, 1), 'the text bound for each step');
+        $this->assertSame([['0', 1], ['0', 1], ['0.000000000000012345678901234567', 1], ['-0.000000000000012345678901234567', 1], ['0.1234567890123456', 1], ['0.6234567890123456', 1], ['99000000000000000000000000000000000', 1], ['-99000000000000000000000000000000000', 1]], array_column($updates, 1), 'the text bound for each step');
     }
 
     /**

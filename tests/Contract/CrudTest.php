@@ -91,7 +91,6 @@ class CrudTest extends ContractTestCase
             $this->assertStringContainsString('The row was inserted', $debug);
             $this->assertStringContainsString('"' . $reported . '"', $debug);
             $this->assertCount(1, $sent, 'the insert ran');
-            $this->assertStringStartsWith('INSERT INTO ', $sent[0]);
             $this->assertStringContainsString('SQL: ' . $sent[0] . ' | Params: ["A"]', $debug);
         }
 

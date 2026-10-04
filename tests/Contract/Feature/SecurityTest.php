@@ -172,9 +172,8 @@ class SecurityTest extends ContractTestCase
             array_column($others, 'name')
         );
 
-        [$sql, $params] = $this->db->table('users')->select('name')->groupBy('name')->having('name', 'LIKE', $pattern)->toSql();
-        $this->assertStringEndsWith('LIKE ? ESCAPE ?', $sql);
-        $this->assertSame([$pattern, '\\'], $params);
+        [, $params] = $this->db->table('users')->select('name')->groupBy('name')->having('name', 'LIKE', $pattern)->toSql();
+        $this->assertSame([$pattern, '\\'], $params, 'the escape character is bound after the pattern');
         $grouped = $this->db->table('users')->select('name')->groupBy('name')->having('name', 'LIKE', $pattern)->get();
         $this->assertSame(['100% sure'], array_column($grouped, 'name'));
 
@@ -470,7 +469,7 @@ class SecurityTest extends ContractTestCase
             } catch (QueryException $e) {
                 $this->assertSame('Query failed', $e->getMessage());
                 $this->assertStringContainsString($expected, (string) $e->getDebugMessage());
-                $this->assertStringContainsString('INSERT INTO', (string) $e->getDebugMessage());
+                $this->assertStringContainsString(' | SQL: ', (string) $e->getDebugMessage(), 'the statement is named');
             }
             $error = array_pop($errors);
             $this->assertIsArray($error);

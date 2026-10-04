@@ -6,7 +6,6 @@ namespace Sodaho\PdoWrapper\Tests\Contract\Query;
 
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Tests\Contract\ContractTestCase;
-use Sodaho\PdoWrapper\Tests\Support\Fetched;
 
 /**
  * increment() and decrement(): one statement that adds to a column, with further columns set in
@@ -31,7 +30,7 @@ class IncrementTest extends ContractTestCase
         $this->assertSame(2, $this->db->table('counters')->where('id', '>', 0)->decrement('score', 0.5));
 
         $rows = $this->db->table('counters')->orderBy('id')->get();
-        $this->assertSame([5, 3], array_map(static fn (array $row): int => Fetched::int($row['attempts']), $rows));
+        $this->assertSame([5, 3], array_column($rows, 'attempts'));
         $this->assertSame([1.0, -0.25], array_column($rows, 'score'));
         $this->assertSame(['raised', 'b'], array_column($rows, 'note'));
     }
@@ -56,7 +55,7 @@ class IncrementTest extends ContractTestCase
         }
 
         $this->assertSame(1, $this->db->table('counters')->where('id', '>', 0)->orderBy('id', 'DESC')->limit(1)->increment('attempts', 10));
-        $this->assertSame([0, 15], array_map(static fn (array $row): int => Fetched::int($row['attempts']), $this->db->table('counters')->orderBy('id')->get()));
+        $this->assertSame([0, 15], array_column($this->db->table('counters')->orderBy('id')->get(), 'attempts'));
     }
 
     /**
@@ -77,7 +76,7 @@ class IncrementTest extends ContractTestCase
             }
         }
         $row = $this->db->findOne('counters', ['id' => 1]) ?? [];
-        $this->assertSame(0, Fetched::int($row['attempts'] ?? null), 'nothing was sent');
+        $this->assertSame(0, $row['attempts'] ?? null, 'nothing was sent');
         $this->assertSame('a', $row['note'] ?? null);
     }
 
@@ -92,9 +91,9 @@ class IncrementTest extends ContractTestCase
         $row = fn (): array => $this->db->findOne('amounts', ['id' => 1]) ?? [];
 
         $this->db->table('amounts')->where('id', 1)->increment('big', 1, ['exact' => '12345678901234567.1234']);
-        $this->assertSame(9007199254740994, Fetched::int($row()['big']));
+        $this->assertSame(9007199254740994, $row()['big']);
         $this->db->table('amounts')->where('id', 1)->decrement('big', 3);
-        $this->assertSame(9007199254740991, Fetched::int($row()['big']));
+        $this->assertSame(9007199254740991, $row()['big']);
 
         $this->db->table('amounts')->where('id', 1)->increment('exact', 1);
         $this->assertSame('12345678901234568.1234', $row()['exact']);
@@ -105,8 +104,11 @@ class IncrementTest extends ContractTestCase
 
         // A float step as the float it is, also where it has more digits than PHP's precision setting writes
         $this->db->table('amounts')->where('id', 1)->increment('big', 9007199254740994.0);
-        $this->assertSame(18014398509481985, Fetched::int($row()['big']));
+        $this->assertSame(18014398509481985, $row()['big']);
         $this->db->table('amounts')->where('id', 1)->decrement('exact', 0.1234567890123456);
         $this->assertSame('12345678901234568.4998', $row()['exact'], 'rounded to the column\'s 4 places by the server');
+        // Sixteen digits ending in the fourth decimal place: fourteen would add .35, not .3456
+        $this->db->table('amounts')->where('id', 1)->increment('exact', 123456789012.3456);
+        $this->assertSame('12345802358023580.8454', $row()['exact']);
     }
 }

@@ -106,7 +106,7 @@ class WorkflowTest extends ContractTestCase
 
         $post = $this->db->findOne('posts', ['id' => $postId]);
         $this->assertNotNull($post);
-        $this->assertSame(1, Fetched::int($post['views']));
+        $this->assertSame(1, $post['views']);
     }
 
     public function testBlogPostWithTagsWorkflow(): void
@@ -211,7 +211,7 @@ class WorkflowTest extends ContractTestCase
             ->orderBy('AuthorId')
             ->get();
         $this->assertSame(['AuthorId', 'n'], array_keys($rows[0]));
-        $this->assertSame([[$ada, 1], [$bob, 2]], array_map(static fn (array $row): array => [Fetched::int($row['AuthorId']), Fetched::int($row['n'])], $rows));
+        $this->assertSame([[$ada, 1], [$bob, 2]], array_map(static fn (array $row): array => [$row['AuthorId'], Fetched::int($row['n'])], $rows));
 
         $rows = $this->db->table('posts as P')
             ->join('users as U', 'U.id', '=', 'P.user_id')
@@ -857,10 +857,14 @@ class WorkflowTest extends ContractTestCase
         $this->assertSame('published', $params[0], 'First param should be WHERE value');
         $this->assertSame(2, $params[1], 'Second param should be HAVING value');
 
-        // Verify SQL structure
-        $this->assertStringContainsString('WHERE', $sql);
-        $this->assertStringContainsString('HAVING', $sql);
-        $this->assertLessThan(strpos($sql, 'HAVING'), strpos($sql, 'WHERE'), 'WHERE should come before HAVING in SQL');
+        // The statement runs with them in that order (the SQL itself: tests/Unit)
+        $this->assertNotSame('', $sql);
+        $this->assertSame([$user1], array_map(static fn (array $row): mixed => $row['user_id'], $this->db->table('posts')
+            ->select(['user_id', \Sodaho\PdoWrapper\Database::raw('COUNT(*) as cnt')])
+            ->groupBy('user_id')
+            ->having(\Sodaho\PdoWrapper\Database::raw('COUNT(*)'), '>=', 2)
+            ->where('status', 'published')
+            ->get()));
     }
 
     // =========================================================================
@@ -886,8 +890,7 @@ class WorkflowTest extends ContractTestCase
 
         // Verify hooks were called
         $this->assertCount(2, $queries);
-        $this->assertStringContainsString('INSERT', $queries[0]['sql']);
-        $this->assertStringContainsString('SELECT', $queries[1]['sql']);
+        $this->assertSame([['hook@test.com', 'Hook User'], ['hook@test.com']], array_column($queries, 'params'), 'the insert, then the select (their text: tests/Unit)');
 
         // Trigger an error
         try {
@@ -941,8 +944,6 @@ class WorkflowTest extends ContractTestCase
             ->select([Database::raw('LOWER(name) AS lower_name'), Database::raw('COUNT(*) AS total')])
             ->groupBy(Database::raw('LOWER(name)'));
 
-        [$sql] = $byName->toSql();
-        $this->assertStringEndsWith(' GROUP BY LOWER(name)', $sql);
         $rows = (clone $byName)->orderBy('lower_name')->get();
         $this->assertSame(['anna', 'bert'], array_column($rows, 'lower_name'));
         $this->assertEquals([2, 1], array_column($rows, 'total'));
@@ -1025,7 +1026,7 @@ class WorkflowTest extends ContractTestCase
             $this->assertInstanceOf(QueryException::class, $e);
             $this->assertSame('Query failed', $e->getMessage());
             $this->assertSame($expected['email'], $e->constraint);
-            $this->assertStringContainsString('INSERT INTO', (string) $e->getDebugMessage());
+            $this->assertStringContainsString('| SQL: ', (string) $e->getDebugMessage(), 'the statement is named in the debug message');
             $this->assertNotNull($e->getPrevious());
         }
 
@@ -1087,8 +1088,8 @@ class WorkflowTest extends ContractTestCase
         $this->assertSame(1, $affected);
         $this->assertSame([[1, 'first', 10, 1, 'new', 'old']], $seen, 'SET values in array order, raw bindings in place, then WHERE');
         $row = $this->db->findOne('set_order', ['id' => 1]);
-        $this->assertSame(2, Fetched::int($row['attempts'] ?? 0));
-        $this->assertSame(self::binding()->laterAssignmentsSeeEarlierOnes() ? 20 : 10, Fetched::int($row['pause_s'] ?? 0));
+        $this->assertSame(2, $row['attempts'] ?? null);
+        $this->assertSame(self::binding()->laterAssignmentsSeeEarlierOnes() ? 20 : 10, $row['pause_s'] ?? null);
 
         // the other way round the pause is computed first, from the old counter, on every database
         $this->db->update('set_order', [
@@ -1096,8 +1097,8 @@ class WorkflowTest extends ContractTestCase
             'attempts' => Database::raw('attempts + ?', [1]),
         ], ['id' => 2, 'note' => Database::raw('LOWER(?)', ['NEW'])]);
         $row = $this->db->findOne('set_order', ['id' => 2]);
-        $this->assertSame(2, Fetched::int($row['attempts'] ?? 0));
-        $this->assertSame(10, Fetched::int($row['pause_s'] ?? 0));
+        $this->assertSame(2, $row['attempts'] ?? null);
+        $this->assertSame(10, $row['pause_s'] ?? null);
     }
 
     /**

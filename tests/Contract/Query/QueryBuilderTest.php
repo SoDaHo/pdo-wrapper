@@ -391,8 +391,8 @@ class QueryBuilderTest extends ContractTestCase
 
         // min/max should consider all rows
         $builder = $this->db->table('users')->limit(1)->orderBy('age', 'DESC');
-        $this->assertEquals(20, $builder->min('age'));
-        $this->assertEquals(30, $builder->max('age'));
+        $this->assertSame(20, $builder->min('age'), 'MIN() of an int column is an int');
+        $this->assertSame(30, $builder->max('age'));
 
         // limit/offset should still work for get() after aggregate
         $builder = $this->db->table('users')->orderBy('id')->limit(2)->offset(1);

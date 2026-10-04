@@ -36,6 +36,7 @@ class ConnectionCheckTest extends ContractTestCase
             '11.4.5-3-4-MariaDB' => 'The server is no MariaDB (it reports "11.4.5-3-4-MariaDB"): this library supports MariaDB 10.11 and later only.',
             '11.4.5-3-MariaDBx' => 'The server is no MariaDB (it reports "11.4.5-3-MariaDBx"): this library supports MariaDB 10.11 and later only.',
             '11.4.5-MariaDB_x' => 'The server is no MariaDB (it reports "11.4.5-MariaDB_x"): this library supports MariaDB 10.11 and later only.',
+            "11.4.5-MariaDB\n" => "The server is no MariaDB (it reports \"11.4.5-MariaDB\n\"): this library supports MariaDB 10.11 and later only.",
         ];
 
         foreach ($cases as $version => $problem) {

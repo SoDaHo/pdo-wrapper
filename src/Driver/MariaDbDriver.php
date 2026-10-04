@@ -295,7 +295,7 @@ class MariaDbDriver extends AbstractDriver
                 'pdo_mysql is not built on mysqlnd (client "%s"): the PHP types of the fetched values would not be the ones this library promises. Use a PHP build whose pdo_mysql uses mysqlnd.',
                 is_string($client) ? $client : get_debug_type($client)
             ),
-            !is_string($server) || preg_match('/^(?:5\.5\.5-)?(\d+\.\d+\.\d+)(?:-\d+)?-MariaDB(?:-|$)/i', $server, $version) !== 1 => sprintf(
+            !is_string($server) || preg_match('/^(?:5\.5\.5-)?(\d+\.\d+\.\d+)(?:-\d+)?-MariaDB(?:-|\z)/i', $server, $version) !== 1 => sprintf(
                 'The server is no MariaDB (it reports "%s"): this library supports MariaDB 10.11 and later only.',
                 is_string($server) ? $server : get_debug_type($server)
             ),

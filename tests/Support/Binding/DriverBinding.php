@@ -16,7 +16,8 @@ use Sodaho\PdoWrapper\Driver\AbstractDriver;
  *
  * The PHP types of the values are part of the contract (the library pins them, see the README,
  * "What Comes Back"): a driver delivers `id`, `key`, `int` and `bigint` as int, `double` as float,
- * `decimal` as a string with its 4 decimal places, `text`, `blob` and `timestamp` as string, and
+ * `decimal` as a string with its 4 decimal places, `timestamp` as a string 'YYYY-MM-DD HH:MM:SS',
+ * `text` and `blob` as string, and
  * NULL as null. What differs between databases - aggregates, error codes - comes from the methods
  * below.
  *
@@ -26,10 +27,11 @@ use Sodaho\PdoWrapper\Driver\AbstractDriver;
  * - `key`: an integer primary key the caller numbers (64 bit)
  * - `int`, `bigint`: integers of 32 and 64 bit
  * - `text`: a string of up to 255 characters, compared as written (case and accents count)
- * - `decimal`: an exact number with 4 decimal places
+ * - `decimal`: an exact number of up to 26 integer digits and 4 decimal places
  * - `double`: a floating point number
  * - `blob`: bytes
- * - `timestamp`: a point in time (with `DEFAULT CURRENT_TIMESTAMP` where the row's creation counts)
+ * - `timestamp`: a point in time to the second, read as 'YYYY-MM-DD HH:MM:SS' (with
+ *   `DEFAULT CURRENT_TIMESTAMP` where the row's creation counts)
  *
  * An entry without a name is a table constraint in standard SQL (`PRIMARY KEY (a, b)`,
  * `FOREIGN KEY (user_id) REFERENCES users(id)`). A column that references an `id` is a `bigint`.

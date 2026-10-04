@@ -7,7 +7,6 @@ namespace Sodaho\PdoWrapper\Tests\Contract\TransactionEnd;
 use Sodaho\PdoWrapper\DatabaseInterface;
 use Sodaho\PdoWrapper\Exception\CommitFailedException;
 use Sodaho\PdoWrapper\Tests\Contract\ContractTestCase;
-use Sodaho\PdoWrapper\Tests\Support\Fetched;
 use Sodaho\PdoWrapper\Tests\Support\ScenarioPdo;
 use Throwable;
 
@@ -111,7 +110,7 @@ abstract class TransactionEndTestCase extends ContractTestCase
     protected function assertVisible(array $ids, string $message = ''): void
     {
         $this->assertFalse($this->pdo->reallyInTransaction(), 'no transaction may be left open');
-        $this->assertSame($ids, array_map(static fn (array $row): int => Fetched::int($row['id']), $this->rows()), $message);
+        $this->assertSame($ids, array_column($this->rows(), 'id'), $message);
     }
 
     /**

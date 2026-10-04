@@ -147,7 +147,6 @@ class QueryOutcomeTest extends ContractTestCase
         }
 
         $this->assertCount(1, $this->queries, 'only the first insert ran');
-        $this->assertStringStartsWith('INSERT INTO ', $this->queries[0]);
         $this->assertSame($this->queries, $this->errors, 'the failed insert is told with the same statement (its text: tests/Driver)');
         $this->assertSame(1, $this->db->table('users')->count());
     }

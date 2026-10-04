@@ -266,6 +266,7 @@ class EdgeCaseTest extends ContractTestCase
             ->orderBy('name')
             ->limit(10)
             ->offset(5);
+        $before = $builder->toSql();
 
         // All these should work without ORDER BY in the generated SQL (sum() and avg() over a
         // number: over text they are the database's own matter)
@@ -276,10 +277,8 @@ class EdgeCaseTest extends ContractTestCase
         $this->assertNull($builder->max('name'));
 
         // Original builder state should be preserved
-        [$sql, ] = $builder->toSql();
-        $this->assertStringContainsString('ORDER BY', $sql);
-        $this->assertStringContainsString('LIMIT 10', $sql);
-        $this->assertStringContainsString('OFFSET 5', $sql);
+        $this->assertSame($before, $builder->toSql());
+        $this->assertSame([], $builder->get(), 'ordered, limited and offset as before');
     }
 
     // =========================================================================
@@ -609,7 +608,6 @@ class EdgeCaseTest extends ContractTestCase
 
         // the statement's text: tests/Driver
         $this->assertCount(1, $seen, 'the statement ran, so its hook fired');
-        $this->assertStringStartsWith('INSERT INTO ', $seen[0]);
         $this->assertSame(1, $driver->table('users')->count());
     }
 
