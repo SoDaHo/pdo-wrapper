@@ -31,6 +31,9 @@ class MariaDbDriver extends AbstractDriver
     /** True when the connection was opened with the driver's ATTR_FOUND_ROWS option: the server then counts matched rows, not changed ones */
     private bool $countsFoundRows = false;
 
+    /** What a named lock's name is prefixed with on the server: the configured database and ":" */
+    private string $lockPrefix = '';
+
     /**
      * Create a MariaDB database connection.
      *
@@ -109,6 +112,8 @@ class MariaDbDriver extends AbstractDriver
 
         // Remembered here: PDO does not let the option be read back from the connection
         $this->countsFoundRows = (bool) ($options[\Pdo\Mysql::ATTR_FOUND_ROWS] ?? false);
+        // The configured database, not DATABASE(): the same for every connection of the application
+        $this->lockPrefix = $database . ':';
 
         // Kept for reconnect(); credentials and options in an object that no dump of the driver shows
         $settings = new ConnectionSettings($username, $password, $options);
@@ -278,6 +283,100 @@ class MariaDbDriver extends AbstractDriver
         }
 
         return parent::insertWhen($table, $data, $condition, $bindings, $update);
+    }
+
+    /**
+     * Take a named lock (GET_LOCK()): a lock on a name, not on rows, held by this connection until
+     * releaseNamedLock() or the end of the connection - COMMIT and ROLLBACK do not release it,
+     * reconnect() gives it up with the old connection. For "at most one at a time" across
+     * requests and processes: `if ($db->namedLock('login:' . $id)) { try { ... } finally {
+     * $db->releaseNamedLock('login:' . $id); } }`.
+     *
+     * The name is prefixed with the configured database and ":" ("app_db:login:7"): the server
+     * keeps one namespace for all its databases, a shared server included. On the server it is
+     * compared as written - case, accents and spaces count - and may have 192 bytes with the
+     * prefix (MariaDB refuses a longer one: error 1059). Measured on 10.11, 11.4 and 12.3.
+     *
+     * MariaDB lets a connection take a lock it holds a second time and counts the holds - one
+     * release would then leave the lock held. This method refuses that instead: taking a lock this
+     * connection already holds throws (ask isNamedLockHeld() first where that can happen).
+     *
+     * @param string $name The lock's name, without the prefix
+     * @param int $timeout Seconds to wait while another connection holds it (0: do not wait)
+     *
+     * @throws QueryException When the name is empty, the timeout negative, this connection holds the lock already, or the server answers NULL (an error such as a killed thread)
+     *
+     * @return bool True when taken, false when another connection held it beyond the timeout
+     */
+    public function namedLock(string $name, int $timeout = 0): bool
+    {
+        $lock = $this->lockName('namedLock', $name);
+        if ($timeout < 0) {
+            throw new QueryException(
+                message: 'Query failed',
+                debugMessage: sprintf('namedLock() takes a timeout of 0 or more seconds, not %d (MariaDB answers a negative one with NULL)', $timeout)
+            );
+        }
+
+        // One statement: whether this connection holds it already, and if not the attempt itself
+        $taken = $this->query('SELECT CASE WHEN IS_USED_LOCK(?) = CONNECTION_ID() THEN -1 ELSE GET_LOCK(?, ?) END', [$lock, $lock, $timeout])->fetchColumn();
+
+        return match ($taken) {
+            1 => true,
+            0 => false,
+            -1 => throw new QueryException(
+                message: 'Query failed',
+                debugMessage: sprintf('namedLock(): this connection holds "%s" already; MariaDB would count a second hold, and one release would not free it. Release it first, or ask isNamedLockHeld().', $name)
+            ),
+            default => throw new QueryException(
+                message: 'Query failed',
+                debugMessage: sprintf('namedLock(): GET_LOCK() answered %s for "%s" - an error on the server, not a busy lock', var_export($taken, true), $name)
+            ),
+        };
+    }
+
+    /**
+     * Release a named lock this connection holds (RELEASE_LOCK()).
+     *
+     * @param string $name The lock's name, without the prefix (see namedLock())
+     *
+     * @throws QueryException When the name is empty or the query fails
+     *
+     * @return bool True when released; false when this connection did not hold it - another one
+     *              does, or nobody does (released before, given up with a connection)
+     */
+    public function releaseNamedLock(string $name): bool
+    {
+        return $this->query('SELECT RELEASE_LOCK(?)', [$this->lockName('releaseNamedLock', $name)])->fetchColumn() === 1;
+    }
+
+    /**
+     * Whether this connection holds the named lock, asked on the server (IS_USED_LOCK()).
+     *
+     * @param string $name The lock's name, without the prefix (see namedLock())
+     *
+     * @throws QueryException When the name is empty or the query fails
+     */
+    public function isNamedLockHeld(string $name): bool
+    {
+        return $this->query('SELECT IS_USED_LOCK(?) = CONNECTION_ID()', [$this->lockName('isNamedLockHeld', $name)])->fetchColumn() === 1;
+    }
+
+    /**
+     * The name of a named lock on the server: prefixed with the configured database.
+     *
+     * @throws QueryException When the name is empty
+     */
+    private function lockName(string $method, string $name): string
+    {
+        if ($name === '') {
+            throw new QueryException(
+                message: 'Query failed',
+                debugMessage: sprintf('%s() needs a name', $method)
+            );
+        }
+
+        return $this->lockPrefix . $name;
     }
 
     /**
