@@ -29,7 +29,7 @@ final class Schema
     /**
      * The tables of the current database, in the server's order of names (utf8mb3_general_ci:
      * without case or accents, `_` after the letters; where two names differ in case only -
-     * lower_case_table_names=0 - the upper case first).
+     * lower_case_table_names=0 - by their bytes, so for ASCII names the upper case first).
      *
      * @return list<string>
      */
@@ -131,16 +131,16 @@ final class Schema
 
     /**
      * The rows of an information_schema view about one table, read in one statement together with
-     * the table itself: a row from TABLES marks that the current database has it as a base table
-     * (a view has columns, but no such row), then the view's rows. Each part looks the name up in
-     * its own WHERE, bound: a bound name is compared as the server compares table names (with case
+     * the table itself: a row from TABLES marks that the current database has it as a table, base
+     * or system-versioned (a view has columns, but no such row), then the view's rows. Each part
+     * looks the name up in its own WHERE, bound: a bound name is compared as the server compares table names (with case
      * where lower_case_table_names=0), a join of the two views compares without case and would mix
      * "Users" into "users" (measured).
      *
      * @param list<string> $columns What to read from the view
      * @param list<string> $order The view's order, after the marker
      *
-     * @throws QueryException When the current database has no such base table
+     * @throws QueryException When the current database has no such table
      *
      * @return list<list<mixed>> The view's rows: $columns in order, then the order keys
      */
