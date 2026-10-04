@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-10-04
+
 ### Added
 - Every transaction event names its transaction: `transaction.begin`, `transaction.commit`, `transaction.rollback` and `transaction.end` carry `transaction` (the number of the transaction: the transactions begun through the driver are counted from 1 for as long as the driver lives, `reconnect()` included) and `depth` (the number of transactions whose begin was told and whose end was not yet, this one included: 1 when no other one owes its end, 2 for one a `transaction.commit` listener runs). A listener matches an end to its begin by the number instead of by the order of the events. A transaction begun on raw PDO was not told begun: its events carry `null` for both. The keys of `transaction.end` that were there come first: `['outcome', 'error', 'transaction', 'depth']`; a listener that refuses keys it does not know has to accept the two new ones.
 - `AbstractDriver::reconnect()`: discards the connection and continues on a new one, opened with the settings the driver was created with (DSN, credentials, `options`, `pdoClass`). The new connection is opened first - when that fails, a `ConnectionException` reaches the caller and nothing has changed. Otherwise a `ROLLBACK` is sent on the old connection (best effort, it frees the transaction's locks), and a transaction whose end was still owed ends as `lost` (error: a `TransactionException` "Transaction discarded with its connection"). Settings made with SQL on the old session (`SET SESSION ...` through `execute()`) are gone after it: give them as connection options (`Pdo\Mysql::ATTR_INIT_COMMAND` runs on every connect). The library's drivers pass their connector to the new `AbstractDriver::__construct(?Closure $connect = null)`; a custom driver that sets `$pdo` itself cannot reconnect (`ConnectionException`), and neither can a persistent connection (`PDO::ATTR_PERSISTENT`: PDO would hand the same one back). A driver that already has a method named `reconnect()` has to rename it or give it that signature; one without a constructor of its own now has this one.
@@ -336,7 +338,8 @@ What can break code that ran on 1.4:
 - **CI**: GitHub Actions with PHP 8.2-8.5, MySQL 8.0/8.4, MariaDB 10.11/11.4, PostgreSQL 15/16/17.
 - **Quality**: PHPStan level 9, PHP-CS-Fixer (PSR-12).
 
-[Unreleased]: https://github.com/sodaho/pdo-wrapper/compare/v2.0.0...HEAD
+[Unreleased]: https://github.com/sodaho/pdo-wrapper/compare/v2.1.0...HEAD
+[2.1.0]: https://github.com/sodaho/pdo-wrapper/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/sodaho/pdo-wrapper/compare/v1.6.1...v2.0.0
 [1.6.1]: https://github.com/sodaho/pdo-wrapper/compare/v1.6.0...v1.6.1
 [1.6.0]: https://github.com/sodaho/pdo-wrapper/compare/v1.5.0...v1.6.0
