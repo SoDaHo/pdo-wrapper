@@ -2,7 +2,9 @@
 
 ## [Unreleased]
 
-3.0 (in the making, on branch `3.x`): MariaDB is the only database. Breaking - see "Upgrading from 2.x" below.
+## [3.0.0] - 2026-10-05
+
+MariaDB is the only database. Breaking - see "Upgrading from 2.x" below.
 
 ### Removed
 - The SQLite and PostgreSQL drivers (`SqliteDriver`, `PostgresDriver`, `Database::sqlite()`, `Database::postgres()`, `DB_SQLITE_PATH`), and with them the dialect switch of the query builder (`QueryBuilder::DIALECT_*`, its third and fourth constructor argument) and the drivers' `getQuoteChar()` / `getDialect()`.
@@ -390,7 +392,8 @@ What can break code that ran on 1.4:
 - **CI**: GitHub Actions with PHP 8.2-8.5, MySQL 8.0/8.4, MariaDB 10.11/11.4, PostgreSQL 15/16/17.
 - **Quality**: PHPStan level 9, PHP-CS-Fixer (PSR-12).
 
-[Unreleased]: https://github.com/sodaho/pdo-wrapper/compare/v2.1.0...HEAD
+[Unreleased]: https://github.com/sodaho/pdo-wrapper/compare/v3.0.0...HEAD
+[3.0.0]: https://github.com/sodaho/pdo-wrapper/compare/v2.1.0...v3.0.0
 [2.1.0]: https://github.com/sodaho/pdo-wrapper/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/sodaho/pdo-wrapper/compare/v1.6.1...v2.0.0
 [1.6.1]: https://github.com/sodaho/pdo-wrapper/compare/v1.6.0...v1.6.1
