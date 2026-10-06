@@ -78,6 +78,12 @@ abstract class TransactionEndTestCase extends ContractTestCase
         $this->pdo->stateUnreadable = false;
         $this->pdo->failExec = false;
         $this->pdo->vanishOnExec = false;
+        $this->pdo->failQuery = false;
+        $this->pdo->queryReturnsFalse = false;
+        $this->pdo->failAfterCommit = false;
+        $this->pdo->completionType = null;
+        $this->pdo->duringQuery = null;
+        $this->pdo->throwAfterCommit = null;
         try {
             if ($this->pdo->reallyInTransaction()) {
                 $this->pdo->rollBack();

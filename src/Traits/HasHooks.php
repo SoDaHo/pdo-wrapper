@@ -73,9 +73,11 @@ use Sodaho\PdoWrapper\Exception\DatabaseException;
  *   confirmed: the rollback failed (lost connection), PDO no longer reported the transaction, the
  *   connection state could not be read, the raw cleanup of a commit listener's transaction did not
  *   end it (completion_type=CHAIN), or the commit failed and so did the rollback after it (or
- *   PDO reported no transaction after the failed commit) - then the data may be committed,
- *   fail-closed, and error is the commit's exception: a callback that committed itself with a raw
- *   COMMIT or a DDL statement leaves that state behind (the data is committed). The connection may be
+ *   PDO reported no transaction after the failed commit, or the session may chain transactions:
+ *   the ROLLBACK after it then confirms nothing) - then the data may be committed,
+ *   fail-closed, and error is the commit's exception (where another exception reaches the caller -
+ *   transaction(), a throwing begin listener - that one). A callback that committed itself with a
+ *   raw COMMIT or a DDL statement leaves that state behind (the data is committed). The connection may be
  *   gone: listeners must not expect queries to work. If the transaction may in fact still be open
  *   (the rollback failed, the raw cleanup of a commit listener's transaction did not end it, or the
  *   state could not be read), end it with rollback() or discard the connection: that rollback() (or
@@ -100,9 +102,11 @@ use Sodaho\PdoWrapper\Exception\DatabaseException;
  * - inside a 'transaction.commit' listener: it ends, with its own 'transaction.end', before the outer
  *   one is dispatched - also when the listener leaves it open: it is then rolled back without
  *   'transaction.rollback' hooks and, if it was begun through this library (not on raw PDO), gets
- *   'transaction.end' 'rolled_back' (or 'lost' when that rollback fails, does not end it, or the
- *   state cannot be read) with a LogicException as error, after all commit listeners ran, and is
- *   listed in the CommitHookException; one the listener ended itself on raw PDO or implicitly (a
+ *   'transaction.end' 'rolled_back' with a LogicException as error, or 'lost' - when that rollback
+ *   fails, does not end it, or the state cannot be read (a LogicException as error), or when the
+ *   listener's commit() of it failed on a session that may chain transactions (that failed commit
+ *   as error) -, after all commit listeners ran, and is listed in the CommitHookException; one
+ *   the listener ended itself on raw PDO or implicitly (a
  *   DDL statement) gets 'transaction.end' 'lost' (a TransactionException as error: it ended outside
  *   this library) - but do not then begin another transaction on raw PDO in the same listener: this
  *   library cannot tell that one from the first and would give it the first one's end (not supported);
@@ -151,7 +155,9 @@ use Sodaho\PdoWrapper\Exception\DatabaseException;
  * taken for the one transaction() ran. One limit, for a transaction begun on raw PDO: when it
  * vanished with its failed COMMIT and the handler runs more than one transaction of its own in
  * there, the 'lost' of the vanished one is not told (the ends are told apart only up to the
- * first transaction begun since).
+ * first transaction begun since). Likewise, after a failed COMMIT of a transaction begun on raw
+ * PDO on a session that may chain: when it is ended on raw PDO and another one is begun there,
+ * the rollback() of that one is 'lost' as well (fail-closed).
  * beginTransaction(), commit() and rollback() are final in
  * AbstractDriver: what is told here is decided in them. A custom driver extends them through
  * listeners and through the protected hooks (failureToRemember(), transactionEndedBy(),
@@ -241,7 +247,8 @@ use Sodaho\PdoWrapper\Exception\DatabaseException;
  * ROLLBACK arrives as the handler's exception (not as TransactionException or
  * CommitFailedException, and without an outcome).
  *
- * A session that chains transactions (completion_type=CHAIN) is not supported and
+ * The MariaDB driver sets completion_type to NO_CHAIN when it connects (and at reconnect()). A
+ * session switched to CHAIN afterwards (SET SESSION) is not supported and
  * is reported, because the caller would continue inside a transaction nobody commits. When PDO
  * reports a transaction right after a COMMIT: CommitHookException with a TransactionException
  * 'Connection is in a new transaction' as first failure, every commit listener skipped and listed,

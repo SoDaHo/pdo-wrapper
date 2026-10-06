@@ -55,7 +55,9 @@ class ConnectionCheckTest extends ContractTestCase
     {
         foreach (['10.11.0-MariaDB', '5.5.5-10.11.19-MariaDB-log', '11.4.12-MariaDB-ubu2404', '12.3.3-MariaDB-ubu2404', '13.0.2-mariadb', '11.4.5-3-MariaDB-enterprise', '5.5.5-10.11.11-7-MariaDB-enterprise-log'] as $version) {
             ReportedVersionPdo::$server = $version;
+            ReportedVersionPdo::$sent = [];
             $db = $this->connect(['pdoClass' => ReportedVersionPdo::class]);
+            $this->assertSame(["SET SESSION completion_type = 'NO_CHAIN'"], ReportedVersionPdo::$sent, $version . ': the first statement, once the connection passed');
             $this->assertSame(1, (int) $db->query('SELECT 1')->fetchColumn(), $version);
         }
     }
@@ -166,6 +168,7 @@ class ConnectionCheckTest extends ContractTestCase
     private function assertRefused(string $problem, string $case, ConnectionRefusal $refusal): void
     {
         $test = TestEnvironment::mariadb();
+        ReportedVersionPdo::$sent = [];
         try {
             $this->connect(['pdoClass' => ReportedVersionPdo::class]);
             $this->fail('Expected ConnectionException: ' . $case);
@@ -174,6 +177,7 @@ class ConnectionCheckTest extends ContractTestCase
             $this->assertSame(sprintf('MariaDB connection to %s:%d refused: %s', $test['host'], $test['port'], $problem), $e->getDebugMessage(), $case);
             $this->assertSame($refusal, $e->refusal, $case);
         }
+        $this->assertSame([], ReportedVersionPdo::$sent, $case . ': refused before the driver sends a statement');
     }
 
     /**

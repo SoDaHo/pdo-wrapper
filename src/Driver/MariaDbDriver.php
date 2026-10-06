@@ -26,6 +26,10 @@ use Throwable;
  * NULL as null - in native and in emulated prepares alike (measured on MariaDB 10.11, 11.4 and
  * 12.3 with PHP 8.5 and mysqlnd). These are mysqlnd's types; pdo_mysql built on another client
  * library is not held to them, and is refused.
+ *
+ * The driver's first statement on a connection sets completion_type to NO_CHAIN - against the
+ * server's default and an INIT_COMMAND, at reconnect() as well: the outcomes of a transaction
+ * rely on a COMMIT and a ROLLBACK that end it and open none (see pinCompletionType()).
  */
 class MariaDbDriver extends AbstractDriver
 {
@@ -57,7 +61,8 @@ class MariaDbDriver extends AbstractDriver
      *
      * @param array{host?: string|null, database?: string|null, username?: string|null, password?: string|null, port?: int|string, charset?: string, options?: array<int, mixed>, pdoClass?: class-string<PDO>|null} $config
      *
-     * @throws ConnectionException When required config is missing, 'pdoClass' names no class that extends PDO, 'options' turn ATTR_STRINGIFY_FETCHES on, the connection fails, or the server is no MariaDB 10.11 or later, the client no mysqlnd or ATTR_ORACLE_NULLS not NULL_NATURAL
+     * @throws ConnectionException When required config is missing, 'pdoClass' names no class that extends PDO, 'options' turn ATTR_STRINGIFY_FETCHES on, the connection fails, or the server is no MariaDB 10.11 or later, the client no mysqlnd or ATTR_ORACLE_NULLS not NULL_NATURAL, or completion_type cannot be set to NO_CHAIN
+     * @throws \Throwable What a 'pdoClass', or an error handler under a non-exception error mode, throws while the connection opens besides a PDOException: unchanged
      */
     public function __construct(#[\SensitiveParameter] array $config)
     {
@@ -129,6 +134,7 @@ class MariaDbDriver extends AbstractDriver
                 );
             }
             self::refuseAnUnsupportedConnection($pdo, $host, $port);
+            self::pinCompletionType($pdo, $host, $port);
 
             return $pdo;
         });
@@ -404,5 +410,38 @@ class MariaDbDriver extends AbstractDriver
                 refusal: $refused[0]
             );
         }
+    }
+
+    /**
+     * The first statement the driver sends on a connection, on raw PDO (no hook sees it): the
+     * library's outcomes rely on a COMMIT or ROLLBACK that ends the transaction and opens none.
+     * Under completion_type CHAIN every COMMIT and ROLLBACK opens the next transaction, which
+     * nobody commits; under RELEASE the server closes the connection after it. Both can be the
+     * server's default, which every new session inherits - reconnect() included -, or come from an
+     * INIT_COMMAND among the options; this statement runs after both. A SET SESSION afterwards is
+     * the caller's: see AbstractDriver::commitMayHaveChained().
+     *
+     * @throws ConnectionException When the statement fails
+     * @throws Throwable What a PDO class of the caller's, or an error handler under a non-exception error mode, throws from exec() besides a PDOException: unchanged
+     */
+    private static function pinCompletionType(PDO $pdo, string $host, int $port): void
+    {
+        try {
+            if ($pdo->exec("SET SESSION completion_type = 'NO_CHAIN'") !== false) {
+                return;
+            }
+            $failure = null;
+            $message = $pdo->errorInfo()[2] ?? null;
+            $why = is_string($message) ? $message : 'PDO::exec() returned false';
+        } catch (PDOException $e) {
+            $failure = $e;
+            $why = $e->getMessage();
+        }
+
+        throw new ConnectionException(
+            message: 'Database connection failed',
+            previous: $failure,
+            debugMessage: sprintf("MariaDB connection to %s:%d failed: SET SESSION completion_type = 'NO_CHAIN' did not go through: %s", $host, $port, $why)
+        );
     }
 }

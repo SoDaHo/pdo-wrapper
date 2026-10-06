@@ -63,6 +63,44 @@ final class ScenarioPdo extends PDO
     /** exec() makes the driver report no transaction from then on: a driver's question to the server that learns the server ended it */
     public bool $vanishOnExec = false;
 
+    /** query() fails: what a driver's question that wants an answer (a statement on raw PDO) runs into on a broken connection */
+    public bool $failQuery = false;
+
+    /** The failure as a non-exception error mode reports it: query() returns false, as long as this is set */
+    public bool $queryReturnsFalse = false;
+
+    /** How often query() was called, failed or not */
+    public int $queryCalls = 0;
+
+    /** What `SELECT @@completion_type` answers (null: what the server says) - the session a driver's question finds */
+    public ?string $completionType = null;
+
+    /** Run once in the middle of the next query(), before anything is sent */
+    public ?Closure $duringQuery = null;
+
+    /** Thrown by commit() once, after the COMMIT took effect: what a PDO class of the caller's or an error handler may throw */
+    public ?Throwable $throwAfterCommit = null;
+
+    public function query(string $query, ?int $fetchMode = null, mixed ...$fetchModeArgs): \PDOStatement|false
+    {
+        $this->queryCalls++;
+        $this->interrupt($this->duringQuery);
+        if ($this->failQuery) {
+            throw new PDOException('query failed (scenario)');
+        }
+        if ($this->queryReturnsFalse) {
+            return false;
+        }
+        if ($query === 'SELECT @@completion_type' && $this->completionType !== null) {
+            $answer = $this->prepare('SELECT ?');
+            $answer->execute([$this->completionType]);
+
+            return $answer;
+        }
+
+        return parent::query($query, $fetchMode, ...$fetchModeArgs);
+    }
+
     public function exec(string $statement): int|false
     {
         $this->interrupt($this->duringExec);
@@ -116,6 +154,13 @@ final class ScenarioPdo extends PDO
             parent::commit();
 
             throw new PDOException('commit reported as failed after it took effect (scenario)');
+        }
+        if ($this->throwAfterCommit !== null) {
+            $thrown = $this->throwAfterCommit;
+            $this->throwAfterCommit = null;
+            parent::commit();
+
+            throw $thrown;
         }
 
         return parent::commit();

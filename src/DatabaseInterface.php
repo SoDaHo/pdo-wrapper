@@ -187,7 +187,15 @@ interface DatabaseInterface
      * or the question to the server before the commit, told it), nothing is left to roll back
      * and the refusal tells 'transaction.end' 'lost'. When the connection is in a transaction
      * right after the COMMIT (completion_type=CHAIN, not supported), the commit
-     * listeners are skipped and a CommitHookException reports it. See Traits\HasHooks.
+     * listeners are skipped and a CommitHookException reports it. A COMMIT that failed - also with
+     * what a PDO class or an error handler threw besides a PDOException, which passes unchanged -
+     * may have taken effect on a session that may chain transactions (on MariaDB a completion_type
+     * other than NO_CHAIN: the driver sets NO_CHAIN when it connects, a SET SESSION afterwards
+     * changes it). Under CHAIN PDO then reports the next transaction: it stays the caller's to end,
+     * but its rollback() confirms nothing and tells 'lost'. Under RELEASE the server closes the
+     * connection after a COMMIT that took effect: where PDO learned that, the commit tells 'lost'
+     * at once, as every failed commit after which PDO reports none; where the answer was lost on the
+     * way, the rollback fails as on every lost connection. See Traits\HasHooks.
      *
      * @throws Exception\CommitFailedException When the commit itself failed (it may or may not have taken effect), or was refused because the server had already ended the transaction (nothing of that transaction is committed; statements run on raw PDO after its end are). A TransactionException
      * @throws Exception\CommitHookException When committed, but a transaction.commit or transaction.end listener failed, the connection state after a commit listener could not be verified, or the connection is in a new, chained transaction
@@ -209,6 +217,9 @@ interface DatabaseInterface
      * ends a transaction begun through this library that PDO no longer reports (a statement on raw
      * PDO told it): nothing is sent, no rollback listener runs, and 'transaction.end' reports 'lost'
      * with that failure as error (its listeners' failures then reach only the 'error' hook).
+     * Not confirmed either after a commit() of this transaction that failed on a session that may
+     * chain transactions (see commit()): the ROLLBACK is sent to clean up, no rollback listener
+     * runs, and 'transaction.end' reports 'lost' with the failed commit as error.
      * When the connection is in a transaction right
      * after the ROLLBACK (completion_type=CHAIN, not supported), that is reported as
      * TransactionException after the listeners ran, unless a rollback listener threw.
@@ -246,7 +257,8 @@ interface DatabaseInterface
      * - the commit failed: a rollback is attempted when PDO still reports the transaction, the
      *   CommitFailedException is re-thrown; transaction.end reports 'rolled_back' when that rollback
      *   succeeded (nothing was committed) and 'lost' when it failed too (the commit may or may not
-     *   have taken effect), with the commit's exception as error. When PDO reports no transaction
+     *   have taken effect), with the commit's exception as error. On a session that may chain
+     *   transactions (see commit()) the rollback confirms nothing: 'lost' as well, no rollback listener. When PDO reports no transaction
      *   after the failed commit, transaction.end reports 'lost' as well, fail-closed: that is what
      *   a callback leaves behind that committed itself with a raw COMMIT or a DDL statement (the
      *   data is committed, PDO::commit() then fails with "no active transaction").

@@ -92,6 +92,17 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
     private int $commitCalls = 0;
 
     /**
+     * Counts the statements query() hands to the server - every SQL statement a caller hands to
+     * the library goes through it -, at the moment it executes them.
+     * One it refuses before is not counted; one that fails while its parameters are bound counts:
+     * an answer that may still have been right is then discarded - 'lost', fail-closed. A call into
+     * PDO that saw it go up has run foreign code (an error handler) that sent statements through
+     * this driver: a SET SESSION completion_type among them, say (see
+     * noteACommitThatMayHaveTakenEffect()).
+     */
+    private int $statementsSent = 0;
+
+    /**
      * The failure the latest commit() that failed has thrown, and the number of that call.
      * commitOwnTransaction() tells the failure of the commit() it called by both - not by the
      * class: a driver hook or an error handler may throw a CommitFailedException that belongs to
@@ -112,6 +123,22 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      * listener throws is never written to, whatever it is.
      */
     private ?CommitFailedException $settlingCommit = null;
+
+    /**
+     * A COMMIT that failed while PDO did not say that the transaction is gone, on a session that may
+     * chain transactions (commitMayHaveChained()): the failure, and the counts endedSince()
+     * compares. Whatever ends that transaction as rolled back confirms nothing: the transaction
+     * PDO reports may be a new one the server opened for a COMMIT that took effect - rollback(),
+     * the raw rollback after a throwing begin listener and the raw cleanup after a commit listener
+     * tell 'lost' instead. No longer counts once the transaction is ended through this driver;
+     * taken away where a commit listener's transaction is ended without that count. Set while the
+     * server is asked, and kept when the answer is NO_CHAIN but an earlier failed COMMIT of the
+     * same transaction said otherwise. A transaction begun on raw PDO, ended there and begun there
+     * again is not told apart (see endedSince()): its rollback() is 'lost' as well, fail-closed.
+     *
+     * @var array{Throwable, int, int}|null
+     */
+    private ?array $unclearCommit = null;
 
     /**
      * How many transactions begun through this driver have had their 'transaction.begin' told and
@@ -313,6 +340,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
             if ($stmt === false) {
                 throw $this->silentFailure('PDO::prepare() returned false', $this->pdo->errorInfo());
             }
+            $this->statementsSent++;
             if ($this->bindAndExecute($stmt, $params) === false) {
                 throw $this->silentFailure('PDOStatement::execute() returned false', $stmt->errorInfo());
             }
@@ -895,6 +923,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
         $this->lostReported = false;
         $this->lostFor = null;
         $this->suspectFailure = null;
+        $this->unclearCommit = null; // of a transaction begun on raw PDO and ended there: endedSince() does not see that end
 
         try {
             // One by one: after a listener that ended the transaction no further one runs - it would
@@ -1024,7 +1053,8 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
 
             return;
         }
-        if (!$known) {
+        if (!$known || $this->unclearCommitAtHand() !== null) {
+            // Not known whether it still exists, or a listener's commit() of it failed and may have taken effect
             $this->cleanUpUnconfirmed($cause);
 
             return;
@@ -1126,7 +1156,11 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      * the caller issued itself the transaction is the caller's to end, and nothing writes into
      * the exception later (commitOwnTransaction() does, for the commit it runs). After the COMMIT, a
      * transaction PDO reports at once is a chained one (see chainedTransaction()): every commit
-     * listener is skipped and it is the first failure of the CommitHookException.
+     * listener is skipped and it is the first failure of the CommitHookException. A COMMIT that
+     * failed - also with what a PDO class of the caller's or an error handler threw besides a
+     * PDOException, which passes
+     * unchanged - may have taken effect on a session that chains transactions, and PDO then
+     * reports the next one: see noteACommitThatMayHaveTakenEffect().
      *
      * @throws CommitFailedException When the commit itself failed (it may or may not have taken effect), or was refused because the server had already ended the transaction (nothing of that transaction is committed)
      * @throws CommitHookException When committed, but a transaction.commit or transaction.end listener failed, the connection state after a commit listener could not be verified, or the connection is in a new, chained transaction
@@ -1147,7 +1181,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
                     previous: $this->suspectFailure,
                     debugMessage: $reason
                 );
-                $this->endFailedCommitIfGone($refusal, false, $ended, $number);
+                $this->endFailedCommitIfGone($refusal, false, $ended, $number, null, ours: true);
                 $this->thrownByCommit = [WeakReference::create($refusal), $call]; // after the listeners: a failed commit() of theirs would stand here instead
 
                 throw $refusal;
@@ -1165,6 +1199,9 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
             $wasOpen = false;
         }
 
+        // Read now: foreign code inside the COMMIT (an error handler) may send statements through this driver
+        $sentBefore = $this->statementsSent;
+
         try {
             $committed = $this->pdo->commit();
         } catch (PDOException $e) {
@@ -1173,10 +1210,16 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
                 previous: $e,
                 debugMessage: $e->getMessage()
             );
-            $this->endFailedCommitIfGone($failure, $wasOpen, $ended, $number);
+            $this->endFailedCommitIfGone($failure, $wasOpen, $ended, $number, $sentBefore, ours: true);
             $this->thrownByCommit = [WeakReference::create($failure), $call];
 
             throw $failure;
+        } catch (Throwable $e) {
+            // Not PDO's failure - a PDO class of the caller's, an error handler: it passes unchanged, and
+            // what becomes of the transaction is decided as after PDO's own failure
+            $this->endFailedCommitIfGone($e, $wasOpen, $ended, $number, $sentBefore, ours: false);
+
+            throw $e;
         }
 
         // Only reachable with a non-exception error mode (allowed via 'options') or a PDO class
@@ -1187,7 +1230,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
                 previous: $this->silentFailure('PDO::commit() returned false', $this->pdo->errorInfo()),
                 debugMessage: 'PDO::commit() returned false'
             );
-            $this->endFailedCommitIfGone($failure, $wasOpen, $ended, $number);
+            $this->endFailedCommitIfGone($failure, $wasOpen, $ended, $number, $sentBefore, ours: true);
             $this->thrownByCommit = [WeakReference::create($failure), $call];
 
             throw $failure;
@@ -1216,26 +1259,94 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      * when PDO reports no transaction any more (the server ended it and a later statement or the
      * driver's question told PDO; a COMMIT or DDL statement on raw PDO), no rollback() could end
      * it, and its end would never be told. It ends here as 'lost', with the failure as error;
-     * transaction() then finds nothing left to end.
+     * transaction() then finds nothing left to end. The failure is the CommitFailedException
+     * commit() built ($ours: the outcome is written into it), or what a PDO class of the caller's or
+     * an error handler threw instead - never written to, whatever it is.
+     *
+     * A COMMIT that was sent and failed ($sentBefore: $statementsSent when it was sent; null for a
+     * refused commit): see noteACommitThatMayHaveTakenEffect().
      */
-    private function endFailedCommitIfGone(CommitFailedException $failure, bool $wasOpen, int $ended, int $number): void
+    private function endFailedCommitIfGone(Throwable $failure, bool $wasOpen, int $ended, int $number, ?int $sentBefore, bool $ours): void
     {
-        if ($this->endedSince($ended, $number)) {
-            // While the COMMIT, or the driver's question before it, was under way, foreign code (an
-            // error handler) ended the transaction through this driver. That the transaction is
-            // gone is that call's doing, and it has told the end.
-            return;
-        }
-
         // An end is owed for a transaction begun through this driver, and for one begun on raw PDO that
         // was open when the COMMIT was sent (its successful commit would have told an end too)
         $owed = $this->transactionBegun || $wasOpen;
 
-        // An unreadable state is not "gone": it may still be open, the caller's rollback decides
+        if ($sentBefore !== null) {
+            $this->noteACommitThatMayHaveTakenEffect($failure, $owed, $ended, $number, $sentBefore);
+        }
+
+        if ($this->endedSince($ended, $number)) {
+            // While the COMMIT, the driver's question before it or the one after it was under way,
+            // foreign code (an error handler) ended the transaction through this driver. That the
+            // transaction is gone is that call's doing, and it has told the end.
+            return;
+        }
+
+        // An unreadable state is not "gone": it may still be open, the caller's rollback decides.
+        // The driver's question may have told PDO that it is gone.
         if ($owed && $this->reportsNoTransaction()) {
-            $failure->settle(self::TRANSACTION_LOST); // what the end listeners are told below
+            if ($ours && $failure instanceof CommitFailedException) {
+                $failure->settle(self::TRANSACTION_LOST); // what the end listeners are told below
+            }
             $this->endLostTransaction($failure, mayStillBeOpen: false);
         }
+    }
+
+    /**
+     * A COMMIT failed - PDO's failure, or what a PDO class of the caller's or an error handler threw -
+     * while PDO does not say that the transaction is gone (an unreadable state included): on a
+     * session that chains transactions the transaction PDO reports may be a new one the server
+     * opened for a COMMIT that took effect. The server is asked (commitMayHaveChained()); unless the
+     * session does not chain, whatever ends the transaction as rolled back confirms nothing
+     * ($unclearCommit), and the end is 'lost', never 'rolled_back'. The transaction stays the
+     * caller's to end. The answer tells the session as it is now, not as it was at the COMMIT: it
+     * counts only when no statement went through this driver since the COMMIT was sent
+     * ($sentBefore) - foreign code inside it (an error handler) may have switched completion_type.
+     * What such code sends on raw PDO is not seen.
+     */
+    private function noteACommitThatMayHaveTakenEffect(Throwable $failure, bool $owed, int $ended, int $number, int $sentBefore): void
+    {
+        if (!$owed || $this->reportsNoTransaction()) {
+            return;
+        }
+        // Set before the question: until the answer is in, the COMMIT may have taken effect, and a
+        // rollback() that foreign code (an error handler) runs inside the question confirms nothing.
+        $earlier = $this->unclearCommit;
+        $this->unclearCommit = [$failure, $ended, $number];
+        if (!$this->commitMayHaveChained() && $this->statementsSent === $sentBefore) {
+            $this->unclearCommit = $earlier; // what an earlier failed COMMIT of this transaction left stays
+        }
+    }
+
+    /**
+     * Asked after a COMMIT that failed while PDO did not say that the transaction is gone: may the
+     * transaction PDO reports be a new one the session chained to a COMMIT that took effect? The
+     * driver sets completion_type to NO_CHAIN when it connects, but a SET SESSION afterwards changes
+     * it: under CHAIN the server opens the next transaction as soon as a COMMIT takes effect, and a
+     * COMMIT that took effect and was reported as failed (its answer lost, a PDO class that throws)
+     * looks like one that failed (measured on MariaDB 10.11, 11.4 and 12.3: the row is written).
+     * Asked on raw PDO (no hook sees it); anything but NO_CHAIN - CHAIN, RELEASE, no answer (a
+     * server that has no such variable included) - may have chained.
+     */
+    private function commitMayHaveChained(): bool
+    {
+        try {
+            $answer = $this->pdo->query('SELECT @@completion_type');
+
+            return $answer === false || $answer->fetchColumn() !== 'NO_CHAIN';
+        } catch (Throwable) {
+            return true;
+        }
+    }
+
+    /**
+     * The failure of a COMMIT of the transaction at hand that may have taken effect
+     * ($unclearCommit), or null: none, or one of a transaction ended since.
+     */
+    private function unclearCommitAtHand(): ?Throwable
+    {
+        return $this->unclearCommit !== null && !$this->endedSince($this->unclearCommit[1], $this->unclearCommit[2]) ? $this->unclearCommit[0] : null;
     }
 
     /**
@@ -1379,6 +1490,11 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
                 $failures[] = $e;
             }
 
+            // A COMMIT of the listener's transaction that may have taken effect: taken away here, because
+            // each branch below ends or buffers what the listener left without counting it as ended
+            $unclear = $this->unclearCommitAtHand();
+            $this->unclearCommit = null;
+
             try {
                 $open = $this->pdo->inTransaction();
             } catch (Throwable $e) {
@@ -1391,7 +1507,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
                     $this->transactionBegun = false;
                     $this->lostReported = true;
                     $this->lostFor = $inner;
-                    $innerEnds[] = [self::TRANSACTION_LOST, $stateUnknown, $inner];
+                    $innerEnds[] = [self::TRANSACTION_LOST, $unclear ?? $stateUnknown, $inner];
                 }
                 continue;
             }
@@ -1451,12 +1567,15 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
             if ($this->transactionBegun) {
                 $inner = $this->transactionAtHand();
                 $this->transactionBegun = false;
-                if ($cleanupError === null) {
+                if ($cleanupError === null && $unclear === null) {
                     $innerEnds[] = [self::TRANSACTION_ROLLED_BACK, $leftOpen, $inner];
+                } elseif ($cleanupError === null) {
+                    // Rolled back, but its COMMIT may have taken effect before: nothing is confirmed
+                    $innerEnds[] = [self::TRANSACTION_LOST, $unclear, $inner];
                 } else {
                     $this->lostReported = true;
                     $this->lostFor = $inner;
-                    $innerEnds[] = [self::TRANSACTION_LOST, $leftOpen, $inner];
+                    $innerEnds[] = [self::TRANSACTION_LOST, $unclear ?? $leftOpen, $inner]; // a failed commit of it names the reason first
                 }
             }
         }
@@ -1525,7 +1644,9 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      * finds the transaction gone: on MariaDB a statement with an implicit commit that failed
      * has committed it, and the rows written before it are in the database. When the driver
      * cannot find out, the ROLLBACK is sent all the same, but 'lost' is told and no rollback
-     * listener runs: it confirms nothing. A transaction PDO reports right after the ROLLBACK is a
+     * listener runs: it confirms nothing. So after a commit() of this transaction that failed on a
+     * session that may chain transactions ($unclearCommit): 'lost' with the failed commit as
+     * error. A transaction PDO reports right after the ROLLBACK is a
      * chained one (see chainedTransaction()): thrown after the listeners ran, or told to the
      * 'error' hook when a rollback listener threw.
      *
@@ -1539,12 +1660,16 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
         $cause = $this->automaticRollbackCause;
         $this->automaticRollbackCause = null;
         $this->deadTransactionPending(); // forgets the failure of a transaction begun on raw PDO that PDO no longer reports
+        // A COMMIT of this transaction that may have taken effect: whatever ends it below confirms
+        // nothing, and the failed commit is what the end names, ahead of a statement failure since -
+        // it is the reason the data may be committed
+        $unclear = $this->unclearCommitAtHand();
 
         // The server threw the transaction away and PDO knows it (a statement on raw PDO told it): there
         // is nothing to send. rollback() stays the way out: it tells the end as 'lost' - what ran on raw
         // PDO meanwhile ran outside the transaction - instead of failing for want of a transaction.
         if ($this->suspectFailure !== null && $this->transactionBegun && $this->deadTransactionPending() && $this->reportsNoTransaction()) {
-            $this->endLostTransaction($cause ?? $this->suspectFailure, mayStillBeOpen: false);
+            $this->endLostTransaction($cause ?? $unclear ?? $this->suspectFailure, mayStillBeOpen: false);
 
             return;
         }
@@ -1569,7 +1694,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
                 return;
             }
             if ($this->reportsNoTransaction()) {
-                $this->endLostTransaction($cause ?? $failure, mayStillBeOpen: false);
+                $this->endLostTransaction($cause ?? $unclear ?? $failure, mayStillBeOpen: false);
 
                 return;
             }
@@ -1578,6 +1703,10 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
                 $unconfirmed = $failure;
             }
         }
+
+        // The transaction PDO reports may be a new one the server opened for a COMMIT that took effect:
+        // the ROLLBACK cleans up, but confirms nothing
+        $unconfirmed = $unclear ?? $unconfirmed;
 
         try {
             $rolledBack = $this->pdo->rollBack();
@@ -1732,7 +1861,8 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      * - the commit failed: a rollback is attempted when PDO still reports the transaction, the
      *   CommitFailedException is re-thrown; transaction.end reports 'rolled_back' when that rollback
      *   succeeded (nothing was committed) and 'lost' when it failed too (the commit may or may not
-     *   have taken effect), with the commit's exception as error. When PDO reports no transaction
+     *   have taken effect), with the commit's exception as error. On a session that may chain
+     *   transactions (see commit()) the rollback confirms nothing: 'lost' as well, no rollback listener. When PDO reports no transaction
      *   after the failed commit, transaction.end reports 'lost' as well, fail-closed: that is what
      *   a callback leaves behind that committed itself with a raw COMMIT or a DDL statement (the
      *   data is committed, PDO::commit() then fails with "no active transaction").
@@ -2075,6 +2205,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
         // trace (with arguments kept), and the statement holds its PDO object. A refused commit the
         // driver holds only weakly ($thrownByCommit).
         $this->suspectFailure = null;
+        $this->unclearCommit = null; // the new connection opened no transaction: none that PDO reports there is the one whose COMMIT failed
 
         // What is owed is read now, not before: foreign code inside that ROLLBACK (an error handler)
         // may have ended the transaction through this driver - that call told its end - or begun
