@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-10-06
+
 A minor release with one break: a class that implements `DatabaseInterface` itself must add the new methods; a driver that extends `AbstractDriver` or `MariaDbDriver` is not affected unless it overrides `reconnect()`, declares a method of one of the new names, or relies on its own `query()` seeing the named-lock statements. Released as 3.1 on purpose - the library has no installs besides its own projects (decided 06.10.2026). See "Upgrading from 3.0" below.
 
 ### Added
@@ -415,7 +417,8 @@ What can break code that ran on 1.4:
 - **CI**: GitHub Actions with PHP 8.2-8.5, MySQL 8.0/8.4, MariaDB 10.11/11.4, PostgreSQL 15/16/17.
 - **Quality**: PHPStan level 9, PHP-CS-Fixer (PSR-12).
 
-[Unreleased]: https://github.com/sodaho/pdo-wrapper/compare/v3.0.0...HEAD
+[Unreleased]: https://github.com/sodaho/pdo-wrapper/compare/v3.1.0...HEAD
+[3.1.0]: https://github.com/sodaho/pdo-wrapper/compare/v3.0.0...v3.1.0
 [3.0.0]: https://github.com/sodaho/pdo-wrapper/compare/v2.1.0...v3.0.0
 [2.1.0]: https://github.com/sodaho/pdo-wrapper/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/sodaho/pdo-wrapper/compare/v1.6.1...v2.0.0
