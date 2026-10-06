@@ -7,7 +7,7 @@ namespace Sodaho\PdoWrapper\Exception;
 use Throwable;
 
 /**
- * Thrown by MariaDbDriver::namedLock() for a named lock this connection holds already: MariaDB
+ * Thrown by namedLock() (DatabaseInterface) for a named lock this connection holds already: MariaDB
  * would count a second hold, and one release would not free the lock.
  *
  * A QueryException like the method's other failures, so existing catch blocks keep working;

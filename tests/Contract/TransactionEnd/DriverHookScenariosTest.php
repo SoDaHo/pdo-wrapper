@@ -311,7 +311,11 @@ class DriverHookScenariosTest extends TransactionEndTestCase
         $db->on('query', static function (array $data) use (&$told): void {
             $told[] = $data['sql'];
         });
-        $assertRefused = function () use ($db): void {
+        /** @var Recorder<mixed> $before */
+        $before = new Recorder(static fn (array $data): mixed => $data['sql']);
+        $db->on('query.before', $before);
+        $assertRefused = function () use ($db, $before): void {
+            $toldBefore = count($before->all());
             try {
                 $db->insert(self::TABLE, ['id' => 9, 'name' => 'outside']);
                 $this->fail('Expected QueryException: nothing is sent');
@@ -319,6 +323,8 @@ class DriverHookScenariosTest extends TransactionEndTestCase
                 $this->assertStringContainsString('Not sent: the server rolled the open transaction back', (string) $e->getDebugMessage());
                 $this->assertStringContainsString('fatal_table', (string) $e->getPrevious()?->getMessage());
             }
+            $this->assertCount($toldBefore + 1, $before->all(), "'query.before' fires before the library's own refusal");
+            $this->assertStringStartsWith('INSERT', (string) $before->all()[$toldBefore]);
         };
 
         // a failure that leaves the transaction alive holds nothing back

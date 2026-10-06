@@ -11,7 +11,7 @@ use Sodaho\PdoWrapper\Exception\QueryException;
 /**
  * What the current database holds, read from information_schema - its tables, their columns,
  * indexes and constraints. Read only: nothing here writes DDL. Created with
- * MariaDbDriver::schema(); every method asks the server anew, in one statement.
+ * DatabaseInterface::schema(); every method asks the server anew, in one statement.
  *
  * "The current database" is the connection's (DATABASE()); "a table" is a base table or a
  * system-versioned one - not a view, a sequence or a temporary table (a temporary table that

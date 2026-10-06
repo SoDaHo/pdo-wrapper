@@ -7,9 +7,8 @@ namespace Sodaho\PdoWrapper\Driver;
 use PDO;
 use PDOException;
 use Sodaho\PdoWrapper\Exception\ConnectionException;
-use Sodaho\PdoWrapper\Exception\NamedLockReentryException;
+use Sodaho\PdoWrapper\Exception\ConnectionRefusal;
 use Sodaho\PdoWrapper\Exception\QueryException;
-use Sodaho\PdoWrapper\Schema\Schema;
 use Throwable;
 
 /**
@@ -291,148 +290,12 @@ class MariaDbDriver extends AbstractDriver
     }
 
     /**
-     * What the current database holds - tables, columns, indexes, constraints -, read from
-     * information_schema (see Schema\Schema). Read only.
+     * The configured database and ":" - not DATABASE(): the same for every connection of the
+     * application, whatever a USE changed.
      */
-    public function schema(): Schema
+    protected function namedLockPrefix(): ?string
     {
-        return new Schema($this);
-    }
-
-    /**
-     * Take a named lock (GET_LOCK()): a lock on a name, not on rows, held by this connection until
-     * releaseNamedLock() or the end of the connection - COMMIT and ROLLBACK do not release it,
-     * reconnect() gives it up with the old connection. For "at most one at a time" across
-     * requests and processes: `if ($db->namedLock('login:' . $id)) { try { ... } finally {
-     * $db->releaseNamedLock('login:' . $id); } }`.
-     *
-     * The name is prefixed with the configured database and ":" ("app_db:login:7"): the server
-     * keeps one namespace for all its databases, a shared server included. On the server it is
-     * compared as written - case, accents and spaces count - and may have 192 bytes with the
-     * prefix (MariaDB refuses a longer one: error 1059). Measured on 10.11, 11.4 and 12.3.
-     *
-     * MariaDB lets a connection take a lock it holds a second time and counts the holds - one
-     * release would then leave the lock held. This method refuses that instead: taking a lock this
-     * connection already holds throws a NamedLockReentryException, a QueryException of its own
-     * class (ask isNamedLockHeld() first where that can happen).
-     *
-     * A persistent connection does not end with the request: a lock a request dies holding stays
-     * held until that pooled connection ends, and the next request on it holds it (isNamedLockHeld()
-     * true, namedLock() throws the reentry exception). Two connections that wait for each other's lock end
-     * in a deadlock: MariaDB fails one GET_LOCK() with 1213 and keeps the transaction (measured),
-     * but this library takes 1213 for a deadlock that ended it and refuses further statements
-     * until rollback() - fail-closed. Take named locks outside transactions or in one order, and
-     * after a deadlock or a 1020 roll back before releaseNamedLock() (refused until then).
-     *
-     * @param string $name The lock's name, without the prefix
-     * @param int $timeout Seconds to wait while another connection holds it (0: do not wait)
-     *
-     * @throws NamedLockReentryException When this connection holds the lock already
-     * @throws QueryException When the name is empty or holds a NUL byte, the timeout is negative, the server answers NULL (an error such as a killed thread), or a listener replaced the connection while the statement ran
-     *
-     * @return bool True when taken, false when another connection held it beyond the timeout
-     */
-    public function namedLock(string $name, int $timeout = 0): bool
-    {
-        $lock = $this->lockName('namedLock', $name);
-        if ($timeout < 0) {
-            throw new QueryException(
-                message: 'Query failed',
-                debugMessage: sprintf('namedLock() takes a timeout of 0 or more seconds, not %d (MariaDB answers a negative one with NULL)', $timeout)
-            );
-        }
-
-        // One statement: whether this connection holds it already, and if not the attempt itself
-        $taken = $this->lockStatement('namedLock', 'SELECT CASE WHEN IS_USED_LOCK(?) = CONNECTION_ID() THEN -1 ELSE GET_LOCK(?, ?) END', [$lock, $lock, $timeout]);
-
-        return match ($taken) {
-            1 => true,
-            0 => false,
-            -1 => throw new NamedLockReentryException(
-                message: 'Query failed',
-                debugMessage: sprintf('namedLock(): this connection holds "%s" already; MariaDB would count a second hold, and one release would not free it. Release it first, or ask isNamedLockHeld().', $name),
-                lockName: $name
-            ),
-            default => throw new QueryException(
-                message: 'Query failed',
-                debugMessage: sprintf('namedLock(): GET_LOCK() answered %s for "%s" - an error on the server, not a busy lock', var_export($taken, true), $name)
-            ),
-        };
-    }
-
-    /**
-     * Release a named lock this connection holds (RELEASE_LOCK()).
-     *
-     * @param string $name The lock's name, without the prefix (see namedLock())
-     *
-     * @throws QueryException When the name is empty or holds a NUL byte, the query fails, or a listener replaced the connection while the statement ran
-     *
-     * @return bool True when released; false when this connection did not hold it - another one
-     *              does, or nobody does (released before, given up with a connection)
-     */
-    public function releaseNamedLock(string $name): bool
-    {
-        return $this->lockStatement('releaseNamedLock', 'SELECT RELEASE_LOCK(?)', [$this->lockName('releaseNamedLock', $name)]) === 1;
-    }
-
-    /**
-     * Whether this connection holds the named lock, asked on the server (IS_USED_LOCK()).
-     *
-     * @param string $name The lock's name, without the prefix (see namedLock())
-     *
-     * @throws QueryException When the name is empty or holds a NUL byte, the query fails, or a listener replaced the connection while the statement ran
-     */
-    public function isNamedLockHeld(string $name): bool
-    {
-        return $this->lockStatement('isNamedLockHeld', 'SELECT IS_USED_LOCK(?) = CONNECTION_ID()', [$this->lockName('isNamedLockHeld', $name)]) === 1;
-    }
-
-    /**
-     * The answer of a named-lock statement - asked of the session the lock belongs to. A listener
-     * of the 'query' hook may call reconnect() while the statement runs: the statement then ran
-     * on the old session, which ends with it and takes its locks along, so its answer would speak
-     * of a session that is gone.
-     *
-     * @param list<mixed> $params
-     *
-     * @throws QueryException When the query fails or the connection was replaced while it ran
-     */
-    private function lockStatement(string $method, string $sql, array $params): mixed
-    {
-        $pdo = $this->getPdo();
-        $answer = $this->query($sql, $params)->fetchColumn();
-        if ($this->getPdo() !== $pdo) {
-            throw new QueryException(
-                message: 'Query failed',
-                debugMessage: sprintf('%s(): the connection was replaced while the statement ran (reconnect() in a listener); a named lock belongs to its session, and that session is gone', $method)
-            );
-        }
-
-        return $answer;
-    }
-
-    /**
-     * The name of a named lock on the server: prefixed with the configured database.
-     *
-     * @throws QueryException When the name is empty or holds a NUL byte
-     */
-    private function lockName(string $method, string $name): string
-    {
-        if ($name === '') {
-            throw new QueryException(
-                message: 'Query failed',
-                debugMessage: sprintf('%s() needs a name', $method)
-            );
-        }
-        if (str_contains($name, "\0")) {
-            // MariaDB keys the lock by the name up to its first NUL: "k\0a" and "k\0b" would be one lock (measured)
-            throw new QueryException(
-                message: 'Query failed',
-                debugMessage: sprintf('%s(): a name with a NUL byte - MariaDB cuts the name there, and different names would be one lock. Encode a binary name (bin2hex()).', $method)
-            );
-        }
-
-        return $this->lockPrefix . $name;
+        return $this->lockPrefix;
     }
 
     /**
@@ -514,30 +377,31 @@ class MariaDbDriver extends AbstractDriver
     {
         $client = $pdo->getAttribute(PDO::ATTR_CLIENT_VERSION);
         $server = $pdo->getAttribute(PDO::ATTR_SERVER_VERSION);
-        $problem = match (true) {
-            !is_string($client) || !str_starts_with($client, 'mysqlnd ') => sprintf(
+        $refused = match (true) {
+            !is_string($client) || !str_starts_with($client, 'mysqlnd ') => [ConnectionRefusal::NotMysqlnd, sprintf(
                 'pdo_mysql is not built on mysqlnd (client "%s"): the PHP types of the fetched values would not be the ones this library promises. Use a PHP build whose pdo_mysql uses mysqlnd.',
                 is_string($client) ? $client : get_debug_type($client)
-            ),
-            !is_string($server) || preg_match('/^(?:5\.5\.5-)?(\d+\.\d+\.\d+)(?:-\d+)?-MariaDB(?:-|\z)/i', $server, $version) !== 1 => sprintf(
+            )],
+            !is_string($server) || preg_match('/^(?:5\.5\.5-)?(\d+\.\d+\.\d+)(?:-\d+)?-MariaDB(?:-|\z)/i', $server, $version) !== 1 => [ConnectionRefusal::NotMariaDb, sprintf(
                 'The server is no MariaDB (it reports "%s"): this library supports MariaDB 10.11 and later only.',
                 is_string($server) ? $server : get_debug_type($server)
-            ),
-            version_compare($version[1], '10.11.0', '<') => sprintf(
+            )],
+            version_compare($version[1], '10.11.0', '<') => [ConnectionRefusal::MariaDbTooOld, sprintf(
                 'MariaDB %s is older than 10.11, the oldest version this library supports.',
                 $version[1]
-            ),
+            )],
             // Read back, not checked in the options: PDO takes any spelling of an int for it ('00', true)
-            $pdo->getAttribute(PDO::ATTR_ORACLE_NULLS) !== PDO::NULL_NATURAL => sprintf(
+            $pdo->getAttribute(PDO::ATTR_ORACLE_NULLS) !== PDO::NULL_NATURAL => [ConnectionRefusal::NullMode, sprintf(
                 'ATTR_ORACLE_NULLS is %s on this connection: NULL would arrive as \'\' or \'\' as null, not as this library promises (see MariaDbDriver). Leave it at PDO::NULL_NATURAL and convert in the application.',
                 var_export($pdo->getAttribute(PDO::ATTR_ORACLE_NULLS), true)
-            ),
+            )],
             default => null,
         };
-        if ($problem !== null) {
+        if ($refused !== null) {
             throw new ConnectionException(
                 message: 'Database connection failed',
-                debugMessage: sprintf('MariaDB connection to %s:%d refused: %s', $host, $port, $problem)
+                debugMessage: sprintf('MariaDB connection to %s:%d refused: %s', $host, $port, $refused[1]),
+                refusal: $refused[0]
             );
         }
     }

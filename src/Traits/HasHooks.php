@@ -24,7 +24,7 @@ use Sodaho\PdoWrapper\Exception\DatabaseException;
  * tells later. 'transaction.commit' and 'transaction.end' listeners get an array of their own each
  * and cannot take it by reference: PHP throws an Error, which is that listener's failure.
  *
- * "Fail Hard" implementation for 'query', 'error', 'transaction.begin' and 'transaction.rollback':
+ * "Fail Hard" implementation for 'query.before', 'query', 'error', 'transaction.begin' and 'transaction.rollback':
  * exceptions in those hooks bubble up to the caller (a PDOException from a 'transaction.begin' or
  * 'transaction.rollback' hook arrives as TransactionException) and the first failing hook stops the
  * remaining ones (after a failing 'transaction.begin' hook a rollback of the new transaction is
@@ -255,7 +255,7 @@ use Sodaho\PdoWrapper\Exception\DatabaseException;
  * of such a commit or rollback already run inside the chained transaction: what they write there
  * is not committed, and a beginTransaction() of theirs fails.
  *
- * 'query' and 'error': the payload carries the SQL and the parameters as passed - passwords,
+ * 'query.before', 'query' and 'error': the payload carries the SQL and the parameters unredacted - passwords,
  * tokens and personal data included; redact before logging. 'error' also fires, with code 0, for
  * a parameter that must not be bound (an array, a resource, an object without __toString(), a
  * RawExpression; the statement is not sent). insert() reads the new id before
@@ -263,7 +263,18 @@ use Sodaho\PdoWrapper\Exception\DatabaseException;
  * commits a transaction through this library runs every 'transaction.commit' listener again for
  * that inner commit, itself included: guard against the recursion.
  *
- * Events: 'query', 'error', 'transaction.begin', 'transaction.commit', 'transaction.rollback', 'transaction.end'.
+ * 'query.before': fires at the start of every query() - before the library's own checks, also for
+ * a statement it then refuses -, with 'sql' and 'params' (the parameters as values: references
+ * among them are told as what they hold). Changing them changes nothing of the statement; the
+ * 'query.before' listeners after it see the change, as with 'query'. A listener that throws
+ * stops the statement: nothing is sent, neither 'query' nor 'error' fires, and the exception
+ * reaches the caller unchanged (a PDOException as QueryException 'Query hook failed'). For a test
+ * that makes a statement fail before it runs. What a listener does counts for the statement: after
+ * its commit() or rollback() the statement runs outside the transaction, after its reconnect() on
+ * the new connection - as the same call in the callback would. A listener that runs a statement
+ * of its own fires 'query.before' again: guard against the recursion.
+ *
+ * Events: 'query.before', 'query', 'error', 'transaction.begin', 'transaction.commit', 'transaction.rollback', 'transaction.end'.
  * on() throws for any other name: a misspelled one would never fire. A custom driver that
  * triggers events of its own names them in knownEvents().
  */
@@ -334,7 +345,7 @@ trait HasHooks
      */
     protected function knownEvents(): array
     {
-        return ['query', 'error', 'transaction.begin', 'transaction.commit', 'transaction.rollback', 'transaction.end'];
+        return ['query.before', 'query', 'error', 'transaction.begin', 'transaction.commit', 'transaction.rollback', 'transaction.end'];
     }
 
     /**

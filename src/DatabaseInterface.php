@@ -21,7 +21,7 @@ interface DatabaseInterface
      * @param string $sql SQL query with placeholders
      * @param array<int|string, mixed> $params Parameters to bind
      *
-     * @throws Exception\QueryException When the statement fails (also when PDO reports that without an exception), when a parameter is not null, a scalar or a Stringable object, is a float INF or NAN, or is a Query\RawExpression (the statement is not sent), when the server has thrown the open transaction away (after a deadlock or a 1020 - see MariaDbDriver - nothing is sent until that transaction is ended: by rollback(), by a refused commit() that tells 'lost', and for a transaction begun on raw PDO also once PDO reports none), or when a 'query' listener threw a PDOException ('Query hook failed': the statement did run)
+     * @throws Exception\QueryException When the statement fails (also when PDO reports that without an exception), when a parameter is not null, a scalar or a Stringable object, is a float INF or NAN, or is a Query\RawExpression (the statement is not sent), when the server has thrown the open transaction away (after a deadlock or a 1020 - see MariaDbDriver - nothing is sent until that transaction is ended: by rollback(), by a refused commit() that tells 'lost', and for a transaction begun on raw PDO also once PDO reports none), or when a 'query' listener threw a PDOException ('Query hook failed': the statement did run) or a 'query.before' listener did (the statement was not sent)
      */
     public function query(string $sql, array $params = []): PDOStatement;
 
@@ -48,14 +48,86 @@ interface DatabaseInterface
     public function inTransaction(): bool;
 
     /**
+     * The number of the open transaction begun through this driver - the 'transaction' of its
+     * events -, or null when none is open (also after its end was told as 'lost'; a transaction
+     * begun on raw PDO has no number).
+     */
+    public function currentTransaction(): ?int;
+
+    /**
      * Discard the connection and continue on a new one, opened with the settings the driver was
      * created with: the new connection first, then a ROLLBACK on the old one, then the swap. A
-     * transaction whose end was still owed ends as 'lost'. See Driver\AbstractDriver::reconnect()
-     * for what goes with the old session and what may still hold it.
+     * transaction whose end was still owed ends as 'lost'. While named locks taken with namedLock()
+     * are held, nothing happens unless $dropNamedLocks gives them up; after a named-lock statement
+     * ran, before its method returned (a 'query' listener of it calls this), nothing happens either.
+     * See Driver\AbstractDriver::reconnect() for what goes with the old session and what may still
+     * hold it.
      *
-     * @throws Exception\ConnectionException When the new connection cannot be opened (the old one stays), the driver was not created with its connection settings, or the connection is persistent
+     * @param bool $dropNamedLocks Give up the named locks this driver holds, with the old session
+     *
+     * @throws Exception\NamedLocksHeldException When named locks are held and $dropNamedLocks is false (nothing has changed)
+     * @throws Exception\ConnectionException When called after a named-lock statement ran, before its method returned, the new connection cannot be opened (the old one stays), the driver was not created with its connection settings, or the connection is persistent
      */
-    public function reconnect(): void;
+    public function reconnect(bool $dropNamedLocks = false): void;
+
+    /**
+     * Take a named lock (GET_LOCK()), held by this connection until releaseNamedLock() or the end of
+     * the connection - not by a transaction. The name is prefixed on the server (MariaDbDriver: the
+     * configured database and ":"). See Driver\AbstractDriver::namedLock().
+     *
+     * @param string $name The lock's name, without the prefix
+     * @param int $timeout Seconds to wait while another connection holds it (0: do not wait)
+     *
+     * @throws Exception\NamedLockReentryException When this connection holds the lock already
+     * @throws Exception\QueryException When the name is empty or holds a NUL byte, the timeout is negative, the driver names no lock prefix, the server answers NULL, its answer cannot be read, or the connection was replaced while the statement ran
+     * @throws \Throwable What an error handler throws for reading the answer that is not about a failure PDO recorded (passed on unchanged)
+     *
+     * @return bool True when taken, false when another connection held it beyond the timeout
+     */
+    public function namedLock(string $name, int $timeout = 0): bool;
+
+    /**
+     * Release a named lock this connection holds (RELEASE_LOCK()).
+     *
+     * @throws Exception\QueryException When the name is empty or holds a NUL byte, the driver names no lock prefix, the query fails, its answer cannot be read, or the connection was replaced while the statement ran
+     * @throws \Throwable What an error handler throws for reading the answer that is not about a failure PDO recorded (passed on unchanged)
+     *
+     * @return bool True when released, false when this connection did not hold it
+     */
+    public function releaseNamedLock(string $name): bool;
+
+    /**
+     * Whether this connection holds the named lock, asked on the server.
+     *
+     * @throws Exception\QueryException When the name is empty or holds a NUL byte, the driver names no lock prefix, the query fails, its answer cannot be read, or the connection was replaced while the statement ran
+     * @throws \Throwable What an error handler throws for reading the answer that is not about a failure PDO recorded (passed on unchanged)
+     */
+    public function isNamedLockHeld(string $name): bool;
+
+    /**
+     * The connection id of the connection that holds the named lock, this one included, or null
+     * when nobody holds it - asked on the server.
+     *
+     * @throws Exception\QueryException When the name is empty or holds a NUL byte, the driver names no lock prefix, the query fails, the server answers something else, its answer cannot be read, or the connection was replaced while the statement ran
+     * @throws \Throwable What an error handler throws for reading the answer that is not about a failure PDO recorded (passed on unchanged)
+     */
+    public function namedLockHolder(string $name): ?int;
+
+    /**
+     * The named locks this driver holds as far as it knows - what the answers of namedLock() and
+     * releaseNamedLock() said (an answer of namedLock() that could not be read counts the name;
+     * releaseNamedLock() drops it whatever it answers) -, without the prefix, in the order taken.
+     * Not asked on the server.
+     *
+     * @return list<string>
+     */
+    public function heldNamedLocks(): array;
+
+    /**
+     * What the current database holds - tables, columns, indexes, constraints -, read from
+     * information_schema. Read only.
+     */
+    public function schema(): Schema\Schema;
 
     /**
      * Current date and time of the database in local time at statement time, to the second, as a

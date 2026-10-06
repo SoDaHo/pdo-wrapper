@@ -157,6 +157,87 @@ class EdgeCaseTest extends ContractTestCase
         $this->assertSame(1, $driver->reads, 'read once, after the outer INSERT: the listener\'s identical statement did not run the step');
     }
 
+    /**
+     * A driver whose query() normalizes the parameters before its parent sends them: the step is
+     * taken by the SQL, so insert() still reads its id before a 'query' listener inserts.
+     */
+    public function testADriverThatNormalizesTheParametersKeepsTheInsertsOwnId(): void
+    {
+        $driver = new class (TestEnvironment::mariadb()) extends MariaDbDriver {
+            public function query(string $sql, array $params = []): PDOStatement
+            {
+                return parent::query($sql, array_map(static fn (mixed $value): mixed => is_int($value) ? (string) $value : $value, $params));
+            }
+        };
+        $this->create('notes', ['id' => 'id', 'body' => 'text', 'n' => 'int']);
+        $this->create('mirror', ['id' => 'id', 'body' => 'text']);
+        $driver->getPdo()->exec("INSERT INTO mirror (body) VALUES ('filler'), ('filler'), ('filler')");
+        $driver->on('query', static function (array $data) use ($driver): void {
+            if (str_starts_with((string) $data['sql'], 'INSERT INTO `notes`')) {
+                $driver->getPdo()->exec("INSERT INTO mirror (body) VALUES ('audit')");
+            }
+        });
+
+        $this->assertSame(1, $driver->insert('notes', ['body' => 'outer', 'n' => 7]), "the notes row's id, not the mirror's (4)");
+    }
+
+    /**
+     * A driver whose query() sends the very same INSERT ahead of it: the step runs for both, and
+     * insert() returns the id of the row its own statement wrote, which ran last.
+     */
+    public function testADriverThatSendsTheSameInsertAheadGetsTheOwnId(): void
+    {
+        $driver = new class (TestEnvironment::mariadb()) extends MariaDbDriver {
+            public function query(string $sql, array $params = []): PDOStatement
+            {
+                if (str_starts_with($sql, 'INSERT INTO `notes`')) {
+                    parent::query($sql, ['ahead']);
+                }
+
+                return parent::query($sql, $params);
+            }
+        };
+        $this->create('notes', ['id' => 'id', 'body' => 'text']);
+
+        $this->assertSame(2, $driver->insert('notes', ['body' => 'own']), 'the row sent ahead is 1');
+        $this->assertSame(['id' => 2, 'body' => 'own'], $driver->findOne('notes', ['id' => 2]));
+    }
+
+    /**
+     * A driver whose query() takes a named lock before it hands an INSERT on: the lock statement
+     * runs while insert()'s step is set and not yet taken - it is put back, and insert() still
+     * reads its id before a 'query' listener inserts.
+     */
+    public function testALockTakenInsideQueryLeavesTheInsertsStep(): void
+    {
+        $driver = new class (TestEnvironment::mariadb()) extends MariaDbDriver {
+            public function query(string $sql, array $params = []): PDOStatement
+            {
+                if (str_starts_with($sql, 'INSERT INTO `notes`')) {
+                    $this->namedLock('notes');
+                    try {
+                        return parent::query($sql, $params);
+                    } finally {
+                        $this->releaseNamedLock('notes');
+                    }
+                }
+
+                return parent::query($sql, $params);
+            }
+        };
+        $this->create('notes', ['id' => 'id', 'body' => 'text']);
+        $this->create('mirror', ['id' => 'id', 'body' => 'text']);
+        $driver->getPdo()->exec("INSERT INTO mirror (body) VALUES ('filler'), ('filler'), ('filler')");
+        $driver->on('query', static function (array $data) use ($driver): void {
+            if (str_starts_with((string) $data['sql'], 'INSERT INTO `notes`')) {
+                $driver->getPdo()->exec("INSERT INTO mirror (body) VALUES ('audit')");
+            }
+        });
+
+        $this->assertSame(1, $driver->insert('notes', ['body' => 'locked']), "the notes row's id, not the mirror's (4)");
+        $this->assertSame([], $driver->heldNamedLocks());
+    }
+
     // =========================================================================
     // UNIQUE VIOLATIONS, AS THE SERVER REPORTS THEM (replayed)
     // =========================================================================

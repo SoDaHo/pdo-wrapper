@@ -28,11 +28,11 @@ class HasHooksTest extends TestCase
         $noop = static function (): void {
         };
 
-        foreach (['query', 'error', 'transaction.begin', 'transaction.commit', 'transaction.rollback', 'transaction.end'] as $event) {
+        foreach (['query.before', 'query', 'error', 'transaction.begin', 'transaction.commit', 'transaction.rollback', 'transaction.end'] as $event) {
             $this->assertSame($db, $db->on($event, $noop));
         }
 
-        foreach (['qeury', 'Query', 'transaction', 'transaction.ended', ''] as $event) {
+        foreach (['qeury', 'Query', 'query.after', 'transaction', 'transaction.ended', ''] as $event) {
             try {
                 $db->on($event, $noop);
                 $this->fail('Expected DatabaseException for "' . $event . '"');
@@ -40,7 +40,7 @@ class HasHooksTest extends TestCase
                 $this->assertSame(DatabaseException::class, $e::class);
                 $this->assertSame('Unknown hook event', $e->getMessage());
                 $this->assertSame(
-                    sprintf('Unknown event "%s": a listener for it would never run. Known events: query, error, transaction.begin, transaction.commit, transaction.rollback, transaction.end', $event),
+                    sprintf('Unknown event "%s": a listener for it would never run. Known events: query.before, query, error, transaction.begin, transaction.commit, transaction.rollback, transaction.end', $event),
                     $e->getDebugMessage()
                 );
             }

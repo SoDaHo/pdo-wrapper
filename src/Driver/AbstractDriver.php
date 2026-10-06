@@ -15,12 +15,15 @@ use Sodaho\PdoWrapper\Exception\Codes;
 use Sodaho\PdoWrapper\Exception\CommitFailedException;
 use Sodaho\PdoWrapper\Exception\CommitHookException;
 use Sodaho\PdoWrapper\Exception\ConnectionException;
+use Sodaho\PdoWrapper\Exception\NamedLockReentryException;
+use Sodaho\PdoWrapper\Exception\NamedLocksHeldException;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Exception\TransactionException;
 use Sodaho\PdoWrapper\Exception\UniqueViolationException;
 use Sodaho\PdoWrapper\InternalMethods;
 use Sodaho\PdoWrapper\Query\FloatText;
 use Sodaho\PdoWrapper\Query\RawExpression;
+use Sodaho\PdoWrapper\Schema\Schema;
 use Sodaho\PdoWrapper\Traits\HasHooks;
 use Stringable;
 use Throwable;
@@ -70,10 +73,12 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
     private int $endedAtBegin = 0;
 
     /**
-     * Set by queryThen(): the step for exactly that statement - its SQL, at the hook depth
-     * queryThen() was called at - run once it was executed, before its 'query' hook.
+     * Set by queryThen() and the named-lock methods: the step for exactly that statement - its SQL,
+     * at the hook depth it was set at - run once it was executed, before its 'query' hook. Taken
+     * away when a statement takes it, if it is marked so (the named-lock methods': their query() is
+     * this class's own and takes it before any other code runs).
      *
-     * @var array{string, int, Closure}|null
+     * @var array{string, int, Closure, bool}|null
      */
     private ?array $afterExecute = null;
 
@@ -135,6 +140,17 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      * @var (Closure(): PDO)|null
      */
     private ?Closure $connector = null;
+
+    /**
+     * The named locks this driver holds as far as it knows, by name (without the prefix): see
+     * heldNamedLocks().
+     *
+     * @var array<string, string>
+     */
+    private array $heldNamedLocks = [];
+
+    /** How many named-lock statements have run and their methods not yet returned, one inside a listener of the other: reconnect() refuses meanwhile */
+    private int $lockStatementsRunning = 0;
 
     /**
      * @param (Closure(): PDO)|null $connect Opens the connection - with the settings the driver was
@@ -200,7 +216,12 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
     /**
      * Execute a SQL query and return the statement.
      *
-     * Triggers 'query' hook on success, 'error' hook on failure. A failure that PDO reports by
+     * Triggers 'query.before' first, then 'query' hook on success, 'error' hook on failure.
+     * 'query.before' fires before anything else - before the library's own checks below, so that
+     * they see what a listener did -, for every call: also for a statement the library then
+     * refuses. A listener that throws stops the statement: nothing is sent, neither 'query' nor
+     * 'error' fires, and its exception reaches the caller unchanged - a PDOException as
+     * QueryException 'Query hook failed', as from a 'query' listener. A failure that PDO reports by
      * returning false (non-exception error mode) counts as a failure. A PDOException thrown by a
      * 'query' hook is not a failed query: the statement ran, no 'error' hook fires, and it arrives
      * as QueryException with the message 'Query hook failed'; other hook exceptions pass unchanged.
@@ -215,13 +236,14 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      * deadlock or a 1020, see transactionIsOver()) nothing is sent until that transaction is ended here -
      * by rollback(), or by a refused commit() that tells 'lost'; for a transaction begun on raw PDO
      * also once PDO reports none: the statement throws, with that failure as previous, and fires
-     * no hook. A ROLLBACK sent as a statement is refused like any other: call rollback().
+     * neither 'query' nor 'error' ('query.before' has fired). A ROLLBACK sent as a statement is
+     * refused like any other: call rollback().
      *
      * @param string $sql SQL query with placeholders
      * @param array<int|string, mixed> $params Parameters to bind
      *
-     * @throws QueryException On query failure (a UniqueViolationException for a duplicate key), on a parameter that cannot be bound, or when a 'query' hook threw a PDOException
-     * @throws Throwable What a 'query' or 'error' hook throws otherwise, and what an error handler throws that is not about a PDO failure: both pass unchanged
+     * @throws QueryException On query failure (a UniqueViolationException for a duplicate key), on a parameter that cannot be bound, or when a 'query.before' or 'query' hook threw a PDOException
+     * @throws Throwable What a 'query.before', 'query' or 'error' hook throws otherwise, and what an error handler throws that is not about a PDO failure: both pass unchanged
      *
      * @return PDOStatement Executed statement
      */
@@ -233,6 +255,22 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
         $afterExecute = null;
         if ($this->afterExecute !== null && $this->afterExecute[0] === $sql && $this->afterExecute[1] === $this->hookDepth) {
             $afterExecute = $this->afterExecute[2];
+            if ($this->afterExecute[3]) {
+                $this->afterExecute = null; // this statement's alone: foreign code inside this call that sends the same SQL does not take it
+            }
+        }
+
+        // First: the checks below see what a listener did (a statement of its own, a reconnect())
+        try {
+            // The parameters as values: an element that is a reference would let a listener change what is bound
+            $this->triggerFromQuery('query.before', ['sql' => $sql, 'params' => array_map(static fn (mixed $value): mixed => $value, $params)]);
+        } catch (PDOException $e) {
+            throw new QueryException(
+                message: 'Query hook failed',
+                previous: $e,
+                debugMessage: sprintf('Not sent: a query.before listener threw: %s | SQL: %s | Params: %s', $e->getMessage(), $sql, $this->encodeParams($params)),
+                listenerFailure: true
+            );
         }
 
         // The server has thrown the open transaction away (a MariaDB deadlock or a 1020): what would be sent
@@ -270,7 +308,8 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
         $stmt = false;
 
         try {
-            $stmt = $this->pdo->prepare($sql);
+            $preparedOn = $this->pdo; // what the statement runs on, whatever foreign code inside this call does
+            $stmt = $preparedOn->prepare($sql);
             if ($stmt === false) {
                 throw $this->silentFailure('PDO::prepare() returned false', $this->pdo->errorInfo());
             }
@@ -278,6 +317,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
                 throw $this->silentFailure('PDOStatement::execute() returned false', $stmt->errorInfo());
             }
         } catch (Throwable $e) {
+            unset($preparedOn); // held no longer than the statement holds it: the 'error' listeners may reconnect
             // Not PDO's own exception: PDO::ERRMODE_WARNING with an error handler that throws. PDO reported the
             // failure as a warning, and the handler's exception got here before the false result could be seen
             $failure = $this->failureBehind($e, $stmt instanceof PDOStatement ? $stmt->errorInfo() : $this->pdo->errorInfo());
@@ -293,7 +333,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
         $afterExecuteFailure = null;
         if ($afterExecute !== null) {
             try {
-                $afterExecute();
+                $afterExecute($stmt, $preparedOn);
             } catch (Throwable $e) {
                 $afterExecuteFailure = $e;
             }
@@ -391,7 +431,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
     }
 
     /**
-     * Trigger a 'query' or 'error' hook of query() and keep count of the nesting: what a listener
+     * Trigger a 'query.before', 'query' or 'error' hook of query() and keep count of the nesting: what a listener
      * runs is one level deeper than the statement it was told about.
      *
      * @param array<string, mixed> $data
@@ -408,17 +448,22 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
     }
 
     /**
-     * Run query() with a step between the execution and the 'query' hook. insert() reads the new
-     * id there: a 'query' listener that inserts on the same connection (an audit row) would
-     * otherwise replace it before insert() reads it. An exception of the step is thrown after the
-     * 'query' hook ran. Goes through query(), so a driver that overrides query() and calls its
-     * parent keeps seeing every statement. The step belongs to this statement: it runs when this
-     * class's query() is reached with the same SQL outside of any listener this call triggers - not
-     * for a statement an override sends first, not for one a listener runs. An override that changes
-     * the SQL or never calls its parent leaves it unrun.
+     * Run query() with a step between the execution and the 'query' hook, handed the executed
+     * statement. insert() reads the new id there: a 'query' listener that inserts on the same
+     * connection (an audit row) would otherwise replace it before insert() reads it. An exception of
+     * the step is thrown after the 'query' hook ran. Goes through query(), so a driver that
+     * overrides query() and calls its parent keeps seeing every statement. The step belongs to this
+     * statement: it runs when this class's query() is reached with the same SQL outside of any
+     * listener this call triggers - not for other SQL an override sends first (the very same SQL
+     * sent first runs it as well, and the last one's run counts), not for one a listener runs. An
+     * override that changes the SQL or never calls its parent leaves it unrun; insert() then reads
+     * the statement afterwards. (The named-lock methods do not go through here: their step is
+     * taken by their own statement alone, see lockStatement().)
      *
      * @param array<int|string, mixed> $params
-     * @param Closure(): void $afterExecute
+     * @param Closure(PDOStatement=, PDO=): void $afterExecute Handed the statement and the PDO object
+     *                                                         it ran on; an override written
+     *                                                         against 3.0 may call it without
      *
      * @throws QueryException As query()
      */
@@ -426,7 +471,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
     {
         // Restored afterwards: a queryThen() nested in a hook of a statement sent ahead must not drop the outer step
         $outer = $this->afterExecute;
-        $this->afterExecute = [$sql, $this->hookDepth, $afterExecute];
+        $this->afterExecute = [$sql, $this->hookDepth, $afterExecute, false];
 
         try {
             return $this->query($sql, $params);
@@ -514,8 +559,8 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      * Whether the remembered failure has ended the transaction on the server for certain, known
      * from the failure alone (no statement is sent to find out): a MariaDB deadlock or a 1020. Until
      * that transaction is ended here (see deadTransactionPending()), query() sends nothing more -
-     * every statement throws - and beginTransaction() refuses; no hook fires for the refused
-     * statement (the failure itself was told to the 'error' hook).
+     * every statement throws - and beginTransaction() refuses; neither 'query' nor 'error' fires
+     * for the refused statement ('query.before' has; the failure itself was told to 'error').
      * False where the server only undid the statement or may have (a lock wait timeout).
      */
     protected function transactionIsOver(PDOException $failure): bool
@@ -746,6 +791,16 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
     public function inTransaction(): bool
     {
         return $this->pdo->inTransaction();
+    }
+
+    /**
+     * The number of the open transaction begun through this driver - the number its events carry as
+     * 'transaction' -, or null when none is open: none was begun, it was committed or rolled back,
+     * or its end was told as 'lost'. A transaction begun on raw PDO (getPdo()) has no number.
+     */
+    public function currentTransaction(): ?int
+    {
+        return $this->transactionBegun ? $this->transactionsBegun : null;
     }
 
     // =========================================================================
@@ -1933,15 +1988,51 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      * gets, and the error of the 'lost' told here when reconnect() is called from where such an
      * exception is an argument (an 'error' listener): an end listener that keeps it keeps the old
      * connection; and the call reconnect() is made from (query() holds its statement while its
-     * 'query' and 'error' listeners run, an error handler runs inside the call into PDO). An error
+     * 'query' and 'error' listeners run - after a failed prepare there is none -, an error handler
+     * runs inside the call into PDO). An error
      * handler that reconnects in the middle of a statement and begins a transaction there: the
      * statement's failure may be remembered for the new transaction, and the old statement with
      * it, until that transaction ends (a documented limit).
      *
-     * @throws ConnectionException When the new connection cannot be opened (the old one stays), the driver was not created with its connection settings (a custom driver that sets $pdo itself), or the connection is persistent
+     * Named locks taken with namedLock() go with the old session: while this driver holds one
+     * (heldNamedLocks()), reconnect() refuses with a NamedLocksHeldException and nothing changes.
+     * Release them first, or pass $dropNamedLocks to give them up knowingly - on a connection that
+     * is gone, releaseNamedLock() cannot reach the server any more. Locks taken in raw SQL are not
+     * seen until namedLock() learns of them. Between a named-lock statement's run and the return
+     * of its method - a 'query' listener of it calls reconnect() -, reconnect() refuses as well,
+     * $dropNamedLocks or not: the answer and what was recorded belong to the session the
+     * statement ran on (before it, in 'query.before', the statement simply runs on the new
+     * session; after its failure, in 'error', nothing was recorded). These refusals come first;
+     * nothing has changed.
+     *
+     * @param bool $dropNamedLocks Give up the named locks this driver holds, with the old session
+     *
+     * @throws NamedLocksHeldException When this driver holds named locks and $dropNamedLocks is false (nothing has changed)
+     * @throws ConnectionException When called after a named-lock statement ran, before its method returned (from a listener), the new connection cannot be opened (the old one stays), the driver was not created with its connection settings (a custom driver that sets $pdo itself), or the connection is persistent
      */
-    public function reconnect(): void
+    public function reconnect(bool $dropNamedLocks = false): void
     {
+        if ($this->lockStatementsRunning > 0) {
+            // A 'query' listener of a named-lock statement that ran: its answer and what was recorded belong to that session
+            throw new ConnectionException(
+                message: 'Database connection failed',
+                debugMessage: 'reconnect() after a named-lock statement ran, before its method returned (from a listener): the answer and what was recorded belong to the session it ran on. Reconnect after the call.'
+            );
+        }
+
+        if ($this->heldNamedLocks !== [] && !$dropNamedLocks) {
+            $names = array_values($this->heldNamedLocks);
+
+            throw new NamedLocksHeldException(
+                message: 'Database connection failed',
+                debugMessage: sprintf(
+                    'reconnect() would give up the named locks this driver holds (%s) with the old session. Release them first, or call reconnect(dropNamedLocks: true) to give them up knowingly.',
+                    implode(', ', array_map(static fn (string $name): string => '"' . $name . '"', $names))
+                ),
+                lockNames: $names
+            );
+        }
+
         if ($this->connector === null) {
             throw new ConnectionException(
                 message: 'Database connection failed',
@@ -1997,6 +2088,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
         }
 
         $this->pdo = $new;
+        $this->heldNamedLocks = []; // gone with the old session
         if ($at === null) {
             // Nothing owes its end; a 'lost' told while the transaction might still be open is gone
             // with the old connection
@@ -2013,6 +2105,306 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
             mayStillBeOpen: false,
             at: $at
         );
+    }
+
+    // =========================================================================
+    // Named Locks
+    // =========================================================================
+
+    /**
+     * Take a named lock (GET_LOCK()): a lock on a name, not on rows, held by this connection until
+     * releaseNamedLock() or the end of the connection - COMMIT and ROLLBACK do not release it.
+     * reconnect() refuses while it is held (see heldNamedLocks()). For "at most one at a time" across
+     * requests and processes: `if ($db->namedLock('login:' . $id)) { try { ... } finally {
+     * $db->releaseNamedLock('login:' . $id); } }`.
+     *
+     * The name is prefixed with the configured database and ":" ("app_db:login:7"): the server
+     * keeps one namespace for all its databases, a shared server included. That form is part of
+     * the contract: another program that asks the server about the lock (IS_USED_LOCK()) uses it.
+     * A driver that does not extend MariaDbDriver names its prefix in namedLockPrefix(). On the server it is
+     * compared as written - case, accents and spaces count - and may have 192 bytes with the
+     * prefix (MariaDB refuses a longer one: error 1059). Measured on 10.11, 11.4 and 12.3.
+     *
+     * MariaDB lets a connection take a lock it holds a second time and counts the holds - one
+     * release would then leave the lock held. This method refuses that instead: taking a lock this
+     * connection already holds throws a NamedLockReentryException, a QueryException of its own
+     * class (ask isNamedLockHeld() first where that can happen).
+     *
+     * A persistent connection does not end with the request: a lock a request dies holding stays
+     * held until that pooled connection ends, and the next request on it holds it (isNamedLockHeld()
+     * true, namedLock() throws the reentry exception). Two connections that wait for each other's lock end
+     * in a deadlock: MariaDB fails one GET_LOCK() with 1213 and keeps the transaction (measured),
+     * but this library takes 1213 for a deadlock that ended it and refuses further statements
+     * until rollback() - fail-closed. Take named locks outside transactions or in one order, and
+     * after a deadlock or a 1020 roll back before releaseNamedLock() (refused until then).
+     *
+     * heldNamedLocks() follows the answers, recorded where the statement ran - before its 'query'
+     * listeners, so that what they take or release counts after it: the name counts as held when
+     * the server answers that this connection holds it (taken, or held already), and no longer
+     * when it answers that another one does; an error (NULL) and a statement that did not run (it
+     * failed, a 'query.before' listener threw) change nothing. An answer that cannot be read after
+     * the statement ran counts the name - the lock may have been taken - and throws. A 'query'
+     * listener that throws after the statement ran does not undo what was recorded. reconnect() is
+     * refused from a 'query' listener of the statement (see lockStatement()).
+     *
+     * @param string $name The lock's name, without the prefix
+     * @param int $timeout Seconds to wait while another connection holds it (0: do not wait)
+     *
+     * @throws NamedLockReentryException When this connection holds the lock already
+     * @throws QueryException When the name is empty or holds a NUL byte, the timeout is negative, the driver names no lock prefix, the server answers NULL (an error such as a killed thread), the answer cannot be read, or the connection was replaced while the statement ran
+     * @throws Throwable What an error handler throws for reading the answer that is not about a failure PDO recorded: passed on unchanged (the name counts all the same)
+     *
+     * @return bool True when taken, false when another connection held it beyond the timeout
+     */
+    public function namedLock(string $name, int $timeout = 0): bool
+    {
+        $lock = $this->lockName('namedLock', $name);
+        if ($timeout < 0) {
+            throw new QueryException(
+                message: 'Query failed',
+                debugMessage: sprintf('namedLock() takes a timeout of 0 or more seconds, not %d (MariaDB answers a negative one with NULL)', $timeout)
+            );
+        }
+
+        // One statement: whether this connection holds it already, and if not the attempt itself
+        $taken = $this->lockStatement('namedLock', 'SELECT CASE WHEN IS_USED_LOCK(?) = CONNECTION_ID() THEN -1 ELSE GET_LOCK(?, ?) END', [$lock, $lock, $timeout], function (mixed $taken, bool $known) use ($name): void {
+            if (!$known || $taken === 1 || $taken === -1) {
+                $this->heldNamedLocks[$name] = $name;
+            } elseif ($taken === 0) {
+                unset($this->heldNamedLocks[$name]);
+            }
+        });
+
+        return match ($taken) {
+            1 => true,
+            0 => false,
+            -1 => throw new NamedLockReentryException(
+                message: 'Query failed',
+                debugMessage: sprintf('namedLock(): this connection holds "%s" already; MariaDB would count a second hold, and one release would not free it. Release it first, or ask isNamedLockHeld().', $name),
+                lockName: $name
+            ),
+            default => throw new QueryException(
+                message: 'Query failed',
+                debugMessage: sprintf('namedLock(): GET_LOCK() answered %s for "%s" - an error on the server, not a busy lock', var_export($taken, true), $name)
+            ),
+        };
+    }
+
+    /**
+     * Release a named lock this connection holds (RELEASE_LOCK()).
+     *
+     * @param string $name The lock's name, without the prefix (see namedLock())
+     *
+     * @throws QueryException When the name is empty or holds a NUL byte, the driver names no lock prefix, the query fails, its answer cannot be read, or the connection was replaced while the statement ran
+     * @throws Throwable What an error handler throws for reading the answer that is not about a failure PDO recorded: passed on unchanged
+     *
+     * @return bool True when released; false when this connection did not hold it - another one
+     *              does, or nobody does (released before, given up with a connection). Either
+     *              way - also when the answer cannot be read - the name no longer counts as held
+     *              (heldNamedLocks()), recorded where the statement ran; when it did not run, it
+     *              still does.
+     */
+    public function releaseNamedLock(string $name): bool
+    {
+        return $this->lockStatement('releaseNamedLock', 'SELECT RELEASE_LOCK(?)', [$this->lockName('releaseNamedLock', $name)], function () use ($name): void {
+            unset($this->heldNamedLocks[$name]);
+        }) === 1;
+    }
+
+    /**
+     * Whether this connection holds the named lock, asked on the server (IS_USED_LOCK()).
+     *
+     * @param string $name The lock's name, without the prefix (see namedLock())
+     *
+     * @throws QueryException When the name is empty or holds a NUL byte, the driver names no lock prefix, the query fails, its answer cannot be read, or the connection was replaced while the statement ran
+     * @throws Throwable What an error handler throws for reading the answer that is not about a failure PDO recorded: passed on unchanged
+     */
+    public function isNamedLockHeld(string $name): bool
+    {
+        return $this->lockStatement('isNamedLockHeld', 'SELECT IS_USED_LOCK(?) = CONNECTION_ID()', [$this->lockName('isNamedLockHeld', $name)]) === 1;
+    }
+
+    /**
+     * Which connection holds the named lock, asked on the server (IS_USED_LOCK()): its connection
+     * id (CONNECTION_ID() on that connection, the Id of SHOW PROCESSLIST), this connection's own
+     * included; null when nobody holds it.
+     *
+     * @param string $name The lock's name, without the prefix (see namedLock())
+     *
+     * @throws QueryException When the name is empty or holds a NUL byte, the driver names no lock prefix, the query fails, its answer cannot be read, the server answers something else, or the connection was replaced while the statement ran
+     * @throws Throwable What an error handler throws for reading the answer that is not about a failure PDO recorded: passed on unchanged
+     */
+    public function namedLockHolder(string $name): ?int
+    {
+        $holder = $this->lockStatement('namedLockHolder', 'SELECT IS_USED_LOCK(?)', [$this->lockName('namedLockHolder', $name)]);
+        if ($holder !== null && !is_int($holder)) {
+            throw new QueryException(
+                message: 'Query failed',
+                debugMessage: sprintf('namedLockHolder(): IS_USED_LOCK() answered %s for "%s", neither a connection id nor NULL', var_export($holder, true), $name)
+            );
+        }
+
+        return $holder;
+    }
+
+    /**
+     * The named locks this driver holds as far as it knows: the names namedLock() was answered
+     * this connection holds - or got no readable answer for after its statement ran -, and
+     * releaseNamedLock() has not run for since, as passed (without the prefix), in the order taken. Recorded where each statement ran (see namedLock()). Not asked
+     * on the server: a lock taken in raw SQL is not in it until namedLock() is answered that this
+     * connection holds it, and one the server ended (the connection died, the session was killed)
+     * still is - isNamedLockHeld() asks the server. reconnect() refuses while the list is not
+     * empty.
+     *
+     * @return list<string>
+     */
+    public function heldNamedLocks(): array
+    {
+        return array_values($this->heldNamedLocks);
+    }
+
+    /**
+     * The answer of a named-lock statement - asked of the session the lock belongs to. The statement
+     * goes through this class's query() itself, not through a query() or queryThen() a driver puts
+     * in its place: the answer is read, and $settle told it, right where the statement ran, before
+     * its 'query' listeners, so that what they do with locks counts after it (the hooks still see
+     * every statement). An answer that cannot be read - the statement ran - is told as unknown,
+     * then thrown. From the moment the statement ran until the method returns, reconnect() refuses:
+     * the answer and what was recorded speak of that session. Before it ('query.before') a
+     * reconnect() is the statement's new session - nothing here holds the old one open -; after a
+     * failure ('error') nothing was recorded. A driver that puts another PDO object in place
+     * meanwhile ($this->pdo, from a listener) gets an exception instead of an answer that may speak
+     * of another session.
+     *
+     * @param list<mixed> $params
+     * @param (Closure(mixed, bool): void)|null $settle Told the answer and whether it is known
+     *
+     * @throws QueryException When the query fails, its answer cannot be read, or the connection was replaced while it ran
+     * @throws Throwable What a listener throws, and what an error handler throws for a failed read that PDO did not record: passed on unchanged (the read is recorded as unknown)
+     */
+    private function lockStatement(string $method, string $sql, array $params, ?Closure $settle = null): mixed
+    {
+        $ranOn = null;
+        $refusing = false;
+        $answer = null;
+        $read = function (PDOStatement $stmt, PDO $preparedOn) use (&$ranOn, &$refusing, &$answer, $settle, $method): void {
+            $ranOn = $preparedOn; // the session the statement ran on
+            $this->lockStatementsRunning++;
+            $refusing = true;
+            if ($ranOn !== $this->pdo) {
+                return; // replaced while it ran (foreign code inside this call): nothing recorded, the method throws
+            }
+            $unread = null;
+            try {
+                $answer = $stmt->fetchColumn();
+            } catch (Throwable $e) {
+                $answer = false;
+                $unread = $e;
+            }
+            if ($answer !== false) {
+                if ($settle !== null) {
+                    $settle($answer, true);
+                }
+
+                return;
+            }
+
+            // The statement ran, its answer is unknown: told as such - a lock it may have taken counts
+            if ($settle !== null) {
+                $settle(null, false);
+            }
+            $failure = $unread === null
+                ? $this->silentFailure('PDOStatement::fetchColumn() returned false', $stmt->errorInfo())
+                : $this->failureBehind($unread, $stmt->errorInfo());
+            if ($failure === null) {
+                throw $unread; // an error handler's own exception, not about the read: unchanged
+            }
+
+            throw new QueryException(
+                message: 'Query failed',
+                previous: $failure,
+                debugMessage: sprintf('%s(): the statement ran, but its answer could not be read', $method)
+            );
+        };
+
+        // This class's query(), with the step set for it - as queryThen() does, without going through
+        // a driver's own queryThen() or query() - and taken by it alone: foreign code inside that
+        // call (an error handler, a bindAndExecute() of the driver's own) that sends the very same
+        // statement runs without it
+        $outer = $this->afterExecute;
+        $this->afterExecute = [$sql, $this->hookDepth, $read, true];
+        try {
+            self::query($sql, $params);
+        } finally {
+            $this->afterExecute = $outer;
+            if ($refusing) {
+                $this->lockStatementsRunning--;
+            }
+        }
+        if ($this->pdo !== $ranOn) {
+            throw new QueryException(
+                message: 'Query failed',
+                debugMessage: sprintf('%s(): the connection was replaced while the statement ran; a named lock belongs to its session', $method)
+            );
+        }
+
+        return $answer;
+    }
+
+    /**
+     * The name of a named lock on the server: prefixed (namedLockPrefix()).
+     *
+     * @throws QueryException When the name is empty or holds a NUL byte, or the driver names no prefix
+     */
+    private function lockName(string $method, string $name): string
+    {
+        if ($name === '') {
+            throw new QueryException(
+                message: 'Query failed',
+                debugMessage: sprintf('%s() needs a name', $method)
+            );
+        }
+        if (str_contains($name, "\0")) {
+            // MariaDB keys the lock by the name up to its first NUL: "k\0a" and "k\0b" would be one lock (measured)
+            throw new QueryException(
+                message: 'Query failed',
+                debugMessage: sprintf('%s(): a name with a NUL byte - MariaDB cuts the name there, and different names would be one lock. Encode a binary name (bin2hex()).', $method)
+            );
+        }
+
+        $prefix = $this->namedLockPrefix();
+        if ($prefix === null) {
+            throw new QueryException(
+                message: 'Query failed',
+                debugMessage: sprintf('%s(): this driver names no prefix for named locks; override namedLockPrefix() (MariaDbDriver uses its configured database and ":")', $method)
+            );
+        }
+
+        return $prefix . $name;
+    }
+
+    /**
+     * What every named lock's name is prefixed with on the server, or null when this driver names
+     * none - then the named-lock methods throw. The server keeps one namespace for all its
+     * databases: the prefix keeps two applications on one server apart. MariaDbDriver returns its
+     * configured database and ":"; a driver of its own that takes named locks overrides this.
+     */
+    protected function namedLockPrefix(): ?string
+    {
+        return null;
+    }
+
+    // =========================================================================
+    // Schema
+    // =========================================================================
+
+    /**
+     * What the current database holds - tables, columns, indexes, constraints -, read from
+     * information_schema (see Schema\Schema). Read only. Works on any driver that extends this class.
+     */
+    public function schema(): Schema
+    {
+        return new Schema($this);
     }
 
     // =========================================================================

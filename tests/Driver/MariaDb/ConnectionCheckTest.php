@@ -5,7 +5,10 @@ declare(strict_types=1);
 namespace Sodaho\PdoWrapper\Tests\Driver\MariaDb;
 
 use PDO;
+use PDOException;
+use Sodaho\PdoWrapper\Database;
 use Sodaho\PdoWrapper\Exception\ConnectionException;
+use Sodaho\PdoWrapper\Exception\ConnectionRefusal;
 use Sodaho\PdoWrapper\Tests\Contract\ContractTestCase;
 use Sodaho\PdoWrapper\Tests\Support\TestEnvironment;
 
@@ -41,11 +44,11 @@ class ConnectionCheckTest extends ContractTestCase
 
         foreach ($cases as $version => $problem) {
             ReportedVersionPdo::$server = $version;
-            $this->assertRefused($problem, $version);
+            $this->assertRefused($problem, $version, str_contains($problem, 'is older than') ? ConnectionRefusal::MariaDbTooOld : ConnectionRefusal::NotMariaDb);
         }
 
         ReportedVersionPdo::$server = false;
-        $this->assertRefused('The server is no MariaDB (it reports "bool"): this library supports MariaDB 10.11 and later only.', 'no string');
+        $this->assertRefused('The server is no MariaDB (it reports "bool"): this library supports MariaDB 10.11 and later only.', 'no string', ConnectionRefusal::NotMariaDb);
     }
 
     public function testMariaDb1011AndLaterIsAccepted(): void
@@ -61,11 +64,11 @@ class ConnectionCheckTest extends ContractTestCase
     {
         foreach (['libmysql - 8.0.33', '10.11.19', 'mysqlnd'] as $client) {
             ReportedVersionPdo::$client = $client;
-            $this->assertRefused(sprintf('pdo_mysql is not built on mysqlnd (client "%s"): the PHP types of the fetched values would not be the ones this library promises. Use a PHP build whose pdo_mysql uses mysqlnd.', $client), $client);
+            $this->assertRefused(sprintf('pdo_mysql is not built on mysqlnd (client "%s"): the PHP types of the fetched values would not be the ones this library promises. Use a PHP build whose pdo_mysql uses mysqlnd.', $client), $client, ConnectionRefusal::NotMysqlnd);
         }
 
         ReportedVersionPdo::$client = 7;
-        $this->assertRefused('pdo_mysql is not built on mysqlnd (client "int"): the PHP types of the fetched values would not be the ones this library promises. Use a PHP build whose pdo_mysql uses mysqlnd.', 'no string');
+        $this->assertRefused('pdo_mysql is not built on mysqlnd (client "int"): the PHP types of the fetched values would not be the ones this library promises. Use a PHP build whose pdo_mysql uses mysqlnd.', 'no string', ConnectionRefusal::NotMysqlnd);
     }
 
     /**
@@ -83,6 +86,7 @@ class ConnectionCheckTest extends ContractTestCase
             $this->fail('Expected ConnectionException');
         } catch (ConnectionException $e) {
             $this->assertStringContainsString('MariaDB 10.6.18 is older than 10.11', (string) $e->getDebugMessage());
+            $this->assertSame(ConnectionRefusal::MariaDbTooOld, $e->refusal);
         }
         $this->assertSame($pdo, $db->getPdo(), 'the old connection is still in place');
     }
@@ -101,6 +105,7 @@ class ConnectionCheckTest extends ContractTestCase
                 $this->assertSame('Database connection failed', $e->getMessage());
                 $this->assertStringStartsWith('The option ATTR_STRINGIFY_FETCHES would turn every fetched value into a string', (string) $e->getDebugMessage());
                 $this->assertNull($e->getPrevious(), 'nothing was tried');
+                $this->assertNull($e->refusal, 'a refused configuration, not a refused connection');
             }
         }
 
@@ -129,6 +134,7 @@ class ConnectionCheckTest extends ContractTestCase
                     sprintf('MariaDB connection to %s:%d refused: ATTR_ORACLE_NULLS is %s on this connection: NULL would arrive as \'\' or \'\' as null, not as this library promises (see MariaDbDriver). Leave it at PDO::NULL_NATURAL and convert in the application.', $test['host'], $test['port'], $reported),
                     $e->getDebugMessage()
                 );
+                $this->assertSame(ConnectionRefusal::NullMode, $e->refusal);
             }
         }
 
@@ -152,11 +158,12 @@ class ConnectionCheckTest extends ContractTestCase
             $this->fail('Expected ConnectionException');
         } catch (ConnectionException $e) {
             $this->assertStringContainsString('refused: ATTR_ORACLE_NULLS is 2 on this connection', (string) $e->getDebugMessage());
+            $this->assertSame(ConnectionRefusal::NullMode, $e->refusal);
         }
         $this->assertSame($pdo, $db->getPdo(), 'the old connection is still in place');
     }
 
-    private function assertRefused(string $problem, string $case): void
+    private function assertRefused(string $problem, string $case, ConnectionRefusal $refusal): void
     {
         $test = TestEnvironment::mariadb();
         try {
@@ -165,6 +172,23 @@ class ConnectionCheckTest extends ContractTestCase
         } catch (ConnectionException $e) {
             $this->assertSame('Database connection failed', $e->getMessage(), $case);
             $this->assertSame(sprintf('MariaDB connection to %s:%d refused: %s', $test['host'], $test['port'], $problem), $e->getDebugMessage(), $case);
+            $this->assertSame($refusal, $e->refusal, $case);
+        }
+    }
+
+    /**
+     * A connection that could not be opened is no refusal: its PDOException is the previous, its
+     * codes are those of the server.
+     */
+    public function testAConnectionThatFailsToOpenHasNoRefusal(): void
+    {
+        try {
+            Database::mariadb(['password' => 'certainly not the password'] + TestEnvironment::mariadb());
+            $this->fail('Expected ConnectionException');
+        } catch (ConnectionException $e) {
+            $this->assertNull($e->refusal);
+            $this->assertInstanceOf(PDOException::class, $e->getPrevious());
+            $this->assertSame(1045, $e->driverCode, 'access denied');
         }
     }
 }
