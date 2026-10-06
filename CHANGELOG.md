@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+A minor release with one break: a class that implements `DatabaseInterface` itself must add the new methods; a driver that extends `AbstractDriver` or `MariaDbDriver` is not affected unless it overrides `reconnect()`, declares a method of one of the new names, or relies on its own `query()` seeing the named-lock statements. Released as 3.1 on purpose - the library has no installs besides its own projects (decided 06.10.2026). See "Upgrading from 3.0" below.
+
+### Added
+- On `DatabaseInterface`: `namedLock()`, `releaseNamedLock()`, `isNamedLockHeld()` and `schema()` (in 3.0 on `MariaDbDriver` only, now implemented by `AbstractDriver`), and the new `namedLockHolder($name)` (the connection id that holds a named lock, or null), `heldNamedLocks()` (the names `namedLock()` was answered this connection holds, not released since) and `currentTransaction()` (the number of the open transaction begun through the driver, as its events carry it, or null).
+- Event `query.before`: fires at the start of every `query()`, with `sql` and `params` (the parameters as values). A listener that throws stops the statement - nothing is sent, neither `query` nor `error` fires; a `PDOException` arrives as `QueryException` `Query hook failed`.
+- `ConnectionException::$refusal` (`Exception\ConnectionRefusal`): why the library refused a connection it could open - `NotMariaDb`, `MariaDbTooOld`, `NotMysqlnd`, `NullMode`; null for every other failure. The constructor takes the parameters of `DatabaseException` as before, then `refusal`.
+- `AbstractDriver::namedLockPrefix()`: what a driver of its own prefixes named locks with - none by default, then the named-lock methods throw. `MariaDbDriver` keeps its configured database and `:`; that form of the name on the server is part of the contract.
+
+### Changed
+- `reconnect(bool $dropNamedLocks = false)`: while the driver holds named locks taken with `namedLock()`, `reconnect()` throws a `NamedLocksHeldException` (a `ConnectionException`, the names in `$lockNames`) and changes nothing - it gave them up with the old session without a word before. `reconnect(dropNamedLocks: true)` gives them up knowingly. A `reconnect()` from a `query` listener of a named-lock statement is refused (it made the lock method throw before); from its `query.before` or `error` listeners it goes through.
+- `AbstractDriver::queryThen()`: the step is handed the executed statement and the PDO object it ran on (`Closure(PDOStatement=, PDO=): void`; a step without the parameters still works).
+- The named-lock statements go through `AbstractDriver::query()` itself, with their step, not through a `query()` or `queryThen()` a driver puts in its place - so that their answers are recorded where they ran, whatever such an override sends or changes. The hooks see them as before.
+
+### Upgrading from 3.0
+| 3.0 | 3.1 |
+|---|---|
+| a class that implements `DatabaseInterface` itself | add `namedLock()`, `releaseNamedLock()`, `isNamedLockHeld()`, `namedLockHolder()`, `heldNamedLocks()`, `schema()`, `currentTransaction()` and the parameter of `reconnect(bool $dropNamedLocks = false)` |
+| `reconnect()` while named locks taken with `namedLock()` are held | throws `NamedLocksHeldException`: release them first, or call `reconnect(dropNamedLocks: true)` |
+| `MariaDbDriver` as the type for named locks or `schema()` | `DatabaseInterface` is enough |
+| a subclass of `AbstractDriver` or `MariaDbDriver` that overrides `reconnect()` | take the parameter - `reconnect(bool $dropNamedLocks = false): void` - and pass it on |
+| a subclass that declares `namedLock()`, `releaseNamedLock()`, `isNamedLockHeld()`, `namedLockHolder()`, `heldNamedLocks()`, `schema()`, `currentTransaction()` or `namedLockPrefix()` of its own | it now overrides the library's method (or clashes with its signature): rename it |
+| a subclass whose `query()` saw the named-lock statements (logging, a retry) | they pass it by now: watch them with the `query.before`, `query` and `error` hooks |
+
 ## [3.0.0] - 2026-10-05
 
 MariaDB is the only database. Breaking - see "Upgrading from 2.x" below.
