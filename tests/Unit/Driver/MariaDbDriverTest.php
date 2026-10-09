@@ -152,6 +152,32 @@ class MariaDbDriverTest extends TestCase
         ]);
     }
 
+    /**
+     * An empty host, database or username counts as missing - pdo_mysql would take them for the
+     * local socket, no database and an anonymous login. An empty password is a password: the
+     * connection is attempted (here against a port nothing listens on).
+     */
+    public function testAnEmptyHostDatabaseOrUsernameCountsAsMissing(): void
+    {
+        $config = ['host' => '127.0.0.1', 'port' => 59999, 'database' => 'test', 'username' => 'root', 'password' => ''];
+        foreach (['host', 'database', 'username'] as $key) {
+            try {
+                new MariaDbDriver([$key => ''] + $config);
+                $this->fail('Expected ConnectionException: ' . $key);
+            } catch (ConnectionException $e) {
+                $this->assertSame('Missing required config: host, database, or username', $e->getDebugMessage(), $key);
+                $this->assertNull($e->getPrevious(), $key . ': refused before connecting');
+            }
+        }
+
+        try {
+            new MariaDbDriver($config);
+            $this->fail('Expected ConnectionException: nothing listens on the port');
+        } catch (ConnectionException $e) {
+            $this->assertStringStartsWith('MariaDB connection to 127.0.0.1:59999 failed', (string) $e->getDebugMessage());
+        }
+    }
+
     public function testExceptionHasDebugMessage(): void
     {
         try {

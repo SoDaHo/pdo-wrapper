@@ -11,6 +11,7 @@
 - Tests: a statement and a locking read after a failing and after a successful DDL statement, the finding held across a transaction begun on raw PDO afterwards, a question that fails, an error handler that rolls back inside the question; on a server started with `innodb_rollback_on_timeout` (a CI job of its own, skipped elsewhere) the swallowed lock wait timeout; an unreadable state right after `COMMIT` and `ROLLBACK` on a chaining session; a listener that recurses.
 
 ### Changed
+- `host`, `database` and `username` passed as `''` count as missing: `ConnectionException` `Missing required config: host, database, or username`, before anything connects. pdo_mysql took an empty host for the local socket, an empty database for none (named locks were then prefixed with `:` alone) and an empty user for an anonymous login. An empty `password` is still a password.
 - One statement more after each failed statement inside a transaction the library began (the question above), and none after a deadlock or a 1020. A driver of its own whose `failureToRemember()` keeps failures is asked right after them as well (`refreshTransactionState()`).
 - What a callback ran after such a failure is no longer committed on its own: the statement throws instead. Code that swallowed the failure and carried on now gets the `QueryException` of the next statement; the transaction's end and the commit's outcome stay `lost`.
 

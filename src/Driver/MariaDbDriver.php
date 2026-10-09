@@ -43,10 +43,10 @@ class MariaDbDriver extends AbstractDriver
      * Create a MariaDB database connection.
      *
      * Config keys:
-     * - host: MariaDB server hostname (required)
-     * - database: Database name (required)
-     * - username: Database username (required)
-     * - password: Database password (optional)
+     * - host: MariaDB server hostname (required, not empty)
+     * - database: Database name (required, not empty)
+     * - username: Database username (required, not empty)
+     * - password: Database password (optional; '' is a password)
      * - port: Server port, a whole number or a string of digits (default: 3306)
      * - charset: Connection charset (default: utf8mb4)
      * - options: Additional PDO options; they replace the defaults below, the security-relevant
@@ -74,7 +74,10 @@ class MariaDbDriver extends AbstractDriver
         $pdoClass = self::validPdoClass($config['pdoClass'] ?? PDO::class);
         $charset = $config['charset'] ?? 'utf8mb4';
 
-        if ($host === null || $database === null || $username === null) {
+        // Empty counts as missing: pdo_mysql would take an empty host for the local socket, an empty
+        // database for none (named locks then prefixed with ":" alone) and an empty user for an
+        // anonymous login - none of it what the configuration meant
+        if ($host === null || $host === '' || $database === null || $database === '' || $username === null || $username === '') {
             throw new ConnectionException(
                 message: 'Database connection failed',
                 debugMessage: 'Missing required config: host, database, or username'

@@ -81,7 +81,7 @@ $db = Database::connect(['driver' => 'mariadb', 'host' => 'localhost', 'database
 
 The driver name is `mariadb`. `mysql` - the name before 3.0 - and the names of the removed drivers (`pgsql`, `postgres`, `postgresql`, `sqlite`) throw a `ConnectionException` that says so; a missing or unknown name throws as well.
 
-`mariadb()` and `connect()` use what they are given and nothing else. They never read the environment: a required value that was not passed throws a `ConnectionException`, whatever `DB_HOST` says.
+`mariadb()` and `connect()` use what they are given and nothing else. They never read the environment: a required value that was not passed throws a `ConnectionException`, whatever `DB_HOST` says - and so does an empty `host`, `database` or `username` (pdo_mysql would take them for the local socket, no database and an anonymous login); an empty `password` is a password.
 
 ### Environment Variables
 
