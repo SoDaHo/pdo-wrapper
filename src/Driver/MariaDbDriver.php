@@ -354,11 +354,13 @@ class MariaDbDriver extends AbstractDriver
     /**
      * "Duplicate entry '...' for key 'name'": only the name at the very end counts - the duplicate
      * value before it comes from outside and may itself contain "for key". MariaDB prints the key
-     * alone, without its table (measured on 10.11, 11.4 and 12.3), a name with a dot included.
+     * alone, without its table and without escaping a quote in it (measured on 10.11, 11.4 and
+     * 12.3), a name with a dot included. The greedy start takes the last " for key '" - an earlier
+     * one belongs to the value -, and the name runs to the quote that ends the message.
      */
     protected function violatedConstraint(PDOException $failure): ?string
     {
-        return preg_match("/ for key '([^']+)'$/", self::driverMessage($failure), $match) === 1 ? $match[1] : null;
+        return preg_match("/^.* for key '(.+)'$/sD", self::driverMessage($failure), $match) === 1 ? $match[1] : null;
     }
 
     /**

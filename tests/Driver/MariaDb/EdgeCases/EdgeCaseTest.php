@@ -271,6 +271,10 @@ class EdgeCaseTest extends ContractTestCase
             [['23000', 1062, "Duplicate entry 'n' for key 'my.key'"], 'my.key'],
             // the duplicate value comes from outside: only the end of the message counts
             [['23000', 1062, "Duplicate entry 'x' for key 'evil' for key 'email'"], 'email'],
+            // a quote in the name: everything after the last " for key '" up to the final quote
+            [['23000', 1062, "Duplicate entry 'x' for key 'it's'"], "it's"],
+            [['23000', 1062, "Duplicate entry 'x' for key 'uq_email' for key 'it's'"], "it's"],
+            [['23000', 1062, "Duplicate entry 'line\nbreak' for key 'email'"], 'email'],
             // another message language (lc_messages): a duplicate, the name is not readable
             [['23000', 1062, "Doppelter Eintrag 'a@test.com' für Schlüssel 'email'"], null],
         ];
@@ -279,6 +283,28 @@ class EdgeCaseTest extends ContractTestCase
             $e = $this->failWith('SQLSTATE[' . $errorInfo[0] . ']: ' . $errorInfo[2], $errorInfo);
             $this->assertInstanceOf(UniqueViolationException::class, $e, $errorInfo[2]);
             $this->assertSame($constraint, $e->constraint, $errorInfo[2]);
+        }
+    }
+
+    /**
+     * The same against the server: a unique key whose name holds a quote, and a duplicate value
+     * that carries " for key '...'" itself - the name is read from the last occurrence.
+     */
+    public function testAKeyNameWithAQuoteIsReadFromTheServersMessage(): void
+    {
+        $this->db->execute('DROP TABLE IF EXISTS quoted_key');
+        $this->db->execute("CREATE TABLE quoted_key (id INT AUTO_INCREMENT PRIMARY KEY, email VARCHAR(100) NOT NULL, UNIQUE KEY `it's` (email)) ENGINE=InnoDB");
+        try {
+            $value = "x' for key 'uq_email";
+            $this->db->insert('quoted_key', ['email' => $value]);
+            try {
+                $this->db->insert('quoted_key', ['email' => $value]);
+                $this->fail('Expected UniqueViolationException');
+            } catch (UniqueViolationException $e) {
+                $this->assertSame("it's", $e->constraint);
+            }
+        } finally {
+            $this->db->execute('DROP TABLE IF EXISTS quoted_key');
         }
     }
 
