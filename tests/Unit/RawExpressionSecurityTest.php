@@ -45,14 +45,13 @@ class RawExpressionSecurityTest extends TestCase
      */
     public function testPreventsSqlInjectionInIdentifiers(): void
     {
-        // Attempt to break out of column name quoting
-        $maliciousColumn = 'username" --';
+        // Attempt to break out of column name quoting: MariaDB quotes with backticks, so the backtick
+        // inside the name is doubled and the whole string stays one identifier
+        $maliciousColumn = 'username` FROM users; --';
 
         [$sql, ] = $this->users()->select($maliciousColumn)->toSql();
 
-        // Expectation: The attack string is completely quoted as identifier
-        // Result: SELECT `username" --` FROM ... (MariaDB quotes with backticks)
-        $this->assertStringContainsString('`username" --`', $sql);
+        $this->assertSame('SELECT `username`` FROM users; --` FROM `users`', $sql);
     }
 
     /**
