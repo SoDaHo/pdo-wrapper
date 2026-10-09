@@ -213,8 +213,34 @@ class ChainedCommitTest extends TransactionEndTestCase
      * session starts with NO_CHAIN, and transactions work on it as on any other. The server's
      * default is put back as it was: the test database may be one other programs use as well -
      * run this test alone (`--filter`) where they must not see CHAIN for its few milliseconds.
+     * That it is put back is checked against a default that is not NO_CHAIN (RELEASE), so that
+     * putting back a fixed NO_CHAIN would show; the real default is restored in the outer finally.
      */
     public function testEveryConnectionTheDriverOpensStartsWithNoChain(): void
+    {
+        $original = $this->observer->query('SELECT @@GLOBAL.completion_type')->fetchColumn();
+        $this->assertIsString($original);
+        try {
+            $this->observer->execute("SET GLOBAL completion_type = 'RELEASE'");
+            $this->startsWithNoChainUnderAServerDefaultOfChain();
+            $this->assertSame('RELEASE', $this->observer->query('SELECT @@GLOBAL.completion_type')->fetchColumn(), 'the default is put back as it was found');
+        } finally {
+            $this->observer->execute('SET GLOBAL completion_type = ?', [$original]);
+        }
+
+        $db = $this->connect(['options' => [\Pdo\Mysql::ATTR_INIT_COMMAND => "SET SESSION completion_type = 'CHAIN'"]]);
+        $this->assertSame('NO_CHAIN', $db->query('SELECT @@completion_type')->fetchColumn(), 'after the INIT_COMMAND');
+
+        $db->execute("SET SESSION completion_type = 'RELEASE'");
+        $db->reconnect();
+        $this->assertSame('NO_CHAIN', $db->query('SELECT @@completion_type')->fetchColumn(), 'after reconnect()');
+    }
+
+    /**
+     * Under a server default of CHAIN, set here and put back to what it was found to be: a new
+     * session inherits CHAIN, the driver's starts with NO_CHAIN.
+     */
+    private function startsWithNoChainUnderAServerDefaultOfChain(): void
     {
         $before = $this->observer->query('SELECT @@GLOBAL.completion_type')->fetchColumn();
         $this->assertIsString($before);
@@ -235,13 +261,6 @@ class ChainedCommitTest extends TransactionEndTestCase
         } finally {
             $this->observer->execute('SET GLOBAL completion_type = ?', [$before]);
         }
-
-        $db = $this->connect(['options' => [\Pdo\Mysql::ATTR_INIT_COMMAND => "SET SESSION completion_type = 'CHAIN'"]]);
-        $this->assertSame('NO_CHAIN', $db->query('SELECT @@completion_type')->fetchColumn(), 'after the INIT_COMMAND');
-
-        $db->execute("SET SESSION completion_type = 'RELEASE'");
-        $db->reconnect();
-        $this->assertSame('NO_CHAIN', $db->query('SELECT @@completion_type')->fetchColumn(), 'after reconnect()');
     }
 
     /**
