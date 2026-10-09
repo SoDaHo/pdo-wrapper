@@ -817,7 +817,7 @@ class NamedLockTest extends ContractTestCase
                 $call();
                 $this->fail('Expected QueryException: ' . $method);
             } catch (QueryException $e) {
-                $this->assertSame(sprintf('%s(): this driver names no prefix for named locks; override namedLockPrefix() (MariaDbDriver uses its configured database and ":")', $method), $e->getDebugMessage());
+                $this->assertSame(sprintf('%s(): this driver names no prefix for named locks; override namedLockPrefix() (MariaDbDriver uses its configured database and ":", and names none when that database name holds a ":" itself: the lock names of two databases could meet)', $method), $e->getDebugMessage());
             }
         }
         $this->assertSame([], $plain->heldNamedLocks());

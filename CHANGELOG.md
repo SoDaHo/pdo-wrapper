@@ -14,6 +14,7 @@
 
 ### Changed
 - `host`, `database` and `username` passed as `''` count as missing: `ConnectionException` `Missing required config: host, database, or username`, before anything connects. pdo_mysql took an empty host for the local socket, an empty database for none (named locks were then prefixed with `:` alone) and an empty user for an anonymous login. An empty `password` is still a password.
+- Named locks on a connection whose configured database name holds a `:` throw a `QueryException` (`namedLock()`, `releaseNamedLock()`, `isNamedLockHeld()`, `namedLockHolder()`): the prefix `<database>:` was ambiguous - the lock `c` of the database `a:b` and the lock `b:c` of the database `a` were one lock on the server. Refused in the named-lock methods, not when connecting: the connection itself works as before.
 - One statement more after each failed statement inside a transaction the library began (the question above), and none after a deadlock or a 1020. A driver of its own whose `failureToRemember()` keeps failures is asked right after them as well (`refreshTransactionState()`).
 - What a callback ran after such a failure is no longer committed on its own: the statement throws instead. Code that swallowed the failure and carried on now gets the `QueryException` of the next statement; the transaction's end and the commit's outcome stay `lost`.
 

@@ -36,8 +36,8 @@ class MariaDbDriver extends AbstractDriver
     /** True when the connection was opened with the driver's ATTR_FOUND_ROWS option: the server then counts matched rows, not changed ones */
     private bool $countsFoundRows = false;
 
-    /** What a named lock's name is prefixed with on the server: the configured database and ":" */
-    private string $lockPrefix = '';
+    /** What a named lock's name is prefixed with on the server: the configured database and ":"; null when that database name holds a ":" itself (see namedLockPrefix()) */
+    private ?string $lockPrefix = null;
 
     /**
      * Create a MariaDB database connection.
@@ -122,7 +122,7 @@ class MariaDbDriver extends AbstractDriver
         // Remembered here: PDO does not let the option be read back from the connection
         $this->countsFoundRows = (bool) ($options[\Pdo\Mysql::ATTR_FOUND_ROWS] ?? false);
         // The configured database, not DATABASE(): the same for every connection of the application
-        $this->lockPrefix = $database . ':';
+        $this->lockPrefix = str_contains($database, ':') ? null : $database . ':';
 
         // Kept for reconnect(); credentials and options in an object that no dump of the driver shows
         $settings = new ConnectionSettings($username, $password, $options);
@@ -303,7 +303,9 @@ class MariaDbDriver extends AbstractDriver
 
     /**
      * The configured database and ":" - not DATABASE(): the same for every connection of the
-     * application, whatever a USE changed.
+     * application, whatever a USE changed. None when the database name holds a ":" itself: the lock
+     * "c" of the database "a:b" and the lock "b:c" of the database "a" would be one lock on the
+     * server. The named-lock methods then throw; the connection itself works as ever.
      */
     protected function namedLockPrefix(): ?string
     {

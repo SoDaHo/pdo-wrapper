@@ -2414,7 +2414,9 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      * The name is prefixed with the configured database and ":" ("app_db:login:7"): the server
      * keeps one namespace for all its databases, a shared server included. That form is part of
      * the contract: another program that asks the server about the lock (IS_USED_LOCK()) uses it.
-     * A driver that does not extend MariaDbDriver names its prefix in namedLockPrefix(). On the server it is
+     * A configured database whose name holds a ":" gets no prefix - the lock "c" of "a:b" and the
+     * lock "b:c" of "a" would be one name -, and the named-lock methods throw (the connection
+     * itself works). A driver that does not extend MariaDbDriver names its prefix in namedLockPrefix(). On the server it is
      * compared as written - case, accents and spaces count - and may have 192 bytes with the
      * prefix (MariaDB refuses a longer one: error 1059). Measured on 10.11, 11.4 and 12.3.
      *
@@ -2669,7 +2671,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
         if ($prefix === null) {
             throw new QueryException(
                 message: 'Query failed',
-                debugMessage: sprintf('%s(): this driver names no prefix for named locks; override namedLockPrefix() (MariaDbDriver uses its configured database and ":")', $method)
+                debugMessage: sprintf('%s(): this driver names no prefix for named locks; override namedLockPrefix() (MariaDbDriver uses its configured database and ":", and names none when that database name holds a ":" itself: the lock names of two databases could meet)', $method)
             );
         }
 
