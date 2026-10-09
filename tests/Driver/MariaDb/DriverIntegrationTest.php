@@ -973,18 +973,8 @@ class DriverIntegrationTest extends TestCase
                     . "\$pdo = new PDO((string) getenv('PDO_TEST_CHILD_DSN'), (string) getenv('PDO_TEST_CHILD_USER'), (string) getenv('PDO_TEST_CHILD_PASSWORD'), [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);\n"
                     . "\$awaitRelease = static function () use (\$release): void { for (\$i = 0; \$i < 200 && !file_exists(\$release); \$i++) { usleep(100_000); } };\n"
                     . "try {\n" . $childBody . "\n} catch (PDOException \$e) {\n    echo 'child failed: ' . \$e->getMessage();\n}\n");
-                $environment = [
-                    ...getenv(),
-                    'PDO_TEST_CHILD_DSN' => sprintf('mysql:host=%s;port=%d;dbname=%s', $config['host'], $config['port'], $config['database']),
-                    'PDO_TEST_CHILD_USER' => $config['username'],
-                    'PDO_TEST_CHILD_PASSWORD' => $config['password'],
-                ];
-                // The child's own warnings and errors reach its stderr, which must stay empty
-                // (display_errors); a startup warning of the PHP installation does not: it is no
-                // failure of the scenario. PHP logs those before its settings are read - log_errors
-                // cannot stop it, only an error_log that goes nowhere (measured with PHP 8.5)
-                $php = [PHP_BINARY, '-d', 'display_errors=stderr', '-d', 'display_startup_errors=0', '-d', 'log_errors=0', '-d', 'error_log=/dev/null'];
-                $process = proc_open([...$php, $script, $marker, $release], [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, null, $environment);
+                [$command, $environment] = self::childLaunch($config, $script, $marker, $release);
+                $process = proc_open($command, [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, null, $environment);
                 $child = is_resource($process) ? $process : null;
                 $this->assertNotNull($child, 'child process did not start');
                 stream_set_blocking($pipes[1], false);
@@ -1032,6 +1022,97 @@ class DriverIntegrationTest extends TestCase
         }
 
         return [$e, $listenerRuns, $measured, $childOutput];
+    }
+
+    /**
+     * The command line and the environment of a lock scenario's child process. The credentials go
+     * in the environment, never on the command line, which every user of the machine can read in
+     * the process list. The child's own warnings and errors reach its stderr, which must stay empty
+     * (display_errors); a startup warning of the PHP installation (an extension it cannot load)
+     * does not: it is no failure of the scenario. PHP logs those before its settings are read -
+     * log_errors cannot stop it, only an error_log that goes nowhere (measured with PHP 8.5).
+     *
+     * @param array{host: string, port: int, database: string, username: string, password: string} $config
+     *
+     * @return array{list<string>, array<string, string>}
+     */
+    private static function childLaunch(array $config, string $script, string ...$arguments): array
+    {
+        return [
+            [PHP_BINARY, '-d', 'display_errors=stderr', '-d', 'display_startup_errors=0', '-d', 'log_errors=0', '-d', 'error_log=/dev/null', $script, ...array_values($arguments)],
+            [
+                ...getenv(),
+                'PDO_TEST_CHILD_DSN' => sprintf('mysql:host=%s;port=%d;dbname=%s', $config['host'], $config['port'], $config['database']),
+                'PDO_TEST_CHILD_USER' => $config['username'],
+                'PDO_TEST_CHILD_PASSWORD' => $config['password'],
+            ],
+        ];
+    }
+
+    public function testTheLockChildGetsTheCredentialsInItsEnvironmentNotOnItsCommandLine(): void
+    {
+        $config = ['password' => 'pw-for-the-child-only', 'username' => 'child-user'] + self::getConfig();
+
+        [$command, $environment] = self::childLaunch($config, '/tmp/child.php', '/tmp/marker', '/tmp/release');
+
+        foreach ($command as $argument) {
+            $this->assertStringNotContainsString('pw-for-the-child-only', $argument);
+            $this->assertStringNotContainsString('child-user', $argument);
+        }
+        $this->assertSame(['/tmp/child.php', '/tmp/marker', '/tmp/release'], array_slice($command, -3), 'the script and its arguments, nothing more');
+        $this->assertSame('pw-for-the-child-only', $environment['PDO_TEST_CHILD_PASSWORD']);
+        $this->assertSame('child-user', $environment['PDO_TEST_CHILD_USER']);
+        $this->assertSame(sprintf('mysql:host=%s;port=%d;dbname=%s', $config['host'], $config['port'], $config['database']), $environment['PDO_TEST_CHILD_DSN']);
+    }
+
+    /**
+     * A startup warning of the installation - here an extension that cannot be loaded, named on
+     * the child's command line - does not reach the child's stderr; the child's own warning does.
+     * Without the child's settings the same startup warning is shown: it is real.
+     */
+    public function testAStartupWarningOfTheInstallationDoesNotReachTheChildsStderr(): void
+    {
+        $script = (string) tempnam(sys_get_temp_dir(), 'pdo-child-warning-');
+        try {
+            file_put_contents($script, "<?php\necho 'ok';\nif ((\$argv[1] ?? '') === 'warn') {\n    trigger_error('the child\\'s own warning', E_USER_WARNING);\n}\n");
+            $broken = ['-d', 'extension=pdo_wrapper_no_such_extension'];
+            [$command, $environment] = self::childLaunch(self::getConfig(), $script);
+
+            [$out, $err] = self::runToTheEnd([$command[0], ...$broken, ...array_slice($command, 1)], $environment);
+            $this->assertSame('ok', $out);
+            $this->assertSame('', $err, 'the startup warning does not reach stderr');
+
+            [, $err] = self::runToTheEnd([$command[0], ...$broken, ...array_slice($command, 1), 'warn'], $environment);
+            $this->assertStringContainsString("the child's own warning", $err, 'the child\'s own warning still does');
+
+            [$out, $err] = self::runToTheEnd([PHP_BINARY, ...$broken, $script], $environment);
+            $this->assertStringContainsString('pdo_wrapper_no_such_extension', $out . $err, 'without the settings the startup warning is shown');
+        } finally {
+            @unlink($script);
+        }
+    }
+
+    /**
+     * Runs a command to its end and returns what it wrote to stdout and stderr, trimmed.
+     *
+     * @param list<string> $command
+     * @param array<string, string> $environment
+     *
+     * @return array{string, string}
+     */
+    private static function runToTheEnd(array $command, array $environment): array
+    {
+        $process = proc_open($command, [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, null, $environment);
+        if (!is_resource($process)) {
+            throw new \RuntimeException('the process did not start');
+        }
+        $out = (string) stream_get_contents($pipes[1]);
+        $err = (string) stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        proc_close($process);
+
+        return [trim($out), trim($err)];
     }
 
     /**
