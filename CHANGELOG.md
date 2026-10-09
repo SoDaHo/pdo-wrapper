@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [3.1.2] - 2026-10-09
+
+A patch release of fixes. Some of them refuse what went through before, because what went through was wrong - those a caller may notice are under "Changed": a statement after the server ended the library's transaction (it was committed on its own), an empty `host`/`database`/`username` (pdo_mysql took it for the socket, no database, an anonymous login), named locks under a database name with a `:` (ambiguous on the server). No public API is renamed or removed.
+
 ### Fixed
 - A transaction begun through the library that the server ended without PDO knowing - a failing DDL statement commits it implicitly, a lock wait timeout under `innodb_rollback_on_timeout` rolls it back - let the statements that followed run in autocommit, each committed on its own, row locks (`lockForUpdate()`, `sharedLock()`) included, which then ended with their own statement. A deadlock of such a statement replaced the remembered failure and made the end `rolled_back` (in `transaction.end` and `CommitFailedException::$outcome`), although the rows written before the DDL statement were committed. Now:
   - **Right after a failed statement** inside a transaction the library began that does not settle the matter by itself (not a deadlock or a 1020), the driver asks the server (`refreshTransactionState()`, on MariaDB the no-op `DO 1` on raw PDO, no hook sees it). Found gone, or not to be found out (the question fails): that finding is held until the transaction is ended here - no later failure replaces it -, `query()` sends nothing more (`QueryException`, `Not sent: ...`, `getPrevious()` is that failure, neither `query` nor `error` fires), `commit()` refuses without asking again, and `rollback()` tells `lost` (sending a `ROLLBACK` only when PDO still reports a transaction, to clean up).
@@ -22,6 +26,8 @@
 - `host`, `database` and `username` passed as `''` count as missing: `ConnectionException` `Missing required config: host, database, or username`, before anything connects. pdo_mysql took an empty host for the local socket, an empty database for none (named locks were then prefixed with `:` alone) and an empty user for an anonymous login. An empty `password` is still a password.
 - Named locks on a connection whose configured database name holds a `:` throw a `QueryException` (`namedLock()`, `releaseNamedLock()`, `isNamedLockHeld()`, `namedLockHolder()`): the prefix `<database>:` was ambiguous - the lock `c` of the database `a:b` and the lock `b:c` of the database `a` were one lock on the server. Refused in the named-lock methods, not when connecting: the connection itself works as before.
 - One statement more after each failed statement inside a transaction the library began (the question above), and none after a deadlock or a 1020. A driver of its own whose `failureToRemember()` keeps failures is asked right after them as well (`refreshTransactionState()`).
+- Names and values are written into SQL in one place (`Query\Sql`, internal) for the builder, `Database::json()` and the CRUD methods; `AbstractDriver::quoteIdentifier()` stays the method a driver overrides. Nothing changes in the SQL: a CRUD key is still one name - `a as b` and `t.*` are not taken apart there.
+- CI: the workflows run for `main` alone; `composer validate --strict` checks `composer.json` and `composer.lock`; a job runs the `innodb_rollback_on_timeout` test against a server started with that option. Code style follows the PHP 8.5 migration set. `SECURITY.md` names MariaDB as the only database.
 - What a callback ran after such a failure is no longer committed on its own: the statement throws instead. Code that swallowed the failure and carried on now gets the `QueryException` of the next statement; the transaction's end and the commit's outcome stay `lost`.
 
 ## [3.1.1] - 2026-10-06
