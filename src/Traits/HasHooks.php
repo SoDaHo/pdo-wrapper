@@ -180,9 +180,8 @@ use Sodaho\PdoWrapper\Exception\DatabaseException;
  * - PDO reports no transaction any more (once a statement on raw PDO, or the probe, told it):
  *   nothing is left to roll back, so the refusal itself tells the end as 'lost' with
  *   that exception - also on a manual commit(), the one failed commit that fires an event. What
- *   ran after the server ended the transaction - on raw PDO after a deadlock, through this
- *   library after a lock wait timeout that ended it - ran outside of it and stays committed,
- *   which is exactly what 'lost' warns of.
+ *   ran after the server ended the transaction - on raw PDO, after a deadlock or another failure
+ *   that ended it - ran outside of it and stays committed, which is exactly what 'lost' warns of.
  * After a MariaDB deadlock this library accepts nothing on that connection but the end of
  * the transaction: a statement would run outside of it and be committed on its own, so query()
  * throws a QueryException instead (previous: the deadlock; neither 'query' nor 'error' fires for
@@ -192,7 +191,12 @@ use Sodaho\PdoWrapper\Exception\DatabaseException;
  * library also when PDO no longer reports it (a statement on raw PDO told it): nothing is sent
  * then, and the end is told as 'lost' with the deadlock as error instead of failing for want of
  * a transaction (end listener failures reach only the 'error' hook there). A lock wait timeout
- * does not end the transaction by default and holds nothing back.
+ * does not end the transaction by default and holds nothing back. After it, and after any other
+ * failure that does not settle the matter by itself, the driver asks the server right away
+ * inside a transaction this library began: found gone (a failing DDL statement committed it, the
+ * timeout under innodb_rollback_on_timeout rolled it back) or not to be found out, nothing more is
+ * sent until that transaction is ended here, and its end is 'lost'; the same while PDO reports no
+ * transaction at all for it (a DDL statement that succeeded).
  * A commit that fails once it was sent (PDO::commit() throws or returns false) is a
  * CommitFailedException as well, and follows the same two cases: while PDO still reports the
  * transaction it fires nothing and the transaction is the caller's to roll back

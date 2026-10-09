@@ -148,9 +148,12 @@ class MariaDbDriver extends AbstractDriver
      * successful statement; a COMMIT right after such a failure commits nothing, and statements
      * sent after it would be committed one by one (measured on MariaDB 10.11, 11.4 and 12.3).
      * Every failure is remembered, the latest one - except that nothing replaces a deadlock or a
-     * 1020: they settle the matter (transactionIsOver()), for the others transactionEndedBy() asks
-     * the server. After a lock wait timeout that ended the transaction, the refusal names the
-     * latest failure, which need not be that timeout.
+     * 1020: they settle the matter (transactionIsOver()). For the others the driver is asked right
+     * after the failure inside a transaction the library began (refreshTransactionState()), and
+     * nothing more is sent once that transaction is found gone - the refusal then names the failure
+     * after which it was found gone, the lock wait timeout. transactionEndedBy() asks the server
+     * again at commit; in a transaction begun on raw PDO it is the only question, and after a lock
+     * wait timeout that ended it the refusal names the latest failure, which need not be that timeout.
      */
     protected function failureToRemember(?PDOException $remembered, PDOException $failure): PDOException
     {
@@ -188,7 +191,7 @@ class MariaDbDriver extends AbstractDriver
                 return $this->pdo->inTransaction()
                     ? null
                     : 'The server reports no transaction any more: a statement failed inside it (the previous exception), and since then the transaction was ended - '
-                        . 'rolled back by the server, or committed implicitly (a DDL statement). There is nothing left to commit; what ran after its end was committed on its own.';
+                        . 'rolled back by the server, or committed implicitly (a DDL statement). There is nothing left to commit; what ran after its end outside of it was committed on its own.';
             }
         } catch (Throwable) {
             // reported below

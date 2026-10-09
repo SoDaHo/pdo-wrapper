@@ -89,6 +89,21 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
     /** The statement failure inside the open transaction that may have ended it on the server (see failureToRemember()); commit() asks before it commits */
     private ?PDOException $suspectFailure = null;
 
+    /**
+     * What the driver found right after a statement failure inside the transaction begun through it
+     * that does not settle the matter by itself (not transactionIsOver()): asked at once
+     * (askWhetherTheTransactionSurvived()), PDO reported no transaction - the server had ended it,
+     * rolled back or committed implicitly (a failing DDL statement on MariaDB) -, or the driver could
+     * not find out. The failure, whether the answer was known, and the number of that transaction.
+     * Held until that transaction is ended here: no later failure replaces it (a deadlock of a
+     * statement sent afterwards would claim a rollback of what is committed), query() sends nothing
+     * more, commit() refuses without asking again, rollback() tells 'lost'. Counts only for the
+     * transaction with that number (goneTransaction()).
+     *
+     * @var array{PDOException, bool, int}|null
+     */
+    private ?array $transactionGone = null;
+
     /** Counts the calls of commit(): the number of the latest one */
     private int $commitCalls = 0;
 
@@ -265,7 +280,11 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      * by rollback(), or by a refused commit() that tells 'lost'; for a transaction begun on raw PDO
      * also once PDO reports none: the statement throws, with that failure as previous, and fires
      * neither 'query' nor 'error' ('query.before' has fired). A ROLLBACK sent as a statement is
-     * refused like any other: call rollback().
+     * refused like any other: call rollback(). The same holds, for a transaction begun through this
+     * driver, while PDO reports no transaction any more (a DDL statement committed it implicitly,
+     * raw PDO ended it), and after any other failure inside it once the driver, asked right after
+     * that failure, found the transaction gone or could not find out (see $transactionGone): what
+     * would be sent then would run in autocommit and be committed on its own.
      *
      * @param string $sql SQL query with placeholders
      * @param array<int|string, mixed> $params Parameters to bind
@@ -313,6 +332,34 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
                     $sql
                 )
             );
+        }
+
+        // The transaction this library began is no longer open on the server, or may not be: what would be
+        // sent now would run in autocommit and be committed on its own. PDO's report costs no round trip.
+        if ($this->transactionBegun) {
+            $gone = $this->goneTransaction();
+            if ($gone !== null || $this->reportsNoTransaction()) {
+                [$why, $wayOut] = match (true) {
+                    $gone === null => [
+                        'PDO reports no transaction any more, although the one this library began has not been ended here: a DDL statement committed it implicitly, or it was ended on raw PDO.',
+                        'End it - transaction() does so itself; after a manual beginTransaction() the next beginTransaction() tells its end as lost -, then run the whole transaction again.',
+                    ],
+                    $gone[1] => [
+                        'the server ended the transaction this library began when an earlier statement failed (the previous exception): rolled back, or committed implicitly (a DDL statement).',
+                        'Call rollback() - it tells the end as lost -, then run the whole transaction again.',
+                    ],
+                    default => [
+                        'an earlier statement failed inside the transaction this library began (the previous exception), and the server could not be asked whether the transaction still exists.',
+                        'Call rollback() - it tells the end as lost -, then run the whole transaction again.',
+                    ],
+                };
+
+                throw new QueryException(
+                    message: 'Query failed',
+                    previous: $gone[0] ?? null,
+                    debugMessage: sprintf('Not sent: %s This statement would run outside of it, in autocommit. %s | SQL: %s', $why, $wayOut, $sql)
+                );
+            }
         }
 
         $unbindable = $this->unbindableParameter($params);
@@ -534,7 +581,65 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
 
         if ($inTransaction) {
             $this->suspectFailure = $remembered;
+            // A failure that does not settle the matter by itself, inside the transaction this library
+            // began: asked now, before anything else is sent - a later failure would replace this one
+            // here, and what a later statement did would already be done (in autocommit)
+            if ($remembered !== null && $this->transactionBegun && !$this->transactionIsOver($remembered) && $this->goneTransaction() === null) {
+                $this->askWhetherTheTransactionSurvived($remembered);
+            }
         }
+    }
+
+    /**
+     * Right after a statement failure inside the transaction begun through this driver that may
+     * have ended it on the server without PDO knowing - on MariaDB a failing DDL statement commits
+     * it implicitly, a lock wait timeout rolls it back under innodb_rollback_on_timeout -, the
+     * driver makes PDO know (refreshTransactionState(), one round trip). Gone, or not known: held in
+     * $transactionGone - nothing more is sent in what would be autocommit, and its end is 'lost',
+     * never 'rolled_back'. Still there: the failure cost only its statement, nothing changes.
+     * Nothing is held when foreign code inside the question (an error handler) ended the
+     * transaction through this driver: that call has told the end.
+     */
+    private function askWhetherTheTransactionSurvived(PDOException $failure): void
+    {
+        $number = $this->transactionsBegun;
+        $ended = $this->transactionsEnded;
+        $known = $this->refreshTransactionState();
+        if ($this->endedSince($ended, $number)) {
+            return;
+        }
+        if (!$known || $this->reportsNoTransaction()) {
+            $this->transactionGone = [$failure, $known, $number];
+        }
+    }
+
+    /**
+     * What the driver found about the transaction at hand right after a statement failed in it
+     * ($transactionGone), or null: nothing held, or a finding about a transaction that has been
+     * ended since.
+     *
+     * @return array{PDOException, bool, int}|null
+     */
+    private function goneTransaction(): ?array
+    {
+        if ($this->transactionGone === null || !$this->transactionBegun || $this->transactionGone[2] !== $this->transactionsBegun) {
+            return null;
+        }
+
+        return $this->transactionGone;
+    }
+
+    /**
+     * Why commit() refuses a transaction the driver found gone, or could not find, right after a
+     * statement failed in it ($transactionGone): nothing was sent since.
+     */
+    private static function whyTheTransactionIsGone(bool $known): string
+    {
+        return $known
+            ? 'The server reports no transaction any more: a statement failed inside it (the previous exception) and the transaction ended with it - '
+                . 'rolled back by the server, or committed implicitly (a DDL statement). There is nothing left to commit; nothing was sent after the failure.'
+            : 'The transaction cannot be committed: a statement failed inside it (the previous exception) and the server could not be asked whether it still exists. '
+                . 'Nothing was sent after the failure. Roll back, or discard the connection.';
     }
 
     /**
@@ -924,6 +1029,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
         $this->lostReported = false;
         $this->lostFor = null;
         $this->suspectFailure = null;
+        $this->transactionGone = null;
         $this->unclearCommit = null; // of a transaction begun on raw PDO and ended there: endedSince() does not see that end
 
         try {
@@ -1018,10 +1124,15 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      * still exists (refreshTransactionState(), as rollback() asks before a ROLLBACK). False when
      * the driver could not find out. True when it could, and when there is nothing to ask: no
      * failed statement, a failure that settles the matter by itself (transactionIsOver()), no
-     * transaction reported anyway.
+     * transaction reported anyway. When the driver could not find out right after the failure
+     * ($transactionGone), it is not asked again: that answer holds.
      */
     private function askAfterAFailedStatement(): bool
     {
+        $gone = $this->goneTransaction();
+        if ($gone !== null && !$gone[1]) {
+            return false;
+        }
         if ($this->suspectFailure === null || $this->transactionIsOver($this->suspectFailure) || $this->reportsNoTransaction()) {
             return true;
         }
@@ -1173,13 +1284,17 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
         $ended = $this->transactionsEnded;
         $number = $this->transactionsBegun; // read now: foreign code inside the PDO calls below may begin another
 
-        if ($this->suspectFailure !== null) {
-            $reason = $this->transactionEndedBy($this->suspectFailure);
+        // What the driver found right after a failure is not asked again: the answer was taken before
+        // anything else could be sent, a question now could only be less exact
+        $gone = $this->goneTransaction();
+        $failure = $gone[0] ?? $this->suspectFailure;
+        if ($failure !== null) {
+            $reason = $gone !== null ? self::whyTheTransactionIsGone($gone[1]) : $this->transactionEndedBy($failure);
             if ($reason !== null) {
                 // The failure is kept: a second commit() must be refused as well; rollback() and beginTransaction() clear it
                 $refusal = new CommitFailedException(
                     message: 'Failed to commit transaction',
-                    previous: $this->suspectFailure,
+                    previous: $failure,
                     debugMessage: $reason
                 );
                 $this->endFailedCommitIfGone($refusal, false, $ended, $number, null, ours: true);
@@ -1675,6 +1790,16 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
             return;
         }
 
+        // The driver found the transaction gone right after a statement failed in it, or could not find
+        // out ($transactionGone): no rollback can confirm anything, the end is 'lost'. Gone and PDO knows
+        // it: nothing to send. Otherwise the ROLLBACK below cleans up whatever is there.
+        $gone = $this->goneTransaction();
+        if ($gone !== null && $this->reportsNoTransaction()) {
+            $this->endLostTransaction($cause ?? $unclear ?? $gone[0], mayStillBeOpen: false);
+
+            return;
+        }
+
         // A statement failed inside the transaction PDO reports, and the server may have ended it
         // without the client knowing: a ROLLBACK that "succeeds" then would be taken for the
         // confirmation that nothing is committed. The driver gets to ask (refreshTransactionState());
@@ -1682,8 +1807,8 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
         // confirmed, and on MariaDB what a statement with an implicit commit committed on its
         // way to failing is in the database. When PDO reports none already, nothing is asked: the
         // ROLLBACK fails as before.
-        $unconfirmed = null;
-        if ($this->suspectFailure !== null && $this->reportsATransactionThatOwesItsEnd() && !$this->transactionIsOver($this->suspectFailure)) {
+        $unconfirmed = $gone[0] ?? null;
+        if ($gone === null && $this->suspectFailure !== null && $this->reportsATransactionThatOwesItsEnd() && !$this->transactionIsOver($this->suspectFailure)) {
             $failure = $this->suspectFailure;
             $ended = $this->transactionsEnded;
             $number = $this->transactionsBegun;
@@ -1750,6 +1875,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
         $this->transactionBegun = false;
         $this->transactionsEnded++;
         $this->suspectFailure = null;
+        $this->transactionGone = null;
         $endOwed = !$this->lostReported; // after a reported 'lost' this transaction's end has already been told
         $this->lostReported = false;
         $this->lostFor = null;
@@ -1855,10 +1981,13 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      *   refused before it is sent and the CommitFailedException is thrown, instead of a COMMIT the
      *   server answers with success. While PDO still reports the transaction the rollback follows
      *   and transaction.end reports 'rolled_back'; once PDO knows that the transaction is gone - from
-     *   a statement on raw PDO after a deadlock or a 1020, or from the question to the server after another
-     *   failure (the lock wait timeout: statements the callback ran after it were committed on
-     *   their own) - nothing is left to roll back and transaction.end reports 'lost'. Through
-     *   this library nothing is sent between a deadlock or a 1020 and the rollback;
+     *   a statement on raw PDO after a deadlock or a 1020, or from the question the driver asks right
+     *   after any other failure (the lock wait timeout) - nothing is left to roll back and
+     *   transaction.end reports 'lost'. Through this library nothing is sent between a deadlock or a
+     *   1020 and the rollback, nor after a failure that the question found had ended the transaction
+     *   or could not settle, nor while PDO reports no transaction (a DDL statement committed it
+     *   implicitly, failing or not): the statement would run in autocommit and be committed on its
+     *   own, it throws a QueryException instead;
      * - the commit failed: a rollback is attempted when PDO still reports the transaction, the
      *   CommitFailedException is re-thrown; transaction.end reports 'rolled_back' when that rollback
      *   succeeded (nothing was committed) and 'lost' when it failed too (the commit may or may not
@@ -2058,6 +2187,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
         if (!$mayStillBeOpen) {
             $this->suspectFailure = null; // gone with the transaction; one that may still be open keeps its commit refused
         }
+        $this->transactionGone = null; // about this transaction alone: kept, it would only hold the failed statement
         if ($this->settlingCommit !== null && $cause === $this->settlingCommit) {
             $this->settlingCommit->settle(self::TRANSACTION_LOST); // what the end listeners are told below
             $this->settlingCommit = null; // written once, as in rollback()
@@ -2206,6 +2336,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
         // trace (with arguments kept), and the statement holds its PDO object. A refused commit the
         // driver holds only weakly ($thrownByCommit).
         $this->suspectFailure = null;
+        $this->transactionGone = null;
         $this->unclearCommit = null; // the new connection opened no transaction: none that PDO reports there is the one whose COMMIT failed
 
         // What is owed is read now, not before: foreign code inside that ROLLBACK (an error handler)

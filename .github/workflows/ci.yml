@@ -98,6 +98,64 @@ jobs:
           MARIADB_USERNAME: root
           MARIADB_PASSWORD: root
 
+  # innodb_rollback_on_timeout cannot be set at runtime, and a service container takes no server options: this job
+  # runs on the runner itself (no job container) and starts the server with docker run, by the same digest as the
+  # 10.11 matrix entry. Only the test that needs the option runs here; it is skipped on every other server, so
+  # --fail-on-skipped makes sure the option took effect.
+  test-rollback-on-timeout:
+    runs-on: ubuntu-latest
+    name: MariaDB 10.11 with innodb_rollback_on_timeout / PHP 8.5
+
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Start MariaDB with innodb_rollback_on_timeout
+        run: |
+          docker run -d --name mariadb-rollback-on-timeout -p 127.0.0.1:3306:3306 \
+            -e MARIADB_ROOT_PASSWORD=root -e MARIADB_DATABASE=pdo_wrapper_test \
+            mariadb:10.11@sha256:7f22313fc130a377a44999965bcb0a08dd5b21e8502824c1b864f792f9bc66ab \
+            --innodb-rollback-on-timeout=ON
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+        with:
+          php-version: '8.5'
+          extensions: pdo_mysql
+          coverage: none
+
+      - name: Get Composer Cache Directory
+        id: composer-cache
+        run: echo "dir=$(composer config cache-files-dir)" >> $GITHUB_OUTPUT
+
+      - name: Cache Composer dependencies
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: ${{ runner.os }}-composer-${{ hashFiles('**/composer.lock') }}
+          restore-keys: ${{ runner.os }}-composer-
+
+      - name: Install dependencies
+        run: composer install --prefer-dist --no-progress
+
+      - name: Wait for MariaDB
+        run: |
+          for i in $(seq 1 90); do
+            docker exec mariadb-rollback-on-timeout mariadb -uroot -proot -e "SELECT 1" pdo_wrapper_test >/dev/null 2>&1 && exit 0
+            sleep 1
+          done
+          echo "MariaDB not ready"; exit 1
+
+      - name: Run the innodb_rollback_on_timeout test
+        run: vendor/bin/phpunit --no-coverage --fail-on-skipped tests/Driver/MariaDb/RollbackOnTimeoutTest.php
+        env:
+          MARIADB_HOST: 127.0.0.1
+          MARIADB_PORT: 3306
+          MARIADB_DATABASE: pdo_wrapper_test
+          MARIADB_USERNAME: root
+          MARIADB_PASSWORD: root
+
   # One run with a coverage driver: src/ must stay fully covered. The matrix jobs above run without coverage; this
   # job is what fails when new code arrives without a test.
   coverage:

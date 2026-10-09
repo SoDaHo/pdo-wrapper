@@ -93,14 +93,21 @@ class DriverHookScenariosTest extends TransactionEndTestCase
         $db->commit();
         $this->assertSame([], $db->asked);
 
-        // Inside a transaction this library began the failure is kept whatever PDO reports at that moment
+        // Inside a transaction this library began while PDO reports none: nothing is sent - it would run in
+        // autocommit -, so there is no failure to keep either
         $db->beginTransaction();
         $this->pdo->hideTransaction = true;
-        $fail('harmless_table');
-        $this->pdo->hideTransaction = false;
+        try {
+            $db->query('SELECT * FROM harmless_table');
+            $this->fail('Expected QueryException');
+        } catch (QueryException $e) {
+            $this->assertStringStartsWith('Not sent: PDO reports no transaction any more', $e->getDebugMessage() ?? '');
+            $this->assertNull($e->getPrevious());
+        } finally {
+            $this->pdo->hideTransaction = false;
+        }
         $db->commit();
-        $this->assertCount(1, $db->asked);
-        $db->asked = [];
+        $this->assertSame([], $db->asked);
 
         // Asked once, about the latest flagged failure; a "still committable" answer settles it
         $db->beginTransaction();
@@ -471,12 +478,13 @@ class DriverHookScenariosTest extends TransactionEndTestCase
     }
 
     /**
-     * Before a ROLLBACK after a failed statement, a driver may be asked to make PDO know whether
-     * the transaction still exists (refreshTransactionState()). Gone: the end is 'lost', nothing
-     * is sent. Still there: the ROLLBACK is sent as before. The driver could not find out: the
-     * ROLLBACK is sent, but the end is 'lost' and no rollback listener runs. Not asked at all:
-     * without a failed statement, after a failure that settles the matter by itself, and when PDO
-     * reports no transaction anyway.
+     * After a failed statement, a driver may be asked to make PDO know whether the transaction
+     * still exists (refreshTransactionState()): inside a transaction the library began right after
+     * the failure, and again before the ROLLBACK unless that first answer holds. Gone: the end is
+     * 'lost', nothing is sent. Still there: the ROLLBACK is sent as before. The driver could not
+     * find out: the ROLLBACK is sent, but the end is 'lost' and no rollback listener runs. Not
+     * asked at all: without a failed statement, after a failure that settles the matter by itself,
+     * and before a ROLLBACK when PDO reports no transaction anyway.
      */
     public function testRollbackAsksTheDriverAfterAFailedStatementBeforeItTrustsTheRollback(): void
     {
@@ -495,21 +503,24 @@ class DriverHookScenariosTest extends TransactionEndTestCase
         $this->assertSame(0, $db->asked);
         $this->assertSame([DatabaseInterface::TRANSACTION_ROLLED_BACK, null], $ends->pop());
 
-        // a statement failed and the transaction is still there: asked, then rolled back
+        // a statement failed and the transaction is still there: asked right after the failure and
+        // before the ROLLBACK, then rolled back
         $db->beginTransaction();
         $fail('harmless_table');
-        $db->rollback();
         $this->assertSame(1, $db->asked);
+        $db->rollback();
+        $this->assertSame(2, $db->asked);
         $this->assertSame(2, $rollbacks);
         $this->assertSame([DatabaseInterface::TRANSACTION_ROLLED_BACK, null], $ends->pop());
         $this->assertFalse($this->pdo->reallyInTransaction());
 
-        // asked, and the transaction is gone: 'lost' with the remembered failure, no ROLLBACK, no rollback listener
+        // asked right after the failure, and the transaction is gone: 'lost' with the remembered failure, not
+        // asked again, no ROLLBACK, no rollback listener
         $db->answer = 'gone';
         $db->beginTransaction();
         $fail('harmless_table');
         $db->rollback();
-        $this->assertSame(2, $db->asked);
+        $this->assertSame(3, $db->asked);
         $this->assertSame(2, $rollbacks);
         $last = $ends->pop();
         $this->assertNotNull($last);
@@ -537,7 +548,7 @@ class DriverHookScenariosTest extends TransactionEndTestCase
         } catch (\RuntimeException $e) {
             $this->assertSame($cause, $e);
         }
-        $this->assertSame(3, $db->asked);
+        $this->assertSame(4, $db->asked);
         $this->assertSame([DatabaseInterface::TRANSACTION_LOST, $cause], $ends->pop());
         $this->pdo->hideTransaction = false;
         $this->pdo->rollBack();
@@ -549,7 +560,7 @@ class DriverHookScenariosTest extends TransactionEndTestCase
         $fail('harmless_table');
         $before = $rollbacks;
         $db->rollback();
-        $this->assertSame(4, $db->asked, 'asked once');
+        $this->assertSame(5, $db->asked, 'asked once, right after the failure');
         $this->assertSame($before, $rollbacks, 'no rollback listener');
         $last = $ends->pop();
         $this->assertNotNull($last);
@@ -565,18 +576,18 @@ class DriverHookScenariosTest extends TransactionEndTestCase
         $db->beginTransaction();
         $fail('fatal_table');
         $db->rollback();
-        $this->assertSame(4, $db->asked);
+        $this->assertSame(5, $db->asked);
         $this->assertSame([DatabaseInterface::TRANSACTION_ROLLED_BACK, null], $ends->pop());
 
-        // PDO reports no transaction already (a later statement told it): nothing is asked, and the
-        // ROLLBACK is sent as before - here it goes through, because the scenario only hides the transaction
-        $db->answer = 'gone';
+        // PDO reports no transaction already (a later statement told it, after the question right after the
+        // failure found the transaction): nothing is asked before the ROLLBACK, which is sent as before - here
+        // it goes through, because the scenario only hides the transaction
         $db->beginTransaction();
         $fail('harmless_table');
         $this->pdo->hideTransaction = true;
         $db->rollback();
         $this->pdo->hideTransaction = false;
-        $this->assertSame(4, $db->asked);
+        $this->assertSame(6, $db->asked);
         $this->assertSame([DatabaseInterface::TRANSACTION_ROLLED_BACK, null], $ends->pop());
         $this->assertFalse($this->pdo->reallyInTransaction());
 
@@ -585,7 +596,7 @@ class DriverHookScenariosTest extends TransactionEndTestCase
         $this->pdo->beginTransaction();
         $fail('harmless_table');
         $db->rollback();
-        $this->assertSame(5, $db->asked);
+        $this->assertSame(7, $db->asked, 'not right after the failure: the transaction is not the library\'s');
         $this->assertSame(DatabaseInterface::TRANSACTION_LOST, $ends->pop()[0] ?? null);
         $this->pdo->hideTransaction = false;
         $fail('harmless_table');
@@ -595,7 +606,7 @@ class DriverHookScenariosTest extends TransactionEndTestCase
         } finally {
             $this->pdo->stateUnreadable = false;
         }
-        $this->assertSame(5, $db->asked, 'an unreadable state is no reason to ask');
+        $this->assertSame(7, $db->asked, 'an unreadable state is no reason to ask');
         $this->assertFalse($this->pdo->reallyInTransaction(), 'the ROLLBACK was sent');
         $ends->pop();
 
@@ -611,7 +622,7 @@ class DriverHookScenariosTest extends TransactionEndTestCase
         $this->assertSame(DatabaseInterface::TRANSACTION_LOST, $ends->pop()[0] ?? null);
         $fail('harmless_table');
         $db->rollback();
-        $this->assertSame(5, $db->asked);
+        $this->assertSame(7, $db->asked);
         $this->assertSame([], $ends->all(), 'no second end');
         $this->assertFalse($this->pdo->reallyInTransaction());
     }
@@ -619,7 +630,7 @@ class DriverHookScenariosTest extends TransactionEndTestCase
     /**
      * The driver cannot find out, and the ROLLBACK that is sent to clean up fails as well: nothing
      * is told on a manual rollback() and the transaction stays the caller's - a second rollback()
-     * asks again. In transaction() the end is 'lost' for a transaction that may still be open, and
+     * does not ask again: the answer right after the failure holds. In transaction() the end is 'lost' for a transaction that may still be open, and
      * its later rollback tells no second end.
      */
     public function testARollbackThatConfirmsNothingAndFailsLeavesTheTransactionToTheCaller(): void
@@ -664,7 +675,7 @@ class DriverHookScenariosTest extends TransactionEndTestCase
         $this->assertSame(1, $db->asked);
 
         $db->rollback();
-        $this->assertSame(2, $db->asked, 'asked again: the failure is still remembered');
+        $this->assertSame(1, $db->asked, 'not asked again: the answer right after the failure holds');
         $this->assertSame([DatabaseInterface::TRANSACTION_LOST], $ends->all());
         $this->assertFalse($this->pdo->reallyInTransaction());
         $this->assertSame([], $db->table(self::TABLE)->get());
@@ -686,7 +697,7 @@ class DriverHookScenariosTest extends TransactionEndTestCase
         $db->rollback();
         $this->assertSame([DatabaseInterface::TRANSACTION_LOST], $ends->all(), 'no second end');
         $this->assertFalse($this->pdo->reallyInTransaction());
-        $this->assertSame(3, $db->asked, 'not asked for a transaction whose end was told');
+        $this->assertSame(2, $db->asked, 'once right after the failure in transaction(), not for a transaction whose end was told');
     }
 
     /**
@@ -875,6 +886,7 @@ class DriverHookScenariosTest extends TransactionEndTestCase
     public function testAListenersOwnTransactionDuringTheUnconfirmedCleanupDoesNotHideThatTheTransactionEnded(): void
     {
         $db = new AskingDriver($this->pdo);
+        $db->answers = ['alive']; // right after the failure: still there; asked again before the cleanup: not to be found out
         $db->answer = 'unknown';
         $pdo = $this->pdo;
         $ends = new Recorder(static fn (array $data): mixed => $data['outcome']);
@@ -997,13 +1009,14 @@ class DriverHookScenariosTest extends TransactionEndTestCase
         $db->rollback();
         $ends->clear();
 
-        // swallowed, and the transaction is still there: asked once, the transaction is the caller's
+        // swallowed, and the transaction is still there: asked right after the failure and once more after
+        // the listener, the transaction is the caller's
         $listener->table = 'harmless_table';
         $db->beginTransaction();
-        $this->assertSame(1, $db->asked);
+        $this->assertSame(2, $db->asked);
         $this->assertTrue($this->pdo->reallyInTransaction());
         $db->rollback();
-        $this->assertSame(2, $db->asked, 'the rollback asks about the same failure once more');
+        $this->assertSame(3, $db->asked, 'the rollback asks about the same failure once more');
         $this->assertSame([[DatabaseInterface::TRANSACTION_ROLLED_BACK, null]], $ends->all());
         $ends->clear();
 
@@ -1021,7 +1034,7 @@ class DriverHookScenariosTest extends TransactionEndTestCase
             $this->assertNotNull($e->sqlState);
             $this->assertSame($cause->errorInfo[0] ?? null, $e->sqlState, 'the begin failed: the codes of the cause are the caller\'s');
         }
-        $this->assertSame(2, $db->asked);
+        $this->assertSame(3, $db->asked);
         $this->assertSame($sent + 1, $this->pdo->rollBackCalls);
         $this->assertFalse($this->pdo->reallyInTransaction());
         $this->assertSame([[DatabaseInterface::TRANSACTION_ROLLED_BACK, $e]], $ends->all(), 'with the exception the caller gets');
@@ -1043,20 +1056,23 @@ class DriverHookScenariosTest extends TransactionEndTestCase
         $this->pdo->hideTransaction = false;
         $this->pdo->rollBack();
 
-        // PDO reports no transaction anyway (ended on raw PDO after the failed statement): nothing to ask
+        // PDO reports no transaction anyway (ended on raw PDO after the failed statement, after the question
+        // right after the failure found the transaction): nothing to ask after the listener
+        $db->answer = 'alive';
         $asked = $db->asked;
         $listener->endRaw = true;
         try {
             $db->beginTransaction();
             $this->fail('Expected TransactionException');
         } catch (TransactionException $e) {
-            $this->assertSame($asked, $db->asked, 'not asked');
+            $this->assertSame($asked + 1, $db->asked, 'right after the failure, not after the listener');
             $this->assertSame([[DatabaseInterface::TRANSACTION_LOST, $e]], $ends->all());
         }
         $listener->endRaw = false;
         $ends->clear();
 
         // thrown, and the transaction is gone: the listener's exception, the end is 'lost' with it
+        $db->answer = 'gone';
         $listener->swallow = false;
         try {
             $db->beginTransaction();
@@ -1107,7 +1123,10 @@ class DriverHookScenariosTest extends TransactionEndTestCase
         }
 
         // ... and an error handler inside that failing ROLLBACK commits the transaction through the
-        // driver: that commit tells the end, with the number of the begin; the cleanup tells nothing more
+        // driver: that commit tells the end, with the number of the begin; the cleanup tells nothing more.
+        // The question right after the failure finds the transaction - after one that could not, the
+        // handler's commit would be refused -, the one before the cleanup cannot.
+        $db->answers = ['alive'];
         $pdo->duringRollBack = static function () use ($db): void {
             $db->commit();
         };

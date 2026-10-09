@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Fixed
+- A transaction begun through the library that the server ended without PDO knowing - a failing DDL statement commits it implicitly, a lock wait timeout under `innodb_rollback_on_timeout` rolls it back - let the statements that followed run in autocommit, each committed on its own, row locks (`lockForUpdate()`, `sharedLock()`) included, which then ended with their own statement. A deadlock of such a statement replaced the remembered failure and made the end `rolled_back` (in `transaction.end` and `CommitFailedException::$outcome`), although the rows written before the DDL statement were committed. Now:
+  - **Right after a failed statement** inside a transaction the library began that does not settle the matter by itself (not a deadlock or a 1020), the driver asks the server (`refreshTransactionState()`, on MariaDB the no-op `DO 1` on raw PDO, no hook sees it). Found gone, or not to be found out (the question fails): that finding is held until the transaction is ended here - no later failure replaces it -, `query()` sends nothing more (`QueryException`, `Not sent: ...`, `getPrevious()` is that failure, neither `query` nor `error` fires), `commit()` refuses without asking again, and `rollback()` tells `lost` (sending a `ROLLBACK` only when PDO still reports a transaction, to clean up).
+  - **While PDO reports no transaction** although the one the library began has not been ended (a DDL statement that succeeded committed it, raw PDO ended it), `query()` sends nothing either; no round trip, PDO's report is read. The end stays `lost`, as before.
+- Tests: a statement and a locking read after a failing and after a successful DDL statement, the finding held across a transaction begun on raw PDO afterwards, a question that fails, an error handler that rolls back inside the question; on a server started with `innodb_rollback_on_timeout` (a CI job of its own, skipped elsewhere) the swallowed lock wait timeout.
+
+### Changed
+- One statement more after each failed statement inside a transaction the library began (the question above), and none after a deadlock or a 1020. A driver of its own whose `failureToRemember()` keeps failures is asked right after them as well (`refreshTransactionState()`).
+- What a callback ran after such a failure is no longer committed on its own: the statement throws instead. Code that swallowed the failure and carried on now gets the `QueryException` of the next statement; the transaction's end and the commit's outcome stay `lost`.
+
 ## [3.1.1] - 2026-10-06
 
 ### Fixed
