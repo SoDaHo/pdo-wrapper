@@ -10,8 +10,17 @@ use Sodaho\PdoWrapper\Driver\MariaDbDriver;
 use Sodaho\PdoWrapper\Exception\ConnectionException;
 use Sodaho\PdoWrapper\Tests\Support\Untyped;
 
+/**
+ * The driver's configuration, without a database: what is refused before connecting, and which values
+ * reach the connection - read from the failed attempt's message. The attempts go to 127.0.0.1 with a
+ * user no server knows: no name lookup, no local socket, and whatever listens on the port (a test
+ * database on 3306/3307/3308 included) refuses them.
+ */
 class MariaDbDriverTest extends TestCase
 {
+    /** A user no test server knows: an attempt fails whatever listens on the port */
+    private const NOBODY = 'pdo_wrapper_nobody';
+
     protected function tearDown(): void
     {
         // Clean up ENV after each test
@@ -196,14 +205,18 @@ class MariaDbDriverTest extends TestCase
      */
     public function testFactoryReadsConfigFromEnv(): void
     {
-        $_ENV['DB_HOST'] = 'invalid-host-that-does-not-exist';
+        $_ENV['DB_HOST'] = '127.0.0.1';
+        $_ENV['DB_PORT'] = '59991';
         $_ENV['DB_DATABASE'] = 'testdb';
-        $_ENV['DB_USERNAME'] = 'testuser';
+        $_ENV['DB_USERNAME'] = self::NOBODY;
         $_ENV['DB_PASSWORD'] = 'testpass';
 
-        $this->expectException(ConnectionException::class);
-
-        Database::fromEnv(['driver' => 'mariadb']);
+        try {
+            Database::fromEnv(['driver' => 'mariadb']);
+            $this->fail('Expected ConnectionException');
+        } catch (ConnectionException $e) {
+            $this->assertStringStartsWith('MariaDB connection to 127.0.0.1:59991 failed', (string) $e->getDebugMessage());
+        }
     }
 
     /**
@@ -211,17 +224,16 @@ class MariaDbDriverTest extends TestCase
      */
     public function testFactoryReadsConfigFromGetenv(): void
     {
-        putenv('DB_HOST=getenv-host-invalid');
+        putenv('DB_HOST=127.0.0.1');
+        putenv('DB_PORT=59992');
         putenv('DB_DATABASE=testdb');
-        putenv('DB_USERNAME=testuser');
-
-        $this->expectException(ConnectionException::class);
+        putenv('DB_USERNAME=' . self::NOBODY);
 
         try {
             Database::fromEnv(['driver' => 'mariadb']);
+            $this->fail('Expected ConnectionException');
         } catch (ConnectionException $e) {
-            $this->assertStringContainsString('getenv-host-invalid', $e->getDebugMessage() ?? '');
-            throw $e;
+            $this->assertStringStartsWith('MariaDB connection to 127.0.0.1:59992 failed', (string) $e->getDebugMessage());
         }
     }
 
@@ -230,19 +242,18 @@ class MariaDbDriverTest extends TestCase
      */
     public function testEnvHasPriorityOverGetenv(): void
     {
-        $_ENV['DB_HOST'] = 'env-host-invalid';
+        $_ENV['DB_HOST'] = '127.0.0.1';
         putenv('DB_HOST=getenv-host-should-not-be-used');
+        $_ENV['DB_PORT'] = '59993';
         $_ENV['DB_DATABASE'] = 'testdb';
-        $_ENV['DB_USERNAME'] = 'testuser';
-
-        $this->expectException(ConnectionException::class);
+        $_ENV['DB_USERNAME'] = self::NOBODY;
 
         try {
             Database::fromEnv(['driver' => 'mariadb']);
+            $this->fail('Expected ConnectionException');
         } catch (ConnectionException $e) {
-            $this->assertStringContainsString('env-host-invalid', $e->getDebugMessage() ?? '');
-            $this->assertStringNotContainsString('getenv-host', $e->getDebugMessage() ?? '');
-            throw $e;
+            $this->assertStringStartsWith('MariaDB connection to 127.0.0.1:59993 failed', (string) $e->getDebugMessage());
+            $this->assertStringNotContainsString('getenv-host', (string) $e->getDebugMessage());
         }
     }
 
@@ -256,7 +267,7 @@ class MariaDbDriverTest extends TestCase
         putenv('DB_HOST=127.0.0.1');
         $_ENV['DB_PORT'] = '59999';
         $_ENV['DB_DATABASE'] = 'testdb';
-        $_ENV['DB_USERNAME'] = 'testuser';
+        $_ENV['DB_USERNAME'] = self::NOBODY;
 
         try {
             Database::fromEnv(['driver' => 'mariadb']);
@@ -282,10 +293,10 @@ class MariaDbDriverTest extends TestCase
 
         // fromEnv(): what is passed counts instead of the variable ...
         try {
-            Database::fromEnv(['driver' => 'mariadb', 'host' => 'array-host']);
-            $this->fail('Expected ConnectionException: no such host');
+            Database::fromEnv(['driver' => 'mariadb', 'host' => '127.0.0.1', 'port' => 59994, 'username' => self::NOBODY]);
+            $this->fail('Expected ConnectionException: nothing listens on the port');
         } catch (ConnectionException $e) {
-            $this->assertStringContainsString('array-host', (string) $e->getDebugMessage());
+            $this->assertStringStartsWith('MariaDB connection to 127.0.0.1:59994 failed', (string) $e->getDebugMessage());
             $this->assertStringNotContainsString('env-host', (string) $e->getDebugMessage());
         }
 
@@ -300,42 +311,38 @@ class MariaDbDriverTest extends TestCase
 
     public function testDefaultPortIs3306(): void
     {
-        $this->expectException(ConnectionException::class);
-
         try {
             new MariaDbDriver([
-                'host' => 'localhost',
+                'host' => '127.0.0.1',
                 'database' => 'test',
-                'username' => 'root',
+                'username' => self::NOBODY,
             ]);
+            $this->fail('Expected ConnectionException');
         } catch (ConnectionException $e) {
-            $this->assertStringContainsString(':3306', $e->getDebugMessage() ?? '');
-            throw $e;
+            $this->assertStringStartsWith('MariaDB connection to 127.0.0.1:3306 failed', (string) $e->getDebugMessage());
         }
     }
 
     public function testCustomPortFromConfig(): void
     {
-        $this->expectException(ConnectionException::class);
-
         try {
             new MariaDbDriver([
-                'host' => 'localhost',
+                'host' => '127.0.0.1',
                 'database' => 'test',
-                'username' => 'root',
+                'username' => self::NOBODY,
                 'port' => 3307,
             ]);
+            $this->fail('Expected ConnectionException');
         } catch (ConnectionException $e) {
-            $this->assertStringContainsString(':3307', $e->getDebugMessage() ?? '');
-            throw $e;
+            $this->assertStringStartsWith('MariaDB connection to 127.0.0.1:3307 failed', (string) $e->getDebugMessage());
         }
     }
 
     public function testAPortThatIsPassedBeatsDbPort(): void
     {
-        $_ENV['DB_HOST'] = 'localhost';
+        $_ENV['DB_HOST'] = '127.0.0.1';
         $_ENV['DB_DATABASE'] = 'test';
-        $_ENV['DB_USERNAME'] = 'root';
+        $_ENV['DB_USERNAME'] = self::NOBODY;
         $_ENV['DB_PORT'] = '3308';
 
         try {
@@ -349,18 +356,16 @@ class MariaDbDriverTest extends TestCase
 
     public function testCustomPortFromEnv(): void
     {
-        $_ENV['DB_HOST'] = 'localhost';
+        $_ENV['DB_HOST'] = '127.0.0.1';
         $_ENV['DB_DATABASE'] = 'test';
-        $_ENV['DB_USERNAME'] = 'root';
+        $_ENV['DB_USERNAME'] = self::NOBODY;
         $_ENV['DB_PORT'] = '3308';
-
-        $this->expectException(ConnectionException::class);
 
         try {
             Database::fromEnv(['driver' => 'mariadb']);
+            $this->fail('Expected ConnectionException');
         } catch (ConnectionException $e) {
-            $this->assertStringContainsString(':3308', $e->getDebugMessage() ?? '');
-            throw $e;
+            $this->assertStringStartsWith('MariaDB connection to 127.0.0.1:3308 failed', (string) $e->getDebugMessage());
         }
     }
 }
