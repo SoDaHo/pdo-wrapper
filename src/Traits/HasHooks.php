@@ -285,7 +285,10 @@ use Sodaho\PdoWrapper\Exception\DatabaseException;
  * that makes a statement fail before it runs. What a listener does counts for the statement: after
  * its commit() or rollback() the statement runs outside the transaction, after its reconnect() on
  * the new connection - as the same call in the callback would. A listener that runs a statement
- * of its own fires 'query.before' again: guard against the recursion.
+ * of its own fires 'query.before' again: guard against the recursion. A listener that never stops
+ * - one statement for every statement, in 'query.before', 'query' or 'error' - is stopped after 32
+ * levels of these listeners inside each other: the statement throws a LogicException, which
+ * passes through query() unchanged (the transaction.* listeners do not count).
  *
  * Events: 'query.before', 'query', 'error', 'transaction.begin', 'transaction.commit', 'transaction.rollback', 'transaction.end'.
  * on() throws for any other name: a misspelled one would never fire. A custom driver that

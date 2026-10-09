@@ -83,7 +83,15 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      */
     private ?array $afterExecute = null;
 
-    /** How many 'query'/'error' listeners of query() are running right now, one inside the other */
+    /**
+     * How many 'query.before'/'query'/'error' listeners of query() may run one inside the other: a
+     * listener that runs a statement of its own on every statement it is told about would otherwise
+     * recurse until PHP runs out of memory - a fatal error nothing catches. Generous: a listener with
+     * a statement of its own (an audit row) needs one level.
+     */
+    private const MAX_HOOK_DEPTH = 32;
+
+    /** How many 'query.before'/'query'/'error' listeners of query() are running right now, one inside the other */
     private int $hookDepth = 0;
 
     /** The statement failure inside the open transaction that may have ended it on the server (see failureToRemember()); commit() asks before it commits */
@@ -508,12 +516,23 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
 
     /**
      * Trigger a 'query.before', 'query' or 'error' hook of query() and keep count of the nesting: what a listener
-     * runs is one level deeper than the statement it was told about.
+     * runs is one level deeper than the statement it was told about. Beyond MAX_HOOK_DEPTH levels the
+     * statement throws a LogicException instead - a listener that answers every statement with one of
+     * its own; it passes through query() unchanged, like any other listener exception that is no
+     * PDOException. The transaction.* listeners do not count here.
      *
      * @param array<string, mixed> $data
+     *
+     * @throws LogicException When MAX_HOOK_DEPTH listeners run one inside the other already
      */
     private function triggerFromQuery(string $event, array $data): void
     {
+        if ($this->hookDepth >= self::MAX_HOOK_DEPTH) {
+            throw new LogicException(sprintf(
+                'Hook recursion: %d query.before, query or error listeners run one inside the other - one of them runs a statement for every statement it is told about. Guard the listener against its own statements.',
+                self::MAX_HOOK_DEPTH
+            ));
+        }
         $this->hookDepth++;
 
         try {
