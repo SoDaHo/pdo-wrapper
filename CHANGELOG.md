@@ -458,7 +458,8 @@ What can break code that ran on 1.4:
 - **CI**: GitHub Actions with PHP 8.2-8.5, MySQL 8.0/8.4, MariaDB 10.11/11.4, PostgreSQL 15/16/17.
 - **Quality**: PHPStan level 9, PHP-CS-Fixer (PSR-12).
 
-[Unreleased]: https://github.com/sodaho/pdo-wrapper/compare/v3.1.1...HEAD
+[Unreleased]: https://github.com/sodaho/pdo-wrapper/compare/v3.1.2...HEAD
+[3.1.2]: https://github.com/sodaho/pdo-wrapper/compare/v3.1.1...v3.1.2
 [3.1.1]: https://github.com/sodaho/pdo-wrapper/compare/v3.1.0...v3.1.1
 [3.1.0]: https://github.com/sodaho/pdo-wrapper/compare/v3.0.0...v3.1.0
 [3.0.0]: https://github.com/sodaho/pdo-wrapper/compare/v2.1.0...v3.0.0
