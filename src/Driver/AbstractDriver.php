@@ -1268,7 +1268,8 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      * the caller issued itself the transaction is the caller's to end, and nothing writes into
      * the exception later (commitOwnTransaction() does, for the commit it runs). After the COMMIT, a
      * transaction PDO reports at once is a chained one (see chainedTransaction()): every commit
-     * listener is skipped and it is the first failure of the CommitHookException. A COMMIT that
+     * listener is skipped and it is the first failure of the CommitHookException - so is a state that
+     * cannot be read at that moment ('Connection state unknown'), fail-closed. A COMMIT that
      * failed - also with what a PDO class of the caller's or an error handler threw besides a
      * PDOException, which passes
      * unchanged - may have taken effect on a session that chains transactions, and PDO then
@@ -1703,7 +1704,9 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      * The failure to report when PDO says the connection is in a transaction right after a COMMIT
      * or ROLLBACK went through: the session chains transactions
      * (completion_type=CHAIN), so everything that follows would run in a transaction nobody began
-     * and nobody commits. Null when PDO reports none; an unreadable state is not judged here.
+     * and nobody commits. Null when PDO reports none. An unreadable state is reported the same way,
+     * fail-closed: the COMMIT or ROLLBACK went through - its outcome is known -, but whether a chained
+     * transaction is open now is not (only a PDO class of the caller's throws from inTransaction()).
      */
     private function chainedTransaction(string $statement): ?TransactionException
     {
@@ -1711,8 +1714,15 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
             if (!$this->pdo->inTransaction()) {
                 return null;
             }
-        } catch (Throwable) {
-            return null;
+        } catch (Throwable $e) {
+            return new TransactionException(
+                message: 'Connection state unknown',
+                previous: $e,
+                debugMessage: sprintf(
+                    'The connection state could not be read right after %s went through: the session may be in a new transaction it chained (completion_type=CHAIN), which nobody commits. Discard the connection (reconnect()), or roll back and set completion_type to NO_CHAIN.',
+                    $statement
+                )
+            );
         }
 
         return new TransactionException(
@@ -1764,7 +1774,8 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      * session that may chain transactions ($unclearCommit): 'lost' with the failed commit as
      * error. A transaction PDO reports right after the ROLLBACK is a
      * chained one (see chainedTransaction()): thrown after the listeners ran, or told to the
-     * 'error' hook when a rollback listener threw.
+     * 'error' hook when a rollback listener threw - and so is a state that cannot be read at that
+     * moment ('Connection state unknown'), fail-closed.
      *
      * @throws TransactionException On failure, when the connection is in a new, chained transaction afterwards, or when a transaction.end listener failed and no rollback listener did (the first failure; all of them reach the 'error' hook)
      * @throws Throwable Re-throws a rollback listener's exception

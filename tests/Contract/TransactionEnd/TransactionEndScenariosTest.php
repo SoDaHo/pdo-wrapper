@@ -838,17 +838,24 @@ class TransactionEndScenariosTest extends TransactionEndTestCase
 
     /**
      * The check for a chained transaction (a COMMIT or ROLLBACK that begins the next one) right
-     * after COMMIT and ROLLBACK reads the connection state. A state that cannot be read is not
-     * taken for a chained transaction: after a rollback nothing is reported, after a commit the
-     * commit listeners' own state check reports it as before.
+     * after COMMIT and ROLLBACK reads the connection state. A state that cannot be read is reported
+     * like a chained transaction, fail-closed - a chained one may be open: after a rollback thrown
+     * once the listeners ran, after a commit as the first failure, every commit listener skipped.
+     * What the statement did stands: rolled back, committed.
      */
-    public function testAnUnreadableStateRightAfterCommitOrRollbackIsNotTakenForAChainedTransaction(): void
+    public function testAnUnreadableStateRightAfterCommitOrRollbackIsReportedLikeAChainedTransaction(): void
     {
         $this->db->beginTransaction();
         $this->db->insert(self::TABLE, ['id' => 1, 'name' => 'rolled back']);
         $this->pdo->stateUnreadable = true;
-        $this->db->rollback();
-        $this->pdo->stateUnreadable = false;
+        try {
+            $this->db->rollback();
+            $this->fail('Expected TransactionException');
+        } catch (TransactionException $e) {
+            $this->assertSame('Connection state unknown', $e->getMessage());
+        } finally {
+            $this->pdo->stateUnreadable = false;
+        }
 
         $this->assertSame(['rollback', 'end'], $this->events);
         $this->assertFalse($this->pdo->reallyInTransaction());
@@ -860,7 +867,9 @@ class TransactionEndScenariosTest extends TransactionEndTestCase
             $this->db->commit();
             $this->fail('Expected CommitHookException');
         } catch (CommitHookException $e) {
-            $this->assertSame('connection state unknown after listener', $e->failures[0]->getMessage());
+            $this->assertSame('Connection state unknown', $e->failures[0]->getMessage());
+            $this->assertSame('listener skipped: connection left in transaction', $e->failures[1]->getMessage());
+            $this->assertTrue($e->connectionInTransaction);
         } finally {
             $this->pdo->stateUnreadable = false;
         }

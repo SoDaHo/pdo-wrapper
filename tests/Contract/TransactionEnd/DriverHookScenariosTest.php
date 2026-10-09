@@ -378,13 +378,20 @@ class DriverHookScenariosTest extends TransactionEndTestCase
         $this->assertSame([['outcome' => DatabaseInterface::TRANSACTION_LOST, 'error' => $failure, 'transaction' => 2, 'depth' => 1]], $ends, 'nothing to roll back: the end is told as lost, with the failure');
         $db->insert(self::TABLE, ['id' => 3, 'name' => 'after rollback()']);
 
-        // with an unreadable state rollback() sends the ROLLBACK as usual
+        // with an unreadable state rollback() sends the ROLLBACK as usual; that the state cannot be read
+        // right after it is reported once the listeners ran (a chained transaction may be open)
         $ends = [];
         $db->beginTransaction();
         $fail('fatal_table');
         $this->pdo->stateUnreadable = true;
-        $db->rollback();
-        $this->pdo->stateUnreadable = false;
+        try {
+            $db->rollback();
+            $this->fail('Expected TransactionException');
+        } catch (TransactionException $e) {
+            $this->assertSame('Connection state unknown', $e->getMessage());
+        } finally {
+            $this->pdo->stateUnreadable = false;
+        }
         $this->assertSame([DatabaseInterface::TRANSACTION_ROLLED_BACK], array_column($ends, 'outcome'));
 
         // begun on raw PDO and ended there: commit() and rollback() forget the failure as well - they
@@ -603,6 +610,9 @@ class DriverHookScenariosTest extends TransactionEndTestCase
         $this->pdo->stateUnreadable = true;
         try {
             $db->rollback();
+            $this->fail('Expected TransactionException: the state right after the ROLLBACK cannot be read');
+        } catch (TransactionException $e) {
+            $this->assertSame('Connection state unknown', $e->getMessage());
         } finally {
             $this->pdo->stateUnreadable = false;
         }

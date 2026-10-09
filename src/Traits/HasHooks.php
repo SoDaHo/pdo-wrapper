@@ -256,7 +256,9 @@ use Sodaho\PdoWrapper\Exception\DatabaseException;
  * is reported, because the caller would continue inside a transaction nobody commits. When PDO
  * reports a transaction right after a COMMIT: CommitHookException with a TransactionException
  * 'Connection is in a new transaction' as first failure, every commit listener skipped and listed,
- * connectionInTransaction true, 'transaction.end' 'committed'. Right after a ROLLBACK: the
+ * connectionInTransaction true, 'transaction.end' 'committed' - the same with a TransactionException
+ * 'Connection state unknown' when PDO's state cannot be read at that moment (a PDO class of the
+ * caller's): a chained transaction may be open, fail-closed. Right after a ROLLBACK: the
  * rollback and end listeners run, then that TransactionException reaches the caller. Where another
  * exception reaches the caller instead - a rollback listener's, or on the automatic rollback the
  * one that ended the transaction - the 'error' hook is told about the chained transaction (sql '',
