@@ -1,6 +1,7 @@
 # Test databases with well-known passwords: published on the loopback interface only.
 # MariaDB is the only database since 3.0. phpunit.xml.dist points at port 3306 (10.11, the oldest supported
-# version); run the suite against the later LTS releases with MYSQL_PORT=3307 (11.4) or MYSQL_PORT=3308 (12.3).
+# version); run the suite against the later LTS releases with MARIADB_PORT=3307 (11.4) or MARIADB_PORT=3308 (12.3) - the
+# variable tests/Support/TestEnvironment.php reads.
 services:
   mariadb:
     image: mariadb:10.11
