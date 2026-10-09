@@ -5,9 +5,7 @@ declare(strict_types=1);
 namespace Sodaho\PdoWrapper\Tests\Driver\MariaDb;
 
 use Pdo\Mysql;
-use Pdo\Sqlite;
 use PDOException;
-use PHPUnit\Framework\Attributes\RequiresPhpExtension;
 use Sodaho\PdoWrapper\Database;
 use Sodaho\PdoWrapper\Exception\ConnectionException;
 use Sodaho\PdoWrapper\Tests\Contract\ContractTestCase;
@@ -20,13 +18,19 @@ class PdoClassTest extends ContractTestCase
 {
     /**
      * A class of another driver passes the check - it extends PDO - and fails where PDO refuses
-     * it: as the failed connection it is. The other driver has to be loaded for its class to exist.
+     * it: as the failed connection it is. The other driver has to be loaded for its class to exist:
+     * whichever is, not one in particular (skipped only when pdo_mysql is the only PDO driver).
      */
-    #[RequiresPhpExtension('pdo_sqlite')]
     public function testAnotherDriversClassFailsAsAFailedConnection(): void
     {
+        $classes = array_filter(['Pdo\Sqlite', 'Pdo\Pgsql', 'Pdo\Odbc', 'Pdo\Firebird', 'Pdo\Dblib'], class_exists(...));
+        if ($classes === []) {
+            $this->markTestSkipped('no PDO driver besides pdo_mysql is loaded');
+        }
+        $class = reset($classes);
+
         try {
-            Database::mariadb(TestEnvironment::mariadb() + ['pdoClass' => Sqlite::class]);
+            Database::mariadb(TestEnvironment::mariadb() + ['pdoClass' => $class]);
             $this->fail('Expected ConnectionException');
         } catch (ConnectionException $e) {
             $this->assertSame('Database connection failed', $e->getMessage());
