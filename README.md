@@ -37,7 +37,7 @@ $db = Database::mariadb([
 
 ```php
 $db = Database::mariadb([
-    'host' => 'localhost',      // required
+    'host' => '127.0.0.1',      // required ('localhost' is the local socket, see below)
     'database' => 'myapp',      // required
     'username' => 'root',       // required
     'password' => 'secret',     // optional
