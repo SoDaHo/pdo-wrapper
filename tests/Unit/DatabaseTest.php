@@ -263,11 +263,17 @@ class DatabaseTest extends TestCase
             $this->assertCount(1, $parameter->getAttributes(\SensitiveParameter::class), $parameter->getDeclaringFunction()->getName());
         }
 
+        // With the arguments in the trace - else the check below holds whatever the attributes say
+        $ignoreArgs = ini_set('zend.exception_ignore_args', '0');
         try {
             new MariaDbDriver(['host' => 'h', 'database' => 'd', 'username' => 'u', 'password' => 'secret', 'port' => 'abc']);
             $this->fail('Expected ConnectionException');
         } catch (ConnectionException $e) {
-            $this->assertStringNotContainsString('secret', var_export($e->getTrace(), true));
+            $trace = var_export($e->getTrace(), true);
+            $this->assertStringContainsString('SensitiveParameterValue', $trace, 'the arguments are in the trace, the config redacted');
+            $this->assertStringNotContainsString('secret', $trace);
+        } finally {
+            ini_set('zend.exception_ignore_args', $ignoreArgs === false ? '1' : $ignoreArgs);
         }
     }
 

@@ -182,21 +182,33 @@ class ReconnectTest extends ContractTestCase
     /**
      * A statement that failed on the old connection is forgotten with it: it does not refuse the
      * commit of a transaction on the new one (where a failed statement aborts the transaction,
-     * every one would).
+     * every one would), and commit() does not even ask about it - the question would fail here
+     * and refuse the commit. The failure's transaction was begun and ended on raw PDO: no end is
+     * owed at reconnect(), nothing but reconnect() itself forgets the failure.
      */
     public function testAFailedStatementOfTheOldConnectionIsForgotten(): void
     {
-        $this->db->beginTransaction();
+        $old = $this->db->getPdo();
+        $old->beginTransaction();
         try {
             $this->db->query('SELECT * FROM no_such_table_for_reconnect');
             $this->fail('Expected QueryException');
         } catch (\Sodaho\PdoWrapper\Exception\QueryException) {
         }
+        $old->rollBack();
+        unset($old);
 
         $this->db->reconnect();
-        $this->db->getPdo()->beginTransaction(); // begun on raw PDO: commit() asks about a remembered failure
+        $pdo = $this->db->getPdo();
+        $this->assertInstanceOf(ScenarioPdo::class, $pdo);
+        $pdo->beginTransaction(); // begun on raw PDO: commit() would ask about a remembered failure
         $this->db->insert(self::TABLE, ['id' => 1, 'name' => 'committed']);
-        $this->db->commit();
+        $pdo->failExec = true;
+        try {
+            $this->db->commit();
+        } finally {
+            $pdo->failExec = false;
+        }
 
         $this->assertSame([1], $this->visible());
     }
