@@ -291,13 +291,15 @@ interface DatabaseInterface
     /**
      * Register a hook callback for an event.
      *
-     * Events: 'query', 'error', 'transaction.begin' (array{transaction: int, depth: int}),
+     * Events: 'query.before' (array{sql: string, params: array}, before every statement - a listener
+     * that throws stops it), 'query', 'error', 'transaction.begin' (array{transaction: int, depth: int}),
      * 'transaction.commit' and 'transaction.rollback' (array{transaction: ?int, depth: ?int}),
      * 'transaction.end' (array{outcome: 'committed'|'rolled_back'|'lost', error: ?Throwable,
      * transaction: ?int, depth: ?int}, once per transaction this library ends - exactly one for
      * every told begin -, after the commit or rollback listeners; see Traits\HasHooks).
-     * Any other name is refused (see @throws): a listener for it would never run. The 'query' and 'error' payloads
-     * carry the SQL and the parameters as passed, secrets included: redact before logging. 'error'
+     * Any other name is refused (see @throws): a listener for it would never run. The 'query.before', 'query' and 'error'
+     * payloads carry the SQL and the parameters as passed, secrets included: redact before logging (README, "Parameters
+     * are secrets", names every channel that carries them). 'error'
      * carries sql, params, error (the message), code (the code of the reported exception), sqlState
      * and driverCode (what the database said, read by the rule of DatabaseException::$sqlState and
      * $driverCode: null where no database failure stands behind the reported error).
@@ -314,7 +316,7 @@ interface DatabaseInterface
      * state cannot be read, or the session chained a new transaction to the COMMIT (then all of
      * them) are the remaining commit listeners skipped (listed as failures).
      *
-     * @param string $event Event name: 'query', 'error', 'transaction.begin', 'transaction.commit', 'transaction.rollback' or 'transaction.end' (a driver may know more)
+     * @param string $event Event name: 'query.before', 'query', 'error', 'transaction.begin', 'transaction.commit', 'transaction.rollback' or 'transaction.end' (a driver may know more)
      * @param callable $callback Callback receiving event data array
      *
      * @throws Exception\DatabaseException When the event is unknown: a listener for a misspelled name would never run
