@@ -36,7 +36,26 @@ class RollbackOnTimeoutTest extends TransactionEndTestCase
      */
     public function testNothingIsSentAfterALockWaitTimeoutThatEndedTheTransaction(): void
     {
+        $this->runIntoTheTimeout();
+    }
+
+    /**
+     * The same with autocommit switched off: the statement after the end would open the next
+     * transaction, and the commit would commit it as if nothing had happened. The question right
+     * after the timeout opens none (measured): the transaction is found gone first.
+     */
+    public function testWithAutocommitOffNothingIsSentAfterTheTimeoutEither(): void
+    {
+        $this->db->execute('SET autocommit = 0');
+        $this->runIntoTheTimeout();
+    }
+
+    private function runIntoTheTimeout(): void
+    {
         $this->db->insert(self::TABLE, ['id' => 1, 'name' => 'locked by the observer']);
+        if ($this->db->inTransaction()) {
+            $this->db->getPdo()->commit(); // autocommit off: the insert opened a transaction; the row must be there for the observer
+        }
         $this->db->execute('SET SESSION innodb_lock_wait_timeout = 1');
         $this->events = [];
         $code = null;

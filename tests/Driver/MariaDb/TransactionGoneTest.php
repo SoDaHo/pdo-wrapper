@@ -141,6 +141,42 @@ class TransactionGoneTest extends TransactionEndTestCase
     }
 
     /**
+     * With autocommit switched off a statement after the transaction's end would open the next
+     * transaction instead of being committed on its own - and the commit would then commit it. The
+     * question right after the failure opens none (DO 1, measured): the transaction is found gone
+     * before any statement of the caller, nothing more is sent, the end is 'lost'.
+     */
+    public function testWithAutocommitOffNothingIsSentAfterAFailingDdlStatementEither(): void
+    {
+        $this->db->execute('SET autocommit = 0');
+        $this->db->beginTransaction();
+        $this->db->insert(self::TABLE, ['id' => 1, 'name' => 'before the DDL']);
+        try {
+            $this->db->execute('CREATE TABLE ' . self::TABLE . ' (id INT PRIMARY KEY)');
+            $this->fail('Expected QueryException');
+        } catch (QueryException $e) {
+            $failure = $e->getPrevious();
+        }
+        $this->assertFalse($this->db->inTransaction(), 'the question opened no transaction');
+
+        try {
+            $this->db->insert(self::TABLE, ['id' => 2, 'name' => 'after the DDL']);
+            $this->fail('Expected QueryException: not sent');
+        } catch (QueryException $e) {
+            $this->assertSame($failure, $e->getPrevious());
+        }
+        try {
+            $this->db->commit();
+            $this->fail('Expected CommitFailedException');
+        } catch (CommitFailedException $e) {
+            $this->assertSame(DatabaseInterface::TRANSACTION_LOST, $e->outcome);
+        }
+
+        $this->assertSame([['outcome' => DatabaseInterface::TRANSACTION_LOST, 'error' => $e]], $this->ends);
+        $this->assertVisible([1], 'the row before the DDL statement is committed, the one after it was never sent');
+    }
+
+    /**
      * What the driver found is held until the transaction is ended here: a transaction begun on
      * raw PDO afterwards (PDO reports one again) changes nothing. Nothing is sent, the commit is
      * refused for the failure that ended the transaction, and the rollback that cleans up tells

@@ -52,11 +52,15 @@ use Sodaho\PdoWrapper\Exception\DatabaseException;
  * innodb_rollback_on_timeout, which ends the whole transaction, is found gone the same way.
  * When the question itself fails while the connection goes on working, nothing is known: the
  * ROLLBACK is sent to clean up, but it confirms nothing - 'lost' as well, without rollback
- * listeners. Asked only while PDO reports the transaction: once a later statement has told PDO
- * that it is gone, a manual rollback() fails as before, and the next beginTransaction() tells
- * the end. Not asked after a deadlock or a 1020, which settles the matter - also when an earlier
- * failure of the same transaction was swallowed: a statement with an implicit commit that
- * failed, followed by a statement that runs into a deadlock, is still told as 'rolled_back'.
+ * listeners. Inside a transaction this library began the question comes right after the failed
+ * statement, before anything else is sent, and what it finds is held until that transaction is
+ * ended here: gone, or not to be found out, no further statement is sent (it would run in
+ * autocommit), the end is 'lost', and no later failure - a deadlock of a statement that can no
+ * longer be sent - turns it into 'rolled_back'. Not asked after a deadlock or a 1020, which
+ * settles the matter. In a transaction begun on raw PDO the question comes only before the
+ * ROLLBACK, and only while PDO reports the transaction: once a later statement has told PDO that
+ * it is gone, a manual rollback() fails as before; and there a statement with an implicit commit
+ * that failed, followed by a statement that runs into a deadlock, is still told as 'rolled_back'.
  *
  * 'transaction.end' fires exactly once for every transaction this library ends, after the
  * 'transaction.commit' or 'transaction.rollback' listeners, with
@@ -230,22 +234,26 @@ use Sodaho\PdoWrapper\Exception\DatabaseException;
  * All of this is described for autocommit, the default. With autocommit switched off
  * (PDO::ATTR_AUTOCOMMIT, SET autocommit = 0) a statement after the transaction's end is not
  * committed on its own but opens the next transaction: after a deadlock the refusals above hold
- * all the same, and the rollback undoes that statement too. That next transaction is not told
- * apart from the one that ended - also not after a 'transaction.begin' listener whose DDL
- * statement committed the transaction just begun and whose next statement opened another: the
- * caller goes on in that one, and its rollback is told as the end of the first.
- * The question before a ROLLBACK after a failed statement holds there too (the no-op statement
- * opens no transaction, measured) - but not once a later statement of the caller has opened the
- * next transaction: that one is found in its place, and its rollback is told as 'rolled_back'
- * although a failing DDL statement committed what came before it.
+ * all the same, and the rollback undoes that statement too. The question right after a failed
+ * statement holds there as well - the no-op statement opens no transaction (measured on 10.11) -:
+ * inside a transaction this library began, a failing DDL statement or a lock wait timeout that
+ * ended it is found gone before any statement of the caller could open the next one, and
+ * nothing more is sent through this library; after a DDL statement that succeeded PDO reports no
+ * transaction, and nothing is sent either (a 'transaction.begin' listener's next statement
+ * included). What a statement on raw PDO opens after the end is not told apart from the
+ * transaction that ended: for one this library began the rollback still tells 'lost' (the
+ * finding is held); for one begun on raw PDO the question before the ROLLBACK finds the new one
+ * in its place, and its rollback is told as 'rolled_back' although a failing DDL statement
+ * committed what came before it.
  * So a callback that swallows such an error and returns no longer gets a 'committed'. Not seen:
  * statements that failed on raw PDO (getPdo()), and rows that fail while a result is fetched.
  * After a deadlock, end the transaction through this library (rollback()): a transaction begun
  * on raw PDO after a raw rollback would have its statements and its commit refused for the old
- * deadlock until rollback() is called. With autocommit switched off, a swallowed failure other
- * than a deadlock that ended the transaction
- * (the lock wait timeout above) is not told apart from a statement-only failure once a later
- * statement has opened the next transaction: that commit goes through.
+ * deadlock until rollback() is called. In a transaction begun on raw PDO with autocommit switched
+ * off, a swallowed failure other than a deadlock that ended the transaction (the lock wait timeout
+ * above) is not told apart from a statement-only failure once a later statement has opened the
+ * next transaction: that commit goes through. In a transaction this library began the question
+ * right after the failure has found it gone before (see above).
  * With PDO::ERRMODE_WARNING and an error handler that throws, a failed statement still arrives as
  * QueryException (and is remembered), a failed lastInsertId() likewise; a failing BEGIN, COMMIT or
  * ROLLBACK arrives as the handler's exception (not as TransactionException or
