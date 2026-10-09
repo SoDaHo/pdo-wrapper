@@ -16,8 +16,8 @@
 Report vulnerabilities privately through GitHub's private vulnerability reporting:
 https://github.com/SoDaHo/pdo-wrapper/security/advisories/new
 
-Please do not open a public issue for a security problem. Include the affected version, the database
-driver (MySQL/MariaDB, PostgreSQL or SQLite) and, if you have one, a minimal reproduction.
+Please do not open a public issue for a security problem. Include the affected version, the MariaDB
+version (MariaDB is the only database since 3.0) and, if you have one, a minimal reproduction.
 
 ## Scope
 

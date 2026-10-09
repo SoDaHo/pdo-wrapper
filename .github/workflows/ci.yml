@@ -14,9 +14,9 @@ name: CI
 
 on:
   push:
-    branches: [main, master, 3.x]
+    branches: [main]
   pull_request:
-    branches: [main, master, 3.x]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -255,6 +255,9 @@ jobs:
           path: ${{ steps.composer-cache.outputs.dir }}
           key: ${{ runner.os }}-composer-${{ hashFiles('**/composer.lock') }}
           restore-keys: ${{ runner.os }}-composer-
+
+      - name: Validate composer.json and composer.lock
+        run: composer validate --strict
 
       - name: Install dependencies
         run: composer install --prefer-dist --no-progress
