@@ -878,12 +878,25 @@ class QueryBuilder
      *
      * @param string $column Column to count (default: *)
      *
+     * @throws QueryException When the connection delivers a value that is no number (a statement class of the caller's): never passed off as 0
+     *
      * @return int Number of records
      */
     public function count(string $column = '*'): int
     {
         $result = $this->aggregate('COUNT', $column);
-        return is_numeric($result) ? (int)$result : 0;
+        // No row: a having() without groupBy() filtered out the one group - none to count
+        if ($result === null) {
+            return 0;
+        }
+        if (is_numeric($result)) {
+            return (int) $result;
+        }
+
+        throw new QueryException(
+            message: 'Query failed',
+            debugMessage: sprintf('count() got %s from the connection: MariaDB delivers an integer here. The connection does not deliver the types this library promises (see MariaDbDriver).', get_debug_type($result))
+        );
     }
 
     /**

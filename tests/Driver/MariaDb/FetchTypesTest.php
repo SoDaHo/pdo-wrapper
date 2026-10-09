@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Sodaho\PdoWrapper\Tests\Driver\MariaDb;
 
 use PDO;
+use Sodaho\PdoWrapper\Database;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Tests\Contract\ContractTestCase;
 
@@ -103,6 +104,24 @@ class FetchTypesTest extends ContractTestCase
             $this->fail('Expected QueryException: false');
         } catch (QueryException $e) {
             $this->assertSame('sum() got bool from the connection: MariaDB delivers a numeric string, a float or NULL here. The connection does not deliver the types this library promises (see MariaDbDriver).', $e->getDebugMessage());
+        }
+    }
+
+    /**
+     * count() turns what MariaDB delivers into an int and "no row" (a having() without groupBy()
+     * that filtered out the one group) into 0. A value that is no number is thrown, as by sum():
+     * never passed off as 0.
+     */
+    public function testCountRefusesAValueThatIsNoNumber(): void
+    {
+        $this->assertSame(0, $this->db->table('fetch_types')->having(Database::raw('COUNT(*)'), '>', 1000)->count(), 'no row: none to count');
+
+        $db = $this->connect(['options' => [PDO::ATTR_STATEMENT_CLASS => [FalseValueStatement::class]]]);
+        try {
+            $db->table('fetch_types')->count();
+            $this->fail('Expected QueryException: false');
+        } catch (QueryException $e) {
+            $this->assertSame('count() got bool from the connection: MariaDB delivers an integer here. The connection does not deliver the types this library promises (see MariaDbDriver).', $e->getDebugMessage());
         }
     }
 }
