@@ -793,7 +793,8 @@ $db->on('query', function (array $data) {
 
 // Log errors: what the database said is in sqlState and driverCode, as on the exception
 $db->on('error', function (array $data) {
-    error_log("Query failed: {$data['error']} | SQLSTATE: {$data['sqlState']} | SQL: {$data['sql']}");
+    // not $data['error']: the database's message may quote a value (see "Parameters are secrets" below)
+    error_log("Query failed | SQLSTATE: {$data['sqlState']} | driver code: {$data['driverCode']} | SQL: {$data['sql']}");
 });
 
 // Transaction hooks: every event names its transaction (see below)
@@ -829,7 +830,17 @@ $db->off('query', $log);
 
 The `error` payload carries `sql` and `params` as passed, `error` (the message), `code` (the code of the reported exception: the SQLSTATE string of a failed statement, the driver's number in a non-exception error mode, `0` for an exception of the library, a foreign exception's own code), and `sqlState` and `driverCode` - what the database said, read by the rule of `$sqlState` and `$driverCode` (see [Exceptions](#exceptions)): for a failed statement the same values as on the exception the caller gets; `null` where no database failure stands behind the reported error (a parameter the library refused to bind, a chained transaction, a listener's exception that carries no codes). Where the library hands an exception to the hook instead of, or besides, throwing it - a failing `transaction.end` listener (after any rollback or `lost`), a chained transaction -, the codes are that exception's, and `outcome` and `exception` are added; `hook` (`'transaction.end'`) only for a listener's failure.
 
-**Parameters are secrets.** The `query.before`, `query` and `error` payloads carry the SQL and the parameters exactly as passed - password hashes, tokens, personal data - and `QueryException::getDebugMessage()` contains both as well. Never write them to a log or an error page unredacted: log the SQL and the error, and of the parameters at most their number or a whitelisted subset. The `error` hook also fires (with `code` 0) for a parameter that must not be bound.
+**Parameters are secrets.** The values a statement binds - password hashes, tokens, personal data - reach every channel that tells about the statement:
+
+- the `query.before`, `query` and `error` payloads: `params` exactly as passed, and in `error` the database's own message, which quotes values (`Duplicate entry 'ann@example.com' for key 'uq_email'`);
+- `QueryException::getDebugMessage()`: the SQL and the parameters;
+- `getPrevious()`: the `PDOException` behind it, with the database's message - a duplicate key carries the duplicate value. Tell duplicates apart by `UniqueViolationException::$constraint`, never by logging the previous exception;
+- `(string) $e`: it includes the messages of the previous exceptions;
+- the arguments in the trace (`getTrace()`, `getTraceAsString()`) while `zend.exception_ignore_args` is off - the parameters of `query()` and of the CRUD methods are among them, and so are statements: `serialize($e)` then fails ("Serialization of 'PDOStatement' is not allowed"), `var_export($e)` prints the values. With `zend.exception_ignore_args = On` (the production setting) traces carry no arguments and the exception serializes;
+- a failed connection: the `PDOException` behind the `ConnectionException` holds the DSN and the username in its trace (PDO keeps the password out);
+- `NamedLocksHeldException::$lockNames`: the names of the named locks the driver holds, which may identify a person (`login:<user id>`).
+
+Never write any of them to a log or an error page unredacted: log the SQL, `sqlState` and `driverCode` - `getMessage()` names neither the SQL nor a value -, and of the parameters at most their number or a whitelisted subset. The `error` hook also fires (with `code` 0) for a parameter that must not be bound.
 
 For `query.before`, `query`, `error` and `transaction.begin`, a throwing hook stops the remaining hooks of its event and its exception reaches the caller (a `PDOException` from a `query` hook arrives as `QueryException` with the message `Query hook failed`: the statement did run and no `error` hook fires); after a throwing `transaction.begin` hook a rollback of the transaction it was told about is attempted first (best effort, directly and without `transaction.rollback` hooks, then its `transaction.end`; if that rollback fails, the transaction may still be open and its end is `lost`) - unless the hook ended it itself; a transaction it began afterwards is left open, with its end owed. A throwing `transaction.rollback` hook does the same on a manual `rollback()`, but is ignored during the automatic rollback in `transaction()` and `updateMultiple()` (the original exception is re-thrown). A throwing `error` hook therefore replaces the `QueryException` of the failed statement. `insert()` reads the new id before the `query` hooks run, so a hook may itself insert on the same connection. `on()` throws a `DatabaseException` for an event name it does not know - a listener for a misspelled name would never run; a custom driver that triggers events of its own names them by overriding `knownEvents()`. `transaction.commit` hooks run after the commit and cannot undo it, so they work differently:
 

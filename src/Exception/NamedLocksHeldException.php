@@ -14,7 +14,8 @@ use Throwable;
  * Release the locks first, or call reconnect(dropNamedLocks: true) to give them up knowingly (on a
  * connection that is gone, releaseNamedLock() cannot reach the server any more). A
  * ConnectionException like reconnect()'s other failures; catch this class to tell "locks held"
- * apart without reading the message.
+ * apart without reading the message. $lockNames and the debug message carry the names, which may
+ * identify a person ("login:<user id>"): log their number, not the names.
  */
 class NamedLocksHeldException extends ConnectionException
 {

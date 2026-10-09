@@ -11,6 +11,8 @@ use Throwable;
  *
  * A QueryException like any other failed statement, so existing catch blocks keep working; catch
  * this class to tell "duplicate" from every other failure without looking at driver error codes.
+ * Which key: $constraint. The previous exception is the database's, and its message quotes the
+ * duplicate value (an e-mail address, a token): never log it, nor (string) of this exception.
  */
 class UniqueViolationException extends QueryException
 {

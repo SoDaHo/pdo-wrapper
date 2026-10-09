@@ -13,7 +13,9 @@ use Throwable;
  * the connection's NULL mode, see ConnectionRefusal -, so that a caller (a health check) can name
  * the cause without reading the message. It is null for every other failure: a connection that
  * could not be opened (its PDOException is getPrevious(), its codes are $sqlState and
- * $driverCode), a refused configuration, a reconnect() that cannot be done.
+ * $driverCode), a refused configuration, a reconnect() that cannot be done. That PDOException
+ * holds the DSN and the username in its trace while zend.exception_ignore_args is off (PDO keeps
+ * the password out).
  */
 class ConnectionException extends DatabaseException
 {

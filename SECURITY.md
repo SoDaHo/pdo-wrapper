@@ -29,8 +29,10 @@ error in the application, not a vulnerability in the library.
 
 Likewise outside the library's reach, and documented in the README:
 
-- **Parameters in logs.** The `query` and `error` hooks and `QueryException::getDebugMessage()` carry
-  the SQL and the bound parameters as passed, secrets included. An application that writes them to a
+- **Parameters in logs.** The `query.before`, `query` and `error` hooks, `QueryException::getDebugMessage()`,
+  the previous exception (a duplicate key's message quotes the value), `(string) $e` and the arguments in a
+  trace (while `zend.exception_ignore_args` is off) carry the SQL and the bound parameters as passed, secrets
+  included - the README's "Parameters are secrets" lists every channel. An application that writes them to a
   log or an error page unredacted leaks them itself.
 - **PDO options.** `options` replace the secure defaults (native prepared statements, exceptions,
   no multi-statements on MySQL/MariaDB). Switching to emulated prepares, multi-statements or a
