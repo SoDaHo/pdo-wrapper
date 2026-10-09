@@ -1590,9 +1590,10 @@ class QueryBuilder
 
         foreach ($this->wheres as $where) {
             $type = (string)($where['type'] ?? '');
-            // A name is quoted; an expression (Database::json(), raw() without bindings) stands as it is
+            // A name is quoted; an expression (Database::json(), raw() without bindings) stands as it is.
+            // A condition declares no alias: "has as col" is the name of one column, as in orderBy()
             $column = $where['column'] ?? '';
-            $column = $column instanceof RawExpression ? (string) $column : $this->quoteIdentifier((string) $column);
+            $column = $column instanceof RawExpression ? (string) $column : $this->quoteReference((string) $column);
 
             switch ($type) {
                 case 'basic':
@@ -1709,12 +1710,14 @@ class QueryBuilder
      *
      * The alias is quoted like every other name: it is then the same name wherever the builder
      * refers to it (orderBy(), groupBy(), a column of an aliased table - all rendered quoted), a
-     * reserved word is a valid alias, and the result key is the alias as written.
+     * reserved word is a valid alias, and the result key is the alias as written. The alias is a
+     * word of letters (any script), digits and underscores at the very end: a trailing newline is no
+     * part of the pattern's end (D), "col as ä" is an alias (u) - anything else is one quoted name.
      */
     private function quoteIdentifier(string $identifier): string
     {
         // Handle alias: "column as alias" or "table.column as alias"
-        if (preg_match('/^(.+)\s+as\s+(\w+)$/i', $identifier, $matches)) {
+        if (preg_match('/^(.+)\s+as\s+(\w+)$/iuD', $identifier, $matches)) {
             return $this->quoteReference(trim($matches[1])) . ' as ' . Sql::name($matches[2]);
         }
 

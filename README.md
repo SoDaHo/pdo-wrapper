@@ -1031,7 +1031,7 @@ This library is designed for simple, common use cases. The following features ar
 
 - **NULL in where()** - `where('column', null)` throws an exception because `column = NULL` is always false in SQL. Use `whereNull()` or `whereNotNull()`, or the null-safe `where('column', 'IS', $value)` for a value that may be null. The `$where` arrays of the CRUD methods take no `null` either.
 
-- **Aliases** - `'column as alias'` and `'table as alias'` quote the alias like every other name. The result key is the alias as written, `orderBy()`, `groupBy()` and `'alias.column'` find it under that name, and a reserved word is a valid alias. The alias must be a plain word (letters, digits, underscore). An alias inside a `Database::raw()` entry is sent as written.
+- **Aliases** - `'column as alias'` and `'table as alias'` quote the alias like every other name. The result key is the alias as written, `orderBy()`, `groupBy()` and `'alias.column'` find it under that name, and a reserved word is a valid alias. The alias must be a plain word (letters of any script, digits, underscore) at the very end; anything else - a trailing newline included - leaves the whole entry one quoted name. A condition (`where()` and the other `where*()` methods) declares no alias: `'has as col'` is the name of one column there, as in `orderBy()`. An alias inside a `Database::raw()` entry is sent as written.
 
 - **Builder clauses on `insert()`** - `table('t')->where(...)->insert($row)` inserts the row and ignores the clauses; use `insertWhen()` for a conditional insert (there, clauses throw).
 

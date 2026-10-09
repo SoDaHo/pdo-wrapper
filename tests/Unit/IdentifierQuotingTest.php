@@ -84,6 +84,33 @@ class IdentifierQuotingTest extends TestCase
         $this->assertSame('SELECT `t`.`name` as `x` FROM `t`', $this->table('t')->select('t.name as x')->toSql()[0]);
     }
 
+    /**
+     * The alias ends the name: a newline after it is no alias but part of one quoted name (the
+     * server then names the column it does not know), never dropped. (A comma-separated string
+     * passed to select() is trimmed entry by entry first; a list is taken as it is.)
+     */
+    public function testANewlineAfterAnAliasIsNoAlias(): void
+    {
+        $this->assertSame("SELECT `email as e\n` FROM `t`", $this->table('t')->select(["email as e\n"])->toSql()[0]);
+    }
+
+    public function testAnAliasMayBeAWordInAnyScript(): void
+    {
+        $this->assertSame('SELECT `x` as `ä` FROM `t`', $this->table('t')->select('x as ä')->toSql()[0]);
+        $this->assertSame('SELECT `x` as `größe_1` FROM `t`', $this->table('t')->select('x as größe_1')->toSql()[0]);
+    }
+
+    /**
+     * A condition declares no alias: "has as col" is the name of one column, in every where*().
+     */
+    public function testAWhereColumnIsNeverSplitIntoAnAlias(): void
+    {
+        [$sql, $params] = $this->table('t')->where('has as col', 1)->whereIn('a as b', [2])->whereNull('c as d')->toSql();
+
+        $this->assertSame('SELECT * FROM `t` WHERE `has as col` = ? AND `a as b` IN (?) AND `c as d` IS NULL', $sql);
+        $this->assertSame([1, 2], $params);
+    }
+
     public function testATableWildcardKeepsItsStar(): void
     {
         $this->assertSame('SELECT `users`.* FROM `users`', $this->table('users')->select('users.*')->toSql()[0]);
