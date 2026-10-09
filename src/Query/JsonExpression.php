@@ -96,9 +96,6 @@ final class JsonExpression extends RawExpression
      */
     private static function quote(string $column): string
     {
-        return implode('.', array_map(
-            static fn (string $part): string => '`' . str_replace('`', '``', $part) . '`',
-            explode('.', $column)
-        ));
+        return Sql::name($column);
     }
 }

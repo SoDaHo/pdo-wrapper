@@ -23,6 +23,7 @@ use Sodaho\PdoWrapper\Exception\UniqueViolationException;
 use Sodaho\PdoWrapper\InternalMethods;
 use Sodaho\PdoWrapper\Query\FloatText;
 use Sodaho\PdoWrapper\Query\RawExpression;
+use Sodaho\PdoWrapper\Query\Sql;
 use Sodaho\PdoWrapper\Schema\Schema;
 use Sodaho\PdoWrapper\Traits\HasHooks;
 use Stringable;
@@ -3086,7 +3087,9 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      * - users -> `users`
      * - shop.users -> `shop`.`users`
      *
-     * Identifiers are quoted with backticks (MariaDB); a backtick inside a name is doubled.
+     * Identifiers are quoted with backticks (MariaDB); a backtick inside a name is doubled. Every
+     * key is the name of one column: no alias ("a as b" is that column), no wildcard (the quoting
+     * itself is shared with the query builder, see Query\Sql).
      *
      * @param string $identifier Table or column name
      *
@@ -3094,19 +3097,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      */
     protected function quoteIdentifier(string $identifier): string
     {
-        $quote = '`';
-        $escape = $quote . $quote;
-
-        // Handle schema.table or table.column format
-        if (str_contains($identifier, '.')) {
-            $parts = explode('.', $identifier);
-            return implode('.', array_map(
-                static fn ($part) => $quote . str_replace($quote, $escape, $part) . $quote,
-                $parts
-            ));
-        }
-
-        return $quote . str_replace($quote, $escape, $identifier) . $quote;
+        return Sql::name($identifier);
     }
 
     /**
@@ -3128,7 +3119,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
 
         foreach ($data as $column => $value) {
             $columns[] = $this->quoteIdentifier($column);
-            $values[] = self::valueSql($value, $params);
+            $values[] = Sql::value($value, $params);
         }
 
         return [implode(', ', $columns), implode(', ', $values), $params];
@@ -3150,31 +3141,10 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
         $params = [];
 
         foreach ($data as $column => $value) {
-            $clauses[] = $this->quoteIdentifier($column) . ' = ' . self::valueSql($value, $params);
+            $clauses[] = $this->quoteIdentifier($column) . ' = ' . Sql::value($value, $params);
         }
 
         return [implode(', ', $clauses), $params];
-    }
-
-    /**
-     * What stands for a value in the SQL, and its params: a placeholder and the value - or, for a
-     * RawExpression, its SQL and its own bindings, at this very position among the params.
-     *
-     * @param array<int, mixed> $params
-     */
-    private static function valueSql(mixed $value, array &$params): string
-    {
-        if (!$value instanceof RawExpression) {
-            $params[] = $value;
-
-            return '?';
-        }
-
-        foreach ($value->bindings as $binding) {
-            $params[] = $binding;
-        }
-
-        return (string) $value;
     }
 
     /**
@@ -3202,7 +3172,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
                     )
                 );
             }
-            $clauses[] = $this->quoteIdentifier($column) . ' = ' . self::valueSql($value, $params);
+            $clauses[] = $this->quoteIdentifier($column) . ' = ' . Sql::value($value, $params);
         }
 
         return [implode(' AND ', $clauses), $params];

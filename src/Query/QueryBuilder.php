@@ -34,9 +34,6 @@ class QueryBuilder
      */
     private const LIKE_ESCAPE = '\\';
 
-    /** Identifiers are quoted with backticks (MariaDB) */
-    private const QUOTE = '`';
-
     private DatabaseInterface&InternalMethods $db;
     private string $table;
 
@@ -1332,7 +1329,7 @@ class QueryBuilder
 
         // The assignments in the order of $data; a raw value's own bindings stand where it stands
         foreach ($data as $column => $value) {
-            $setClauses[] = $this->quoteIdentifier($column) . ' = ' . $this->valueSql($value, $params);
+            $setClauses[] = $this->quoteIdentifier($column) . ' = ' . Sql::value($value, $params);
         }
 
         $params = array_merge($params, $whereParams);
@@ -1601,7 +1598,7 @@ class QueryBuilder
                 case 'basic':
                     $operator = (string)($where['operator'] ?? '=');
                     $value = $where['value'] ?? null;
-                    $right = $this->valueSql($value, $params);
+                    $right = Sql::value($value, $params);
                     $clause = $this->comparison($column, $operator, $right, $value instanceof RawExpression);
                     if ($operator === 'LIKE' || $operator === 'NOT LIKE') {
                         $clause .= ' ESCAPE ?';
@@ -1626,7 +1623,7 @@ class QueryBuilder
                     $values = is_array($where['values'] ?? null) ? array_values($where['values']) : [];
                     $slots = [];
                     foreach ($values as $item) {
-                        $slots[] = $this->valueSql($item, $params);
+                        $slots[] = Sql::value($item, $params);
                     }
                     $inOperator = ($where['not'] ?? false) ? 'NOT IN' : 'IN';
                     $clauses[] = $column . " {$inOperator} (" . implode(', ', $slots) . ')';
@@ -1639,7 +1636,7 @@ class QueryBuilder
                     $betweenValues = is_array($where['values'] ?? null) ? array_values($where['values']) : [null, null];
                     $bounds = [];
                     foreach ([$betweenValues[0] ?? null, $betweenValues[1] ?? null] as $bound) {
-                        $bounds[] = $this->valueSql($bound, $params);
+                        $bounds[] = Sql::value($bound, $params);
                     }
                     $clauses[] = $column . " {$betweenOperator} {$bounds[0]} AND {$bounds[1]}";
                     break;
@@ -1652,28 +1649,6 @@ class QueryBuilder
         }
 
         return [implode(' AND ', $clauses), $params];
-    }
-
-    /**
-     * What stands for a value in the SQL, and its params: a placeholder and the value - or, for a
-     * RawExpression, its SQL and its own bindings, at this very position among the params
-     * (SECURITY: never pass user input as the SQL of Database::raw()).
-     *
-     * @param array<int, mixed> $params
-     */
-    private function valueSql(mixed $value, array &$params): string
-    {
-        if (!$value instanceof RawExpression) {
-            $params[] = $value;
-
-            return '?';
-        }
-
-        foreach ($value->bindings as $binding) {
-            $params[] = $binding;
-        }
-
-        return (string) $value;
     }
 
     /**
@@ -1715,7 +1690,7 @@ class QueryBuilder
             $column = $h['column'] instanceof RawExpression
                 ? (string) $h['column']
                 : $this->quoteIdentifier($h['column']);
-            $clause = $this->comparison($column, $h['operator'], $this->valueSql($h['value'], $params), $h['value'] instanceof RawExpression);
+            $clause = $this->comparison($column, $h['operator'], Sql::value($h['value'], $params), $h['value'] instanceof RawExpression);
             if ($h['operator'] === 'LIKE' || $h['operator'] === 'NOT LIKE') {
                 $clause .= ' ESCAPE ?';
                 $params[] = self::LIKE_ESCAPE;
@@ -1740,7 +1715,7 @@ class QueryBuilder
     {
         // Handle alias: "column as alias" or "table.column as alias"
         if (preg_match('/^(.+)\s+as\s+(\w+)$/i', $identifier, $matches)) {
-            return $this->quoteReference(trim($matches[1])) . ' as ' . self::QUOTE . $matches[2] . self::QUOTE;
+            return $this->quoteReference(trim($matches[1])) . ' as ' . Sql::name($matches[2]);
         }
 
         return $this->quoteReference($identifier);
@@ -1748,23 +1723,12 @@ class QueryBuilder
 
     /**
      * Quote a column reference without an alias ("col", "table.col", "table.*"): what orderBy()
-     * takes - there "title as x" is the name of one column, not an alias declaration.
+     * takes - there "title as x" is the name of one column, not an alias declaration. A backtick in
+     * a name is doubled, "users.*" keeps its wildcard: `users`.* (see Sql::name()).
      */
     private function quoteReference(string $identifier): string
     {
-        // Escape character: double the quote char (standard SQL escaping)
-        $escape = self::QUOTE . self::QUOTE;
-
-        // Handle table.column format; "users.*" keeps its wildcard: `users`.*
-        if (str_contains($identifier, '.')) {
-            $parts = explode('.', $identifier);
-            return implode('.', array_map(
-                fn ($p) => $p === '*' ? '*' : self::QUOTE . str_replace(self::QUOTE, $escape, $p) . self::QUOTE,
-                $parts
-            ));
-        }
-
-        return self::QUOTE . str_replace(self::QUOTE, $escape, $identifier) . self::QUOTE;
+        return Sql::name($identifier, wildcard: true);
     }
 
     /**
