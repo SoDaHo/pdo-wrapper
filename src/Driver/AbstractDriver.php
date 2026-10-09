@@ -2033,6 +2033,10 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      *   begun by the callback or by a listener, through this driver or on raw PDO - is neither
      *   committed nor rolled back here. A callback that returns gets a CommitFailedException with
      *   outcome 'lost' and no COMMIT is sent; one that throws gets its exception re-thrown;
+     * - the callback calls transaction() or beginTransaction() again: there are no nested
+     *   transactions (no savepoints) - the inner call throws a TransactionException 'Failed to begin
+     *   transaction' ("There is already an active transaction") before its callback runs; left to
+     *   escape, it rolls the outer transaction back like any other exception of the callback;
      * - a transaction.commit or transaction.end listener failed, or the connection state after a
      *   commit listener could not be verified or cleaned up: committed, the committed transaction is
      *   not rolled back, CommitHookException (getPrevious() is the first failure, which need not be

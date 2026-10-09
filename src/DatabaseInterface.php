@@ -250,10 +250,13 @@ interface DatabaseInterface
      *   refused before it is sent and the CommitFailedException is thrown, instead of a COMMIT the
      *   server answers with success. While PDO still reports the transaction the rollback follows
      *   and transaction.end reports 'rolled_back'; once PDO knows that the transaction is gone - from
-     *   a statement on raw PDO after a deadlock or a 1020, or from the question to the server after another
-     *   failure (the lock wait timeout: statements the callback ran after it were committed on
-     *   their own) - nothing is left to roll back and transaction.end reports 'lost'. Through
-     *   this library nothing is sent between a deadlock or a 1020 and the rollback;
+     *   a statement on raw PDO after a deadlock or a 1020, or from the question the driver asks right
+     *   after any other failure (the lock wait timeout) - nothing is left to roll back and
+     *   transaction.end reports 'lost'. Through this library nothing is sent between a deadlock or a
+     *   1020 and the rollback, nor after a failure that the question found had ended the transaction
+     *   or could not settle, nor while PDO reports no transaction (a DDL statement committed it
+     *   implicitly, failing or not): the statement would run in autocommit and be committed on its
+     *   own, it throws a QueryException instead;
      * - the commit failed: a rollback is attempted when PDO still reports the transaction, the
      *   CommitFailedException is re-thrown; transaction.end reports 'rolled_back' when that rollback
      *   succeeded (nothing was committed) and 'lost' when it failed too (the commit may or may not
@@ -269,6 +272,10 @@ interface DatabaseInterface
      *   begun by the callback or by a listener, through this library or on raw PDO - is neither
      *   committed nor rolled back here. A callback that returns gets a CommitFailedException with
      *   outcome 'lost' and no COMMIT is sent; one that throws gets its exception re-thrown;
+     * - the callback calls transaction() or beginTransaction() again: there are no nested
+     *   transactions (no savepoints) - the inner call throws a TransactionException 'Failed to begin
+     *   transaction' ("There is already an active transaction") before its callback runs; left to
+     *   escape, it rolls the outer transaction back like any other exception of the callback;
      * - a transaction.commit or transaction.end listener failed, or the connection state after a
      *   commit listener could not be verified or cleaned up: committed, the committed transaction is
      *   not rolled back, CommitHookException (getPrevious() is the first failure, which need not be
