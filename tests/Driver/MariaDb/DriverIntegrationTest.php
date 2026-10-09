@@ -967,12 +967,24 @@ class DriverIntegrationTest extends TestCase
                 if ($childBody === null) {
                     return;
                 }
-                file_put_contents($script, "<?php\n[, \$dsn, \$user, \$password, \$marker, \$release] = \$argv;\n"
-                    . "\$pdo = new PDO(\$dsn, \$user, \$password, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);\n"
+                // The credentials go to the child in its environment, not on its command line (which
+                // every user of the machine can read in the process list)
+                file_put_contents($script, "<?php\n[, \$marker, \$release] = \$argv;\n"
+                    . "\$pdo = new PDO((string) getenv('PDO_TEST_CHILD_DSN'), (string) getenv('PDO_TEST_CHILD_USER'), (string) getenv('PDO_TEST_CHILD_PASSWORD'), [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);\n"
                     . "\$awaitRelease = static function () use (\$release): void { for (\$i = 0; \$i < 200 && !file_exists(\$release); \$i++) { usleep(100_000); } };\n"
                     . "try {\n" . $childBody . "\n} catch (PDOException \$e) {\n    echo 'child failed: ' . \$e->getMessage();\n}\n");
-                $dsn = sprintf('mysql:host=%s;port=%d;dbname=%s', $config['host'], $config['port'], $config['database']);
-                $process = proc_open([PHP_BINARY, $script, $dsn, $config['username'], $config['password'], $marker, $release], [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+                $environment = [
+                    ...getenv(),
+                    'PDO_TEST_CHILD_DSN' => sprintf('mysql:host=%s;port=%d;dbname=%s', $config['host'], $config['port'], $config['database']),
+                    'PDO_TEST_CHILD_USER' => $config['username'],
+                    'PDO_TEST_CHILD_PASSWORD' => $config['password'],
+                ];
+                // The child's own warnings and errors reach its stderr, which must stay empty
+                // (display_errors); a startup warning of the PHP installation does not: it is no
+                // failure of the scenario. PHP logs those before its settings are read - log_errors
+                // cannot stop it, only an error_log that goes nowhere (measured with PHP 8.5)
+                $php = [PHP_BINARY, '-d', 'display_errors=stderr', '-d', 'display_startup_errors=0', '-d', 'log_errors=0', '-d', 'error_log=/dev/null'];
+                $process = proc_open([...$php, $script, $marker, $release], [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, null, $environment);
                 $child = is_resource($process) ? $process : null;
                 $this->assertNotNull($child, 'child process did not start');
                 stream_set_blocking($pipes[1], false);
