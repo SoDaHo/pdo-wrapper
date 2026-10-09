@@ -250,7 +250,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      */
     protected static function validPdoClass(mixed $class): string
     {
-        if (!is_string($class) || !is_a($class, PDO::class, true) || !(new ReflectionClass($class))->isInstantiable()) {
+        if (!is_string($class) || !is_a($class, PDO::class, true) || !new ReflectionClass($class)->isInstantiable()) {
             throw new ConnectionException(
                 message: 'Database connection failed',
                 debugMessage: 'Invalid config value "pdoClass": expected the name of a class that extends PDO and can be instantiated'

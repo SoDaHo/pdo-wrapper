@@ -321,7 +321,7 @@ class DatabaseTest extends TestCase
     public function testAPdoClassThatIsNoStringIsRejected(): void
     {
         $server = ['host' => '127.0.0.1', 'database' => 'app', 'username' => 'root'];
-        $pdoObject = (new \ReflectionClass(PDO::class))->newInstanceWithoutConstructor();
+        $pdoObject = new \ReflectionClass(PDO::class)->newInstanceWithoutConstructor();
 
         foreach ([123, true, 1.5, ['PDO'], new \stdClass(), $pdoObject] as $class) {
             foreach ([

@@ -52,7 +52,7 @@ class TransactionTest extends ContractTestCase
     public function testTheTransactionMethodsOfTheBaseDriverAreFinal(): void
     {
         foreach (['beginTransaction', 'commit', 'rollback'] as $method) {
-            $this->assertTrue((new ReflectionMethod(AbstractDriver::class, $method))->isFinal(), $method);
+            $this->assertTrue(new ReflectionMethod(AbstractDriver::class, $method)->isFinal(), $method);
         }
     }
 

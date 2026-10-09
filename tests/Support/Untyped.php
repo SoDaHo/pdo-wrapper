@@ -26,6 +26,6 @@ final class Untyped
      */
     public static function create(string $class, mixed ...$arguments): object
     {
-        return (new ReflectionClass($class))->newInstance(...$arguments);
+        return new ReflectionClass($class)->newInstance(...$arguments);
     }
 }
