@@ -106,7 +106,7 @@ The list is complete: no other variable is read, and none of these anywhere else
 
 The second source is the process environment and nothing else: `getenv()` is asked with `local_only`. Without it PHP asks the web server module first, and that answers with what came with the request - under PHP-FPM the FastCGI parameters, every request header among them as `HTTP_*`. A `DB_*` value that is only a FastCGI parameter (`fastcgi_param DB_HOST ...;` in nginx) or an Apache `SetEnv` is therefore not found there. Set it where the process gets it - `env[DB_HOST] = ...` in the FPM pool, the service's or the container's environment - or load it into `$_ENV`. One thing the library cannot change: with `E` in `variables_order` (PHP's default without a `php.ini`; `php.ini-production` and `php.ini-development` leave it out) PHP-FPM fills `$_ENV` with the request's parameters as well, so a `fastcgi_param DB_HOST` still arrives through `$_ENV` there. A client cannot use that: what it sends arrives as `HTTP_*`, never as `DB_*`.
 
-A variable that is set but empty counts as not set (`DB_HOST=` in a dotenv template): a required value is then reported as missing instead of connecting with an empty one. Use a library like [sodaho/env-loader](https://github.com/sodaho/env-loader) to load `.env` files.
+A variable that is set but empty counts as not set (`DB_HOST=` in a dotenv template): an empty value in `$_ENV` leaves the process environment to answer, and a required value that has none in either is reported as missing instead of connecting with an empty one. Use a library like [sodaho/env-loader](https://github.com/sodaho/env-loader) to load `.env` files.
 
 ### The PDO Class
 

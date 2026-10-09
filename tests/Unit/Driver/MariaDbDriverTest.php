@@ -246,6 +246,26 @@ class MariaDbDriverTest extends TestCase
         }
     }
 
+    /**
+     * The first channel that has a value decides: an empty value in $_ENV (DB_HOST= in a dotenv
+     * template) has none, and the process environment answers.
+     */
+    public function testAnEmptyEnvValueLeavesTheProcessEnvironmentToAnswer(): void
+    {
+        $_ENV['DB_HOST'] = '';
+        putenv('DB_HOST=127.0.0.1');
+        $_ENV['DB_PORT'] = '59999';
+        $_ENV['DB_DATABASE'] = 'testdb';
+        $_ENV['DB_USERNAME'] = 'testuser';
+
+        try {
+            Database::fromEnv(['driver' => 'mariadb']);
+            $this->fail('Expected ConnectionException: nothing listens on the port');
+        } catch (ConnectionException $e) {
+            $this->assertStringStartsWith('MariaDB connection to 127.0.0.1:59999 failed', (string) $e->getDebugMessage());
+        }
+    }
+
     public function testTheFactoryIgnoresTheEnvironmentAndFromEnvLetsOverridesWin(): void
     {
         $_ENV['DB_HOST'] = 'env-host';

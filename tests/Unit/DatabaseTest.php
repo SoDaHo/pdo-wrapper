@@ -173,22 +173,31 @@ class DatabaseTest extends TestCase
     }
 
     /**
-     * `DB_HOST=` in a dotenv template: set, but empty. It counts as not set - a required value is
-     * then reported as missing instead of connecting with an empty one, an optional one takes its
+     * `DB_HOST=` in a dotenv template: set, but empty. It counts as not set - the first channel that
+     * has a value decides, so the process environment answers; a required value without one is then
+     * reported as missing instead of connecting with an empty one, an optional one takes its
      * default. The same for a value that is no scalar.
      */
     public function testAnEmptyEnvironmentVariableCountsAsNotSet(): void
     {
         // $_ENV
         $_ENV['DB_HOST'] = '';
-        putenv('DB_HOST=127.0.0.1'); // $_ENV has the key: it decides
         $_ENV['DB_DATABASE'] = 'app';
         $_ENV['DB_USERNAME'] = 'app';
         $this->assertMissingConfig(static fn (): DatabaseInterface => Database::fromEnv(['driver' => 'mariadb']));
-        putenv('DB_HOST');
 
         $_ENV['DB_HOST'] = ['127.0.0.1'];
         $this->assertMissingConfig(static fn (): \Sodaho\PdoWrapper\DatabaseInterface => Database::fromEnv(['driver' => 'mariadb']));
+
+        // empty, or no scalar, in $_ENV: no value there, getenv() is asked
+        foreach (['', ['127.0.0.1']] as $nothing) {
+            $_ENV['DB_HOST'] = $nothing;
+            putenv('DB_HOST=127.0.0.1');
+            $_ENV['DB_PORT'] = '59996';
+            $this->assertConnectionAttempt(static fn (): DatabaseInterface => Database::fromEnv(['driver' => 'mariadb']), 'the host from getenv()');
+            putenv('DB_HOST');
+            unset($_ENV['DB_PORT']);
+        }
 
         // null in $_ENV is no value (as before): getenv() is asked
         $_ENV['DB_HOST'] = null;

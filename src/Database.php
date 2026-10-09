@@ -213,7 +213,8 @@ class Database
      * A variable that is set but empty counts as not set (`DB_HOST=` in a dotenv template): the
      * connection then fails for a missing value instead of being opened with an empty one. A
      * value in $_ENV that is no scalar (an array) is no usable value and counts as empty. The
-     * first channel that has a value for the key decides; null in $_ENV is no value, as before.
+     * first channel that has a value for the key decides: an empty value in $_ENV leaves the
+     * process environment to answer; null in $_ENV is no value, as before.
      *
      * @param string $key Environment variable name
      *
@@ -222,14 +223,15 @@ class Database
     private static function env(string $key): ?string
     {
         // $_ENV is thread-safe, preferred
-        if (isset($_ENV[$key])) {
-            $value = is_scalar($_ENV[$key]) ? (string) $_ENV[$key] : '';
-        } else {
-            // The process environment only (local_only): without it getenv() asks the SAPI first, and
-            // under PHP-FPM that is the request - its FastCGI parameters, every request header among
-            // them as HTTP_*
-            $value = getenv($key, true); // false when it is not set
+        $value = isset($_ENV[$key]) && is_scalar($_ENV[$key]) ? (string) $_ENV[$key] : '';
+        if ($value !== '') {
+            return $value;
         }
+
+        // The process environment only (local_only): without it getenv() asks the SAPI first, and
+        // under PHP-FPM that is the request - its FastCGI parameters, every request header among
+        // them as HTTP_*
+        $value = getenv($key, true); // false when it is not set
 
         return $value === false || $value === '' ? null : $value;
     }
