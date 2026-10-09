@@ -210,10 +210,14 @@ class ChainedCommitTest extends TransactionEndTestCase
     /**
      * The driver sets completion_type to NO_CHAIN when it connects: a server default of CHAIN
      * (every new session inherits it), an INIT_COMMAND, a SET SESSION before reconnect() - each
-     * session starts with NO_CHAIN, and transactions work on it as on any other.
+     * session starts with NO_CHAIN, and transactions work on it as on any other. The server's
+     * default is put back as it was: the test database may be one other programs use as well -
+     * run this test alone (`--filter`) where they must not see CHAIN for its few milliseconds.
      */
     public function testEveryConnectionTheDriverOpensStartsWithNoChain(): void
     {
+        $before = $this->observer->query('SELECT @@GLOBAL.completion_type')->fetchColumn();
+        $this->assertIsString($before);
         $this->observer->execute("SET GLOBAL completion_type = 'CHAIN'");
         try {
             $env = TestEnvironment::mariadb();
@@ -229,7 +233,7 @@ class ChainedCommitTest extends TransactionEndTestCase
             $this->assertFalse($db->inTransaction());
             $this->assertSame([1, 2], array_column($this->rows(), 'id'));
         } finally {
-            $this->observer->execute("SET GLOBAL completion_type = 'NO_CHAIN'");
+            $this->observer->execute('SET GLOBAL completion_type = ?', [$before]);
         }
 
         $db = $this->connect(['options' => [\Pdo\Mysql::ATTR_INIT_COMMAND => "SET SESSION completion_type = 'CHAIN'"]]);
