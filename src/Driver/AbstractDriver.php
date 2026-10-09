@@ -3270,6 +3270,8 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      *
      * @param array<string, mixed> $data Column => value pairs
      *
+     * @throws QueryException When a key is an integer (see columnKey())
+     *
      * @return array{0: string, 1: string, 2: array<int, mixed>} [columns sql, values sql, params]
      */
     protected function buildInsertParts(array $data): array
@@ -3279,7 +3281,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
         $params = [];
 
         foreach ($data as $column => $value) {
-            $columns[] = $this->quoteIdentifier($column);
+            $columns[] = $this->quoteIdentifier(self::columnKey($column, 'The columns to insert'));
             $values[] = Sql::value($value, $params);
         }
 
@@ -3294,6 +3296,8 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      *
      * @param array<string, mixed> $data Column => value pairs
      *
+     * @throws QueryException When a key is an integer (see columnKey())
+     *
      * @return array{0: string, 1: array<int, mixed>} [sql, params]
      */
     protected function buildSetClause(array $data): array
@@ -3302,7 +3306,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
         $params = [];
 
         foreach ($data as $column => $value) {
-            $clauses[] = $this->quoteIdentifier($column) . ' = ' . Sql::value($value, $params);
+            $clauses[] = $this->quoteIdentifier(self::columnKey($column, 'The columns to set')) . ' = ' . Sql::value($value, $params);
         }
 
         return [implode(', ', $clauses), $params];
@@ -3315,6 +3319,8 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      * among the params (SECURITY: never pass user input as the SQL of Database::raw()).
      *
      * @param array<string, mixed> $where Column => value pairs
+     *
+     * @throws QueryException When a value is null, or a key is an integer (see columnKey())
      *
      * @return array{0: string, 1: array<int, mixed>} [sql, params] - SQL string and parameter values
      */
@@ -3333,10 +3339,29 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
                     )
                 );
             }
-            $clauses[] = $this->quoteIdentifier($column) . ' = ' . Sql::value($value, $params);
+            $clauses[] = $this->quoteIdentifier(self::columnKey($column, 'The WHERE conditions')) . ' = ' . Sql::value($value, $params);
         }
 
         return [implode(' AND ', $clauses), $params];
+    }
+
+    /**
+     * A key of a column => value array as the column name it must be. PHP turns the keys of a list
+     * and a numeric string key ('42') into integers whatever the declared type says; an integer
+     * reaching quoteIdentifier() would be a TypeError instead of a QueryException.
+     *
+     * @throws QueryException When the key is an integer
+     */
+    private static function columnKey(int|string $key, string $what): string
+    {
+        if (is_int($key)) {
+            throw new QueryException(
+                message: 'Query failed',
+                debugMessage: sprintf('%s need column names as keys, got the numeric key %d (a list, or a column named by digits alone). Pass column => value pairs.', $what, $key)
+            );
+        }
+
+        return $key;
     }
 
     /**

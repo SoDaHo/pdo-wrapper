@@ -181,7 +181,7 @@ class QueryBuilder
     {
         // Array syntax: where(['active' => 1, 'role' => 'admin'])
         if (is_array($column)) {
-            $this->guardAgainstNumericKeys($column);
+            $this->guardAgainstNumericKeys($column, 'where() with an array', 'Use where(\'column\', $value) instead.');
             foreach ($column as $col => $val) {
                 if ($val === null) {
                     throw new QueryException(
@@ -665,12 +665,23 @@ class QueryBuilder
      * @param string $operator Comparison operator
      * @param mixed $value Value to compare (null only with IS / IS NOT, the null-safe comparison)
      *
-     * @throws QueryException When the operator is not allowed, the value is null with an operator other than IS / IS NOT, or a raw expression used as the column carries bindings (as the value it may)
+     * @throws QueryException When the operator is not allowed, the value is null with an operator other than IS / IS NOT, a raw expression used as the column carries bindings (as the value it may), or the column is a string with an expression in it ("COUNT(*)": use Database::raw())
      */
     public function having(string|RawExpression $column, string $operator, mixed $value): self
     {
         $operator = $this->validateOperator($operator);
         $this->guardAgainstBoundRaw('having', [$column]);
+        // A string is a name, quoted: "COUNT(*)" would reach the server as the column `COUNT(*)`
+        if (is_string($column) && str_contains($column, '(')) {
+            throw new QueryException(
+                message: 'Query failed',
+                debugMessage: sprintf(
+                    'having() takes a column or an alias as a string, and "%s" is an expression: it would be quoted as the name of a column. Pass it as Database::raw(\'%s\'), or select it with an alias and name that.',
+                    $column,
+                    $column
+                )
+            );
+        }
 
         // "= NULL", "> NULL", "LIKE NULL" are never true: the condition would silently drop every group
         if ($value === null && $operator !== 'IS' && $operator !== 'IS NOT') {
@@ -1239,6 +1250,7 @@ class QueryBuilder
     private function step(string $column, string $sign, int|float $by, array $extra): int
     {
         $method = $sign === '+' ? 'increment' : 'decrement';
+        $this->guardAgainstNumericKeys($extra, $method . '() with $extra', 'Pass column => value pairs.');
         // MariaDB takes "Attempts" and "t.attempts" for the column "attempts": a second assignment
         // to it would silently replace the step
         foreach (array_keys($extra) as $key) {
@@ -1299,7 +1311,7 @@ class QueryBuilder
      *
      * @param array<string, mixed> $data Column => value pairs to update
      *
-     * @throws QueryException When no WHERE conditions set (safety)
+     * @throws QueryException When no WHERE conditions set (safety), or a key of $data is an integer (a list, a column named by digits alone)
      * @throws QueryException When offset(), join(), groupBy(), having(), an orderBy() without limit() or a limit() without orderBy() is set
      *
      * @return int Number of affected rows
@@ -1321,6 +1333,7 @@ class QueryBuilder
                 debugMessage: 'Cannot update with empty data'
             );
         }
+        $this->guardAgainstNumericKeys($data, 'update()', 'Pass column => value pairs.');
 
         [$whereSql, $whereParams] = $this->buildWhere();
 
@@ -1735,23 +1748,22 @@ class QueryBuilder
     }
 
     /**
-     * Guard against integer keys in where(['column' => $value]): a list (['active', 1]), or a
-     * numeric column name, whose key PHP turns into an integer whatever the declared type says.
+     * Guard against integer keys in a column => value array - where(['column' => $value]),
+     * update(), the $extra of increment()/decrement(): a list (['active', 1]), or a numeric column
+     * name, whose key PHP turns into an integer whatever the declared type says. Without the guard
+     * the integer would reach the quoting, a TypeError instead of a QueryException.
      *
-     * @param array<array-key, mixed> $conditions
+     * @param array<array-key, mixed> $pairs
      *
      * @throws QueryException When a key is an integer
      */
-    private function guardAgainstNumericKeys(array $conditions): void
+    private function guardAgainstNumericKeys(array $pairs, string $what, string $hint): void
     {
-        foreach (array_keys($conditions) as $key) {
+        foreach (array_keys($pairs) as $key) {
             if (is_int($key)) {
                 throw new QueryException(
                     message: 'Query failed',
-                    debugMessage: sprintf(
-                        'where() with an array needs column names as keys, got the numeric key %d. Use where(\'column\', $value) instead.',
-                        $key
-                    )
+                    debugMessage: sprintf('%s needs column names as keys, got the numeric key %d. %s', $what, $key, $hint)
                 );
             }
         }

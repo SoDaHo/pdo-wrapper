@@ -452,7 +452,7 @@ $perDay = $db->table('orders')
     ->get();
 ```
 
-A string given to `groupBy()` (and `select()`) is split at commas into column names, so an expression belongs in `Database::raw()`. `having()` with `null` throws a `QueryException` (`= NULL` is never true) unless the operator is `IS` or `IS NOT`, the null-safe comparison.
+A string given to `groupBy()` (and `select()`) is split at commas into column names, so an expression belongs in `Database::raw()`. `having()` with `null` throws a `QueryException` (`= NULL` is never true) unless the operator is `IS` or `IS NOT`, the null-safe comparison. A string column of `having()` is a name: one with an expression in it (`'COUNT(*)'`) throws a `QueryException` - pass `Database::raw('COUNT(*)')`, or an alias.
 
 ### Aggregates
 
