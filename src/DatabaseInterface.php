@@ -620,9 +620,10 @@ interface DatabaseInterface
     /**
      * Update multiple rows by their key column.
      *
-     * Every row is checked before the first is sent - the key column in each row, every key a
+     * The key column must be a plain column name, also for a batch without rows. Every row is
+     * checked before the first is sent - each row an array, the key column in each row, every key a
      * plain column name, every key value (not null, also in a row with nothing to set), every value
-     * one that can be bound -: a refused row leaves nothing written, also inside a transaction of
+     * one that can be bound; no SQL is written for it -: a refused row leaves nothing written, also inside a transaction of
      * the caller, and no hook fires for it. Without an open transaction, the rows are updated in an
      * own transaction with the same outcomes as transaction(). Open counts one begun through the
      * library that ended behind its back (a DDL statement or raw PDO ended it): the batch is then
@@ -635,7 +636,7 @@ interface DatabaseInterface
      * @param array<int, array<string, mixed>> $rows Array of rows with key column
      * @param string $keyColumn Column to match rows (default: 'id')
      *
-     * @throws Exception\QueryException When a row is refused by the check above (nothing is sent), when an update fails, or is refused because the transaction begun through the library has ended behind its back
+     * @throws Exception\QueryException When the key column or a row is refused by the check above (nothing is sent), when an update fails, or is refused because the transaction begun through the library has ended behind its back
      * @throws Exception\TransactionException When the own transaction's commit failed, or the own transaction was ended while the batch ran - a listener's reconnect(), an error handler inside a PDO call (a CommitFailedException with outcome 'lost'; what is open then is left alone) -, when PDO cannot tell whether a transaction is open ('Connection state unknown', nothing is sent), and where it would begin its own transaction from inside a listener that may not run one (ListenerTransactionException, nothing is sent; see transaction())
      * @throws Exception\CommitHookException When committed, but a transaction.commit or transaction.end listener failed or the connection state after a commit listener could not be verified
      *

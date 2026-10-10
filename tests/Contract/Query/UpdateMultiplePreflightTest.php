@@ -38,7 +38,7 @@ class UpdateMultiplePreflightTest extends ContractTestCase
     }
 
     /**
-     * @return array<string, array{list<array<array-key, mixed>>, string, string}>
+     * @return array<string, array{list<mixed>, string, string}>
      */
     public static function refusedBatches(): array
     {
@@ -55,11 +55,13 @@ class UpdateMultiplePreflightTest extends ContractTestCase
             'an unbindable key value in a row with nothing to set' => [[['id' => 1, 'name' => 'changed'], ['id' => []]], 'id', 'Row 2 of updateMultiple(): Cannot bind a value of type array (parameter #1)'],
             'a null key value in a row with nothing to set' => [[['id' => 1, 'name' => 'changed'], ['id' => null]], 'id', 'NULL value for column "id"'],
             'a null key value alone' => [[['id' => null]], 'id', 'NULL value for column "id"'],
+            'no rows, a qualified key column' => [[], 'batch.id', 'The key column of updateMultiple() need the plain names'],
+            'a second row that is no array' => [[['id' => 1, 'name' => 'changed'], 123], 'id', 'Row 2 of updateMultiple() is no array but int: pass column => value pairs, the key column among them. Nothing was sent.'],
         ];
     }
 
     /**
-     * @param list<array<array-key, mixed>> $rows
+     * @param list<mixed> $rows
      */
     #[\PHPUnit\Framework\Attributes\DataProvider('refusedBatches')]
     public function testARefusedRowLeavesNothingWrittenInsideTheCallersTransaction(array $rows, string $keyColumn, string $why): void
@@ -121,7 +123,7 @@ class UpdateMultiplePreflightTest extends ContractTestCase
     }
 
     /**
-     * @param list<array<array-key, mixed>> $rows
+     * @param list<mixed> $rows
      */
     #[\PHPUnit\Framework\Attributes\DataProvider('refusedBatches')]
     public function testARefusedRowBeginsNoTransactionOfItsOwn(array $rows, string $keyColumn, string $why): void

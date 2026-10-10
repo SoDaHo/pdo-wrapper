@@ -3488,8 +3488,9 @@ abstract class AbstractDriver implements DatabaseInterface
     /**
      * Update multiple rows by their key column.
      *
-     * Each row must contain the key column for matching. Every row is checked before the first
-     * is sent (the key column, its presence, every key, every key value - also of a row with
+     * Each row must contain the key column for matching. The key column is checked first, also
+     * for a batch without rows. Every row is checked before the first
+     * is sent (that it is an array, the key column's presence, every key, every key value - also of a row with
      * nothing to set, which is skipped only once its key value passed -, and every value that
      * could not be bound): a refused row leaves nothing written, also inside a transaction of the
      * caller, and no hook fires for it. Without an open transaction, the
@@ -3505,7 +3506,7 @@ abstract class AbstractDriver implements DatabaseInterface
      * @param array<int, array<string, mixed>> $rows Array of rows, each with key column
      * @param string $keyColumn Column to match rows (default: 'id')
      *
-     * @throws QueryException When a row is missing the key column, the key column or a key is no plain column name, a key value is null, or a value to set or match cannot be bound (see query()) - before anything is sent; or when an update fails, or is refused because the transaction this driver began has ended behind its back
+     * @throws QueryException When the key column is no plain column name (also without rows), a row is no array or is missing the key column, a key is no plain column name, a key value is null, or a value to set or match cannot be bound (see query()) - before anything is sent; or when an update fails, or is refused because the transaction this driver began has ended behind its back
      * @throws TransactionException When the own transaction's commit failed, or the own transaction was ended while the batch ran - a listener's reconnect(), an error handler inside a PDO call (a CommitFailedException with outcome 'lost'; what is open then is left alone) -, when PDO cannot tell whether a transaction is open ('Connection state unknown', nothing is sent), and where it would begin its own transaction from inside a listener that may not run one (ListenerTransactionException, nothing is sent; see transaction())
      * @throws CommitHookException When committed, but a transaction.commit or transaction.end listener failed or the connection state after a commit listener could not be verified
      *
@@ -3513,6 +3514,8 @@ abstract class AbstractDriver implements DatabaseInterface
      */
     public function updateMultiple(string $table, #[\SensitiveParameter] array $rows, string $keyColumn = 'id'): int
     {
+        // The key column first: a qualified one is refused for a batch without rows as well
+        self::columnKey($keyColumn, 'The key column of updateMultiple()');
         if (empty($rows)) {
             return 0;
         }
@@ -3524,8 +3527,8 @@ abstract class AbstractDriver implements DatabaseInterface
         // nothing would undo it, and a caller that catches the refusal and commits would keep part
         // of the batch. Refused like an argument: no hook fires for it. No SQL is written here: a
         // raw expression is rendered once, by the UPDATE that sends it
-        self::columnKey($keyColumn, 'The key column of updateMultiple()');
         foreach (array_values($rows) as $at => $row) {
+            $row = self::batchRow($row, $at);
             if (!array_key_exists($keyColumn, $row)) {
                 throw new QueryException(
                     message: 'Update failed',
@@ -3695,6 +3698,29 @@ abstract class AbstractDriver implements DatabaseInterface
         }
 
         return [implode(' AND ', $clauses), $params];
+    }
+
+    /**
+     * A row of updateMultiple() as the array it must be: code without static analysis may pass a
+     * list of anything, and a number reaching array_key_exists() would be a TypeError instead of a
+     * QueryException.
+     *
+     * @param int $at The row's place in the batch, from 0
+     *
+     * @throws QueryException When the row is no array
+     *
+     * @return array<array-key, mixed>
+     */
+    private static function batchRow(#[\SensitiveParameter] mixed $row, int $at): array
+    {
+        if (!is_array($row)) {
+            throw new QueryException(
+                message: 'Update failed',
+                debugMessage: sprintf('Row %d of updateMultiple() is no array but %s: pass column => value pairs, the key column among them. Nothing was sent.', $at + 1, get_debug_type($row))
+            );
+        }
+
+        return $row;
     }
 
     /**
