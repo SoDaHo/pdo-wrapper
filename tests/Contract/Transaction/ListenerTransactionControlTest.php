@@ -11,13 +11,16 @@ use Sodaho\PdoWrapper\Exception\CommitHookException;
 use Sodaho\PdoWrapper\Exception\ListenerTransactionException;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Tests\Contract\ContractTestCase;
+use Sodaho\PdoWrapper\Tests\Support\ScenarioPdo;
 use Throwable;
 
 /**
- * Transaction control only in a transaction.end listener: beginTransaction(), commit(), rollback(),
- * transaction() - and updateMultiple() where it would begin its own transaction - called from inside
- * a listener of any other event throw a ListenerTransactionException and do nothing, with or without
- * an open transaction. A transaction.end listener runs a transaction of its own.
+ * Transaction control from inside a listener, in three sentences: a transaction.end listener may
+ * steer transactions. A query.before, query or error listener may run transaction() or
+ * updateMultiple() - which begin and end a transaction of their own inside the listener - when no
+ * transaction was open as it was entered, and never beginTransaction(), commit() or rollback(). A
+ * transaction.begin, transaction.commit or transaction.rollback listener may do none of it.
+ * Refused calls throw a ListenerTransactionException and do nothing.
  */
 class ListenerTransactionControlTest extends ContractTestCase
 {
@@ -82,7 +85,7 @@ class ListenerTransactionControlTest extends ContractTestCase
                 $this->assertInstanceOf(ListenerTransactionException::class, $refused[0], "{$event}: {$method}");
                 $this->assertSame('Transaction control refused inside a listener', $refused[0]->getMessage());
                 $this->assertStringStartsWith(
-                    ($method === 'transaction()' ? 'beginTransaction()' : $method) . " was called from inside a {$event} listener",
+                    "{$method} was called from inside a {$event} listener",
                     (string) $refused[0]->getDebugMessage(),
                     "{$event}: {$method}"
                 );
@@ -157,13 +160,99 @@ class ListenerTransactionControlTest extends ContractTestCase
     }
 
     /**
-     * A statement listener without an open transaction is refused as well: a transaction it began in
-     * query.before and ended in query would take the caller's statement in autocommit in and - rolled
-     * back - out. The statement itself goes through in autocommit, nothing of the listener's is there.
+     * The closed forms from a statement listener entered while no transaction was open:
+     * transaction() and updateMultiple() run a transaction of their own inside the listener, with
+     * its own number and end, before (query.before) or after (query, error) the caller's statement,
+     * which runs in autocommit. Committed, the listener's work is there; rolled back, it is gone -
+     * and the caller's statement is not taken out with it.
+     *
+     * @return iterable<string, array{string, string, bool}>
      */
-    public function testAStatementListenerWithoutAnOpenTransactionIsRefusedToo(): void
+    public static function closedFormsOutsideATransaction(): iterable
     {
-        foreach (self::controls() as $method => $control) {
+        foreach (['query.before', 'query', 'error'] as $event) {
+            foreach (['transaction()', 'updateMultiple()'] as $method) {
+                foreach ([true, false] as $commits) {
+                    yield sprintf('%s: %s %s', $event, $method, $commits ? 'committed' : 'rolled back') => [$event, $method, $commits];
+                }
+            }
+        }
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('closedFormsOutsideATransaction')]
+    public function testAStatementListenerOutsideATransactionRunsTheClosedForms(string $event, string $method, bool $commits): void
+    {
+        $observer = $this->connect();
+        $this->db->insert('ledger', ['id' => 50, 'name' => 'old']);
+        $ends = [];
+        $this->db->on('transaction.end', static function (array $data) use (&$ends): void {
+            $ends[] = [$data['outcome'], $data['transaction']];
+        });
+        $armed = true;
+        $openAtEntry = null;
+        $this->db->on($event, function () use (&$armed, &$openAtEntry, $method, $commits): void {
+            if (!$armed) {
+                return; // the listener's own statements tell the event again
+            }
+            $armed = false;
+            $openAtEntry = $this->db->currentTransaction() !== null || $this->db->inTransaction();
+            try {
+                if ($method === 'transaction()') {
+                    $this->db->transaction(static function (DatabaseInterface $db) use ($commits): void {
+                        $db->update('ledger', ['name' => 'by the listener'], ['id' => 50]);
+                        if (!$commits) {
+                            throw new LogicException('the listener\'s transaction fails');
+                        }
+                    });
+                } else {
+                    $rows = [['id' => 50, 'name' => 'by the listener']];
+                    if (!$commits) {
+                        $rows[] = ['id' => 50, 'no_such_column' => 'fails on the server'];
+                    }
+                    $this->db->updateMultiple('ledger', $rows);
+                }
+            } catch (LogicException | QueryException) {
+                // the listener's transaction was rolled back
+            }
+        });
+
+        if ($event === 'error') {
+            try {
+                $this->db->query('SELECT * FROM ledger_missing');
+                $this->fail('Expected QueryException');
+            } catch (QueryException) {
+                // the caller's statement failed in autocommit; the error listener ran
+            }
+        } else {
+            $this->db->insert('ledger', ['id' => 1, 'name' => 'the caller']);
+        }
+
+        $this->assertFalse($openAtEntry, 'no transaction was open as the listener was entered');
+        $this->assertSame([[$commits ? 'committed' : 'rolled_back', 1]], $ends, 'the listener\'s own transaction, told once');
+        $this->assertNull($this->db->currentTransaction());
+        $this->assertFalse($this->db->inTransaction());
+        $this->assertSame($commits ? 'by the listener' : 'old', $observer->findOne('ledger', ['id' => 50])['name'] ?? null);
+        if ($event !== 'error') {
+            $this->assertSame('the caller', $observer->findOne('ledger', ['id' => 1])['name'] ?? null, 'the caller\'s statement ran in autocommit, outside the listener\'s transaction');
+        }
+    }
+
+    /**
+     * beginTransaction(), commit() and rollback() stay refused in a statement listener without an
+     * open transaction: a transaction begun in query.before and left open would take the caller's
+     * statement in, and a rollback in query take it back out. So does the raw control of the
+     * callback of a transaction() such a listener runs - it runs inside the listener. The
+     * caller's statement goes through in autocommit, nothing of the listener's is there.
+     */
+    public function testAStatementListenerOutsideATransactionRefusesTheRawControl(): void
+    {
+        $controls = self::controls();
+        unset($controls['transaction()']);
+        $controls['commit() in the callback of transaction()'] = static fn (DatabaseInterface $db): mixed => $db->transaction(static function (DatabaseInterface $db): void {
+            $db->insert('ledger', ['id' => 99, 'name' => 'by the listener']);
+            $db->commit();
+        });
+        foreach ($controls as $method => $control) {
             foreach (['query.before', 'query', 'error'] as $event) {
                 $db = $this->connect();
                 $db->delete('ledger', ['id' => 1]);
@@ -174,11 +263,10 @@ class ListenerTransactionControlTest extends ContractTestCase
                         return;
                     }
                     $armed = false;
-                    $outside = $db->currentTransaction() === null && !$db->inTransaction();
                     try {
                         $control($db);
                     } catch (Throwable $e) {
-                        $refused[] = [$e, $outside];
+                        $refused[] = $e;
                     }
                 });
 
@@ -194,11 +282,10 @@ class ListenerTransactionControlTest extends ContractTestCase
                 }
 
                 $this->assertCount(1, $refused, "{$event}: {$method}");
-                [$e, $outside] = $refused[0];
-                $this->assertTrue($outside, "{$event}: {$method}: no transaction was open when the listener ran");
+                $e = $refused[0];
                 $this->assertInstanceOf(ListenerTransactionException::class, $e, "{$event}: {$method}");
                 $this->assertStringStartsWith(
-                    ($method === 'transaction()' ? 'beginTransaction()' : $method) . " was called from inside a {$event} listener",
+                    (str_starts_with($method, 'commit()') ? 'commit()' : $method) . " was called from inside a {$event} listener of this driver:",
                     (string) $e->getDebugMessage(),
                     "{$event}: {$method}"
                 );
@@ -207,6 +294,39 @@ class ListenerTransactionControlTest extends ContractTestCase
                 $this->assertSame([], $db->table('ledger')->where('name', 'by the listener')->get(), "{$event}: {$method}: nothing the listener tried");
             }
         }
+    }
+
+    /**
+     * A statement listener entered while PDO cannot tell its state: counted as open, the closed
+     * forms are refused (fail-closed); the caller's statement goes through.
+     */
+    public function testAStateThatCannotBeReadAtTheListenerCountsAsOpen(): void
+    {
+        $db = $this->connect(['pdoClass' => ScenarioPdo::class]);
+        $pdo = $db->getPdo();
+        $this->assertInstanceOf(ScenarioPdo::class, $pdo);
+        $refused = null;
+        $armed = true;
+        $db->on('query.before', static function () use ($db, $pdo, &$armed, &$refused): void {
+            if (!$armed) {
+                return;
+            }
+            $armed = false;
+            $pdo->stateUnreadable = false; // read once, as the listener was entered
+            try {
+                $db->transaction(static fn (DatabaseInterface $db): int => $db->insert('ledger', ['id' => 99, 'name' => 'by the listener']));
+            } catch (ListenerTransactionException $e) {
+                $refused = $e;
+            }
+        });
+
+        $pdo->stateUnreadable = true;
+        $db->insert('ledger', ['id' => 1, 'name' => 'the caller']);
+
+        $this->assertInstanceOf(ListenerTransactionException::class, $refused);
+        $this->assertStringStartsWith('transaction() was called from inside a query.before listener of this driver entered inside a transaction', (string) $refused->getDebugMessage());
+        $this->assertNotNull($db->findOne('ledger', ['id' => 1]));
+        $this->assertNull($db->findOne('ledger', ['id' => 99]));
     }
 
     /**

@@ -172,9 +172,11 @@ interface DatabaseInterface
      * this library other than a transaction.end listener (query.before, query, error - in the middle
      * of the caller's statement -, transaction.begin, transaction.commit, transaction.rollback - in
      * the middle of the caller's transaction), it refuses and begins nothing, and so do commit() and
-     * rollback(): such a listener that needs a transaction uses a connection of its own. A
-     * transaction.end listener (the transaction has ended) may run one of its own, with its own
-     * number and end; transaction.end listeners that each begin one whose end runs them again are
+     * rollback(). A transaction.end listener (the transaction has ended) may run one of its own,
+     * with its own number and end; a query.before, query or error listener entered while no
+     * transaction was open may run one through transaction() or updateMultiple(), which end it
+     * inside the listener; any other listener that needs a transaction uses a connection of its own.
+     * transaction.end listeners that each begin one whose end runs them again are
      * stopped after 32 levels with a LogicException.
      *
      * @throws Exception\ListenerTransactionException When called from inside a listener of this library other than a transaction.end listener (nothing is begun)
@@ -272,6 +274,13 @@ interface DatabaseInterface
      * Execute a callback within a transaction.
      * Auto-commits on success, auto-rollback on exception.
      *
+     * From inside a listener it runs where a transaction of its own is the listener's alone: in a
+     * transaction.end listener, and in a query.before, query or error listener entered while no
+     * transaction was open (the transaction begins and ends inside the listener); anywhere else it
+     * refuses and begins nothing (Exception\ListenerTransactionException, see Traits\HasHooks).
+     * The callback runs inside the listener all the same: its own commit() or rollback() is refused
+     * where the listener's would be.
+     *
      * What can go wrong:
      * - the transaction could not be started (BEGIN failed, a transaction.begin listener threw - a
      *   ListenerTransactionException among others, when it tried to steer the transaction -, or such
@@ -328,7 +337,7 @@ interface DatabaseInterface
      *
      * @param Closure $callback Receives the driver instance
      *
-     * @throws Exception\TransactionException When the transaction could not be started (see beginTransaction())
+     * @throws Exception\TransactionException When the transaction could not be started (see beginTransaction()), and when called from inside a listener that may not run it (ListenerTransactionException, nothing is begun)
      * @throws Exception\CommitFailedException When the commit failed or was refused; for the commit this method runs itself $outcome is 'rolled_back' or 'lost' (a failed commit() the callback called itself and let escape keeps what that commit gave it: null, or 'lost' if it told the end itself). A TransactionException
      * @throws Exception\CommitHookException When committed, but a transaction.commit or transaction.end listener failed or the connection state after a commit listener could not be verified
      * @throws \Throwable Re-throws the callback, begin listener or commit exception after rollback
@@ -622,7 +631,7 @@ interface DatabaseInterface
      * @param string $keyColumn Column to match rows (default: 'id')
      *
      * @throws Exception\QueryException
-     * @throws Exception\TransactionException When the own transaction's commit failed, or the own transaction was ended while the batch ran - a listener's reconnect(), an error handler inside a PDO call (a CommitFailedException with outcome 'lost'; what is open then is left alone) -, when PDO cannot tell whether a transaction is open ('Connection state unknown', nothing is sent), and when called from inside a listener where it would begin its own transaction (ListenerTransactionException)
+     * @throws Exception\TransactionException When the own transaction's commit failed, or the own transaction was ended while the batch ran - a listener's reconnect(), an error handler inside a PDO call (a CommitFailedException with outcome 'lost'; what is open then is left alone) -, when PDO cannot tell whether a transaction is open ('Connection state unknown', nothing is sent), and where it would begin its own transaction from inside a listener that may not run one (ListenerTransactionException, nothing is sent; see transaction())
      * @throws Exception\CommitHookException When committed, but a transaction.commit or transaction.end listener failed or the connection state after a commit listener could not be verified
      *
      * @return int Number of affected rows
