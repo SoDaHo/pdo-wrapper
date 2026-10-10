@@ -12,11 +12,13 @@ use Sodaho\PdoWrapper\Database;
 use Sodaho\PdoWrapper\DatabaseInterface;
 use Sodaho\PdoWrapper\Driver\FrozenExpression;
 use Sodaho\PdoWrapper\Driver\MariaDbDriver;
+use Sodaho\PdoWrapper\Exception\CommitHookException;
 use Sodaho\PdoWrapper\Exception\ConnectionException;
 use Sodaho\PdoWrapper\Exception\NamedLockReentryException;
 use Sodaho\PdoWrapper\Exception\NamedLocksHeldException;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Exception\RedactedPdoException;
+use Sodaho\PdoWrapper\Exception\TransactionException;
 use Sodaho\PdoWrapper\Exception\UniqueViolationException;
 use Sodaho\PdoWrapper\Schema\Schema;
 use Sodaho\PdoWrapper\Tests\Support\StatementClassPdo;
@@ -139,6 +141,52 @@ class RedactParametersTest extends TestCase
             $this->assertStringNotContainsString(self::SECRET, (string) $e->getDebugMessage());
         }
         $db->releaseNamedLock(self::SECRET);
+    }
+
+    /**
+     * A transaction listener's PDOException - its own statement on raw PDO, failed over a duplicate
+     * of a bound secret - is replaced like a statement listener's: in the TransactionException of a
+     * begin or rollback listener, in the CommitHookException of a commit or end listener (its
+     * failures and debug message), in the TransactionException and the 'error' payload of an end
+     * listener after a rollback (Opus review of the eighth candidate: the library wrapped them
+     * unredacted). A RedactedPdoException with the codes stands in for each.
+     */
+    public function testWithTheOptionATransactionListenersPdoExceptionCarriesNoValue(): void
+    {
+        foreach ([
+            'transaction.begin' => [false, TransactionException::class],
+            'transaction.rollback' => [true, TransactionException::class],
+            'transaction.commit' => [false, CommitHookException::class],
+            'transaction.end' => [false, CommitHookException::class],
+            'transaction.end after a rollback' => [true, TransactionException::class],
+        ] as $case => [$rollback, $class]) {
+            [$db, $payloads] = $this->driver(true);
+            $armed = true;
+            $db->on(explode(' ', $case)[0], static function () use ($db, &$armed): void {
+                if ($armed) {
+                    $armed = false;
+                    $db->getPdo()->prepare('INSERT INTO ' . self::TABLE . ' (id, email) VALUES (?, ?)')->execute([9, self::SECRET]);
+                }
+            });
+
+            try {
+                $db->beginTransaction();
+                $rollback ? $db->rollback() : $db->commit();
+                $this->fail('Expected ' . $class . ': ' . $case);
+            } catch (TransactionException|CommitHookException $e) {
+                $this->assertInstanceOf($class, $e, $case);
+                $failure = $e instanceof CommitHookException ? $e->failures[0] : $e->getPrevious();
+                $this->assertInstanceOf(RedactedPdoException::class, $failure, $case);
+                $this->assertSame(['23000', 1062], [$failure->getCode(), $failure->errorInfo[1] ?? null], $case . ': the codes are kept');
+                $this->assertNoSecretIn($e);
+            }
+            foreach ($payloads as $payload) {
+                $this->assertNoSecretInValue($payload, $case . ': ' . (string) $payload['event']);
+            }
+            if ($db->getPdo()->inTransaction()) {
+                $db->getPdo()->rollBack();
+            }
+        }
     }
 
     /**

@@ -1216,7 +1216,9 @@ abstract class AbstractDriver implements DatabaseInterface
             }
         } catch (PDOException $e) {
             // The begin failed, and with it the listener's codes are the caller's: nothing went
-            // through that a retry would run twice
+            // through that a retry would run twice. Under redactParameters without the database's
+            // message, as from a statement listener (Opus review of the eighth candidate)
+            $e = $this->withoutValues($e);
             $failure = new TransactionException(
                 message: 'Failed to begin transaction',
                 previous: $e,
@@ -1795,7 +1797,7 @@ abstract class AbstractDriver implements DatabaseInterface
                     $listener(['outcome' => $outcome, 'error' => $error, 'transaction' => $at[0], 'depth' => $at[1]]);
                 });
             } catch (Throwable $e) {
-                $failures[] = $e;
+                $failures[] = $e instanceof PDOException ? $this->withoutValues($e) : $e; // under redactParameters without the database's message
             }
         }
 
@@ -1887,7 +1889,7 @@ abstract class AbstractDriver implements DatabaseInterface
                     $listener(['transaction' => $at[0], 'depth' => $at[1]]);
                 });
             } catch (Throwable $e) {
-                $failures[] = $e;
+                $failures[] = $e instanceof PDOException ? $this->withoutValues($e) : $e; // under redactParameters without the database's message
             }
 
             try {
@@ -2150,6 +2152,7 @@ abstract class AbstractDriver implements DatabaseInterface
         try {
             $this->trigger('transaction.rollback', ['transaction' => $at[0], 'depth' => $at[1]]);
         } catch (PDOException $e) {
+            $e = $this->withoutValues($e); // under redactParameters without the database's message, as from a statement listener
             $pending = new TransactionException(
                 message: 'Failed to rollback transaction',
                 previous: $e,
