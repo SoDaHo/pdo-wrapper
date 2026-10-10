@@ -1020,7 +1020,7 @@ This library protects against SQL injection through:
 
 - **Prepared statements** for all values (WHERE, INSERT, UPDATE) - the one exception is a `Database::raw()` expression given as a value, which is inlined by design
 - **Identifier quoting** for all column and table names
-- **Operator whitelist** validation (only `=`, `!=`, `<>`, `<`, `>`, `<=`, `>=`, `LIKE`, `NOT LIKE`, `IS`, `IS NOT`)
+- **Operator whitelist** validation (only `=`, `!=`, `<>`, `<`, `>`, `<=`, `>=`, `LIKE`, `NOT LIKE`, `IS`, `IS NOT`); an operator of `where()` that is no string - an object, also one whose class is named `Like` or whose `__toString()` says `=` - is refused by its type, never cast or read as one (`null` with three arguments is equality, as `where(column: 'id', value: 5)` passes it)
 - **Connection values that cannot redirect the connection**: `host`, `database` and `charset` are rejected with a `ConnectionException` before connecting if they contain a `;` (PDO's DSN separator) or NUL; `port` must be a whole number between 1 and 65535; the config arrays are marked `#[\SensitiveParameter]`, so PHP keeps the password out of stack traces
 - **No multi-statements** by default (see [Connection Options](#connection-options))
 

@@ -180,7 +180,7 @@ class QueryBuilder
      * @param mixed $operatorOrValue Operator or value (if 2 args)
      * @param mixed $value Value (if 3 args)
      *
-     * @throws QueryException When the value is null with an operator other than IS / IS NOT (use whereNull()/whereNotNull()), the operator is not allowed, the array form has a numeric key, or the column is an expression with bindings
+     * @throws QueryException When the value is null with an operator other than IS / IS NOT (use whereNull()/whereNotNull()), the operator is not allowed or no string (null with three arguments is equality, as for where(column: 'id', value: 5)), the array form has a numeric key, or the column is an expression with bindings
      */
     public function where(#[\SensitiveParameter] string|RawExpression|array $column, #[\SensitiveParameter] mixed $operatorOrValue = null, #[\SensitiveParameter] mixed $value = null): self
     {
@@ -216,9 +216,19 @@ class QueryBuilder
             $operator = '=';
         } elseif ($operatorOrValue === null) {
             $operator = '=';
+        } elseif (!is_string($operatorOrValue)) {
+            // Anything but a string is no operator - refused by its type, never read as one: an object
+            // of a class named Like was the operator LIKE in the eighth candidate (Astra review)
+            throw new QueryException(
+                message: 'Query failed',
+                debugMessage: sprintf(
+                    'Invalid operator: an operator is a string, %s given. Allowed: %s',
+                    get_debug_type($operatorOrValue),
+                    implode(', ', self::ALLOWED_OPERATORS)
+                )
+            );
         } else {
-            // Anything but a string is no operator: named by its type, validateOperator() refuses it
-            $operator = $this->validateOperator(is_string($operatorOrValue) ? $operatorOrValue : get_debug_type($operatorOrValue));
+            $operator = $this->validateOperator($operatorOrValue);
         }
 
         // where('col', null) and where('col', '=', null): a NULL comparison never matches by accident.

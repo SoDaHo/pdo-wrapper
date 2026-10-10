@@ -125,25 +125,43 @@ class EdgeCaseRenderingTest extends TestCase
     }
 
     /**
-     * An operator that is no string is named by its type, not cast: an int is no operator, and an
-     * object whose __toString() says "=" is none either (3.1.2 cast it and took it).
+     * An operator that is no string is refused by its type, never cast and never read as one: an
+     * int, an object whose __toString() says "=" (3.1.2 cast it and took it), and objects of the
+     * classes Like and Is of the global namespace, whose type names read like operators - the
+     * eighth candidate took them for LIKE and IS, and an equality became a pattern match (Astra
+     * review). The message is static, the type only in the debug message; nothing is added.
      */
-    public function testAnOperatorThatIsNoStringIsNamedByItsType(): void
+    public function testAnOperatorThatIsNoStringIsRefusedByItsType(): void
     {
+        require_once __DIR__ . '/../Support/OperatorNamedClasses.php';
         $equals = new class () {
             public function __toString(): string
             {
                 return '=';
             }
         };
-        foreach ([[1, 'int'], [$equals, 'class@anonymous']] as [$operator, $type]) {
+        $operators = [[new \Like(), 'Like'], [new \Is(), 'Is'], [1, 'int'], [1.5, 'float'], [true, 'bool'], [['='], 'array'], [$equals, 'class@anonymous']];
+        foreach ($operators as [$operator, $type]) {
+            $query = $this->table('users');
             try {
-                $this->table('users')->where('id', $operator, 1);
+                $query->where('username', $operator, '%');
                 $this->fail('Expected QueryException: ' . $type);
             } catch (QueryException $e) {
-                $this->assertStringStartsWith('Invalid operator "' . $type . '"', $e->getDebugMessage() ?? '', $type);
+                $this->assertSame('Query failed', $e->getMessage(), $type);
+                $this->assertStringStartsWith('Invalid operator: an operator is a string, ' . $type . ' given.', $e->getDebugMessage() ?? '', $type);
             }
+            $this->assertSame('SELECT * FROM `users`', $query->toSql()[0], $type . ': nothing added');
         }
+    }
+
+    /**
+     * Null with three arguments is equality, as in 3.1.2: where(column: 'id', value: 5) leaves the
+     * operator at its default, which a positional null cannot be told apart from.
+     */
+    public function testANullOperatorWithThreeArgumentsIsEquality(): void
+    {
+        $this->assertSame('SELECT * FROM `users` WHERE `id` = ?', $this->table('users')->where('id', null, 5)->toSql()[0]);
+        $this->assertSame('SELECT * FROM `users` WHERE `id` = ?', $this->table('users')->where(column: 'id', value: 5)->toSql()[0]);
     }
 
     // =========================================================================
