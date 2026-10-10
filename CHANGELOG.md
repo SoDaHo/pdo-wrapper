@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- **Regression of 3.1.2:** a manual transaction (`beginTransaction()`) that the server ended behind the library's back - a DDL statement that went through committed it, raw PDO ended it - could not be ended: `rollback()` sent a `ROLLBACK`, PDO answered "There is no active transaction", and the library went on holding the transaction (`currentTransaction()` its number, `inTransaction()` false) and refusing every statement, `releaseNamedLock()` included - a named lock taken around the transaction leaked until the connection ended. `rollback()` now ends that state: nothing is sent, no `transaction.rollback` listener runs, and `transaction.end` reports `lost` with a `TransactionException` `Transaction ended outside this library` as error (the failed statement as its previous, where there is one); the connection works again. After a failing DDL statement or a lock wait timeout under `innodb_rollback_on_timeout` `rollback()` already did so - but the README's pattern asked `inTransaction()` alone, which is `false` there, and skipped it. The pattern now asks `currentTransaction() !== null || inTransaction()` (README, Transactions and Named Locks); the refusal of a statement in that state names `rollback()` as the way out.
+
 ## [3.1.2] - 2026-10-09
 
 A patch release of fixes. Some of them refuse what went through before, because what went through was wrong - those a caller may notice are under "Changed": a statement after the server ended the library's transaction (it was committed on its own), an empty `host`/`database`/`username` (pdo_mysql took it for the socket, no database, an anonymous login), named locks under a database name with a `:` (ambiguous on the server). No public API is renamed or removed.

@@ -350,7 +350,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
                 [$why, $wayOut] = match (true) {
                     $gone === null => [
                         'PDO reports no transaction any more, although the one this library began has not been ended here: a DDL statement committed it implicitly, or it was ended on raw PDO.',
-                        'End it - transaction() does so itself; after a manual beginTransaction() the next beginTransaction() tells its end as lost -, then run the whole transaction again.',
+                        'Call rollback() - transaction() does so itself; it sends nothing and tells the end as lost -, then run the whole transaction again.',
                     ],
                     $gone[1] => [
                         'the server ended the transaction this library began when an earlier statement failed (the previous exception): rolled back, or committed implicitly (a DDL statement).',
@@ -1787,7 +1787,11 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      * failures reach only the 'error' hook (as on every 'lost'). The same holds after any other
      * failed statement when the driver, asked before the ROLLBACK (refreshTransactionState()),
      * finds the transaction gone: on MariaDB a statement with an implicit commit that failed
-     * has committed it, and the rows written before it are in the database. When the driver
+     * has committed it, and the rows written before it are in the database. And so for a
+     * transaction this library began that PDO no longer reports without a failure behind it (a
+     * DDL statement that went through, raw PDO): nothing is sent - a ROLLBACK would fail for want
+     * of a transaction and leave the library holding it, every statement refused -, 'lost' with
+     * a TransactionException 'Transaction ended outside this library' as error. When the driver
      * cannot find out, the ROLLBACK is sent all the same, but 'lost' is told and no rollback
      * listener runs: it confirms nothing. So after a commit() of this transaction that failed on a
      * session that may chain transactions ($unclearCommit): 'lost' with the failed commit as
@@ -1826,6 +1830,24 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
         $gone = $this->goneTransaction();
         if ($gone !== null && $this->reportsNoTransaction()) {
             $this->endLostTransaction($cause ?? $unclear ?? $gone[0], mayStillBeOpen: false);
+
+            return;
+        }
+
+        // The transaction this library began is no longer reported by PDO, and no failure says why: a DDL
+        // statement that went through committed it implicitly, or raw PDO ended it. A ROLLBACK would fail for
+        // want of a transaction and leave the library holding one - every statement refused, a named lock that
+        // cannot be released. rollback() stays the way out: nothing is sent, the end is 'lost' - what ran
+        // before is committed.
+        if ($this->transactionBegun && $this->reportsNoTransaction()) {
+            $this->endLostTransaction(
+                $cause ?? $unclear ?? new TransactionException(
+                    message: 'Transaction ended outside this library',
+                    previous: $this->suspectFailure,
+                    debugMessage: 'PDO reported no transaction any more when rollback() was called: it was committed by a DDL statement or ended on raw PDO. Nothing was rolled back; what ran in it may be committed.'
+                ),
+                mayStillBeOpen: false
+            );
 
             return;
         }

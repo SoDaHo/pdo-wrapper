@@ -587,15 +587,22 @@ class DriverHookScenariosTest extends TransactionEndTestCase
         $this->assertSame([DatabaseInterface::TRANSACTION_ROLLED_BACK, null], $ends->pop());
 
         // PDO reports no transaction already (a later statement told it, after the question right after the
-        // failure found the transaction): nothing is asked before the ROLLBACK, which is sent as before - here
-        // it goes through, because the scenario only hides the transaction
+        // failure found the transaction): nothing is asked and nothing is sent - a ROLLBACK would fail for want
+        // of a transaction -, the end is 'lost' (the scenario only hides the transaction: rolled back below)
         $db->beginTransaction();
         $fail('harmless_table');
         $this->pdo->hideTransaction = true;
+        $before = $this->pdo->rollBackCalls;
         $db->rollback();
+        $this->assertSame($before, $this->pdo->rollBackCalls, 'no ROLLBACK was sent');
         $this->pdo->hideTransaction = false;
         $this->assertSame(6, $db->asked);
-        $this->assertSame([DatabaseInterface::TRANSACTION_ROLLED_BACK, null], $ends->pop());
+        [$outcome, $error] = $ends->pop() ?? [null, null];
+        $this->assertSame(DatabaseInterface::TRANSACTION_LOST, $outcome);
+        $this->assertInstanceOf(TransactionException::class, $error);
+        $this->assertSame('Transaction ended outside this library', $error->getMessage());
+        $this->assertStringContainsString('harmless_table', (string) $error->getPrevious()?->getMessage(), 'the failed statement as previous');
+        $this->pdo->rollBack();
         $this->assertFalse($this->pdo->reallyInTransaction());
 
         // a transaction begun on raw PDO: asked while PDO reports it, not when the state cannot be read

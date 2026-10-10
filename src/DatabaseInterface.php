@@ -216,7 +216,12 @@ interface DatabaseInterface
      * 'error' hook. A failed rollback fires nothing. After a MariaDB deadlock or a 1020 rollback() also
      * ends a transaction begun through this library that PDO no longer reports (a statement on raw
      * PDO told it): nothing is sent, no rollback listener runs, and 'transaction.end' reports 'lost'
-     * with that failure as error (its listeners' failures then reach only the 'error' hook).
+     * with that failure as error (its listeners' failures then reach only the 'error' hook). So
+     * does a transaction begun through this library that PDO no longer reports for any other
+     * reason - a DDL statement that went through committed it, raw PDO ended it -, with a
+     * TransactionException 'Transaction ended outside this library' as error: rollback() is the
+     * way out of every state in which the library holds a transaction PDO does not report (ask
+     * currentTransaction() !== null || inTransaction() before it).
      * Not confirmed either after a commit() of this transaction that failed on a session that may
      * chain transactions (see commit()): the ROLLBACK is sent to clean up, no rollback listener
      * runs, and 'transaction.end' reports 'lost' with the failed commit as error.

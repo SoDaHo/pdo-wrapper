@@ -686,7 +686,7 @@ try {
     // A failed commit arrives here as CommitFailedException (see below).
     // Best effort: roll back only if still open, keep the original exception
     try {
-        if ($db->inTransaction()) {
+        if ($db->currentTransaction() !== null || $db->inTransaction()) {
             $db->rollback();
         }
     } catch (Throwable) {
@@ -694,6 +694,8 @@ try {
     throw $e;
 }
 ```
+
+Ask both: `currentTransaction()` is the library's view, `inTransaction()` PDO's. After the server ended the transaction behind the library's back - a DDL statement committed it, a lock wait timeout under `innodb_rollback_on_timeout` rolled it back, raw PDO ended it - PDO reports none while the library still holds it and refuses every statement (it would run in autocommit), `releaseNamedLock()` included. `rollback()` is the way out: it sends nothing when PDO reports no transaction, tells the end as `lost`, and the connection works again. A transaction begun on raw PDO has no number: there `inTransaction()` decides.
 
 `transaction()` ends in one of these ways (`updateMultiple()` too, when it opens its own transaction):
 
@@ -766,6 +768,8 @@ if ($db->namedLock('login-code:' . $userId)) {        // false: another connecti
 }
 $db->namedLock('report', 5);                            // wait up to 5 seconds
 ```
+
+Around a manual transaction, end the transaction before the lock is released - with the pattern under [Transactions](#transactions) (`currentTransaction() !== null || inTransaction()`): a transaction the server ended behind the library's back is still held by the library, which then refuses every statement, the release included, until `rollback()` tells its end.
 
 It belongs to the connection, not to a transaction: `COMMIT` and `ROLLBACK` do not release it; `releaseNamedLock()` or the end of the connection do - `reconnect()` refuses while the driver holds one (see "Reconnecting"), and a persistent connection (`PDO::ATTR_PERSISTENT`) does not end with the request: a lock a request dies holding stays held until that pooled connection ends, and the next request on that connection holds it (`isNamedLockHeld()` true, `namedLock()` throws the reentry exception) until it releases it. Two connections that each wait for the other's lock end in a deadlock: MariaDB fails one `GET_LOCK()` with error 1213 and keeps its transaction (measured), but 1213 is also the code of a deadlock that ended the transaction - the library cannot tell them apart and refuses further statements until `rollback()`, fail-closed. Take named locks outside transactions, or always in the same order. After a deadlock or a 1020 the library sends nothing but `rollback()` - `releaseNamedLock()` included: roll back first, then release. A name with a NUL byte throws (MariaDB cuts the name there, and different names would be one lock). The name is prefixed with the configured database and `:` on the server (`app_db:login-code:7`), because the server keeps one namespace for all its databases - a shared server included (a configured database whose name holds a `:` gets no prefix, and the named-lock methods throw a `QueryException`: the lock `c` of `a:b` and the lock `b:c` of `a` would be one name; the connection itself works); it is compared as written (case, accents and spaces count) and may have 192 bytes with the prefix (error 1059 beyond). MariaDB lets a connection take a lock it already holds and counts the holds, so that one release would leave it held: `namedLock()` throws a `NamedLockReentryException` (a `QueryException`, with the name in `$lockName`) for a lock this connection holds instead, so that an application can tell "held here already" from a failure of the server by its class (`isNamedLockHeld()` asks the server). `releaseNamedLock()` returns false when this connection did not hold the lock. A `NULL` from `GET_LOCK()` (an error such as a killed thread) throws; a `reconnect()` from a `query` listener of one of these statements is refused (see "Reconnecting"); a negative timeout and an empty name throw before anything is sent.
 
@@ -954,7 +958,7 @@ What the library renders, and what MariaDB does with it, where that is worth kno
 | `LIKE` and upper/lower case | case- and accent-insensitive with the default collations (`a%` matches `Anna` and `Ärger`); binary on a `Database::json()` value |
 | `orderBy()` and NULL | NULL first ascending, last descending |
 | A failed statement inside a transaction | only the statement is undone, except where the server ends the transaction: after a deadlock (1213) or a changed row under snapshot isolation (1020) the library accepts nothing but `rollback()`; after a lock wait timeout under `innodb_rollback_on_timeout` the library asks right away, sends nothing more and `commit()` refuses, the end is `lost` - with autocommit switched off as well (in a transaction begun on raw PDO: not once a later statement has opened the next transaction) |
-| DDL inside a transaction | most DDL statements (`CREATE TABLE`, `ALTER TABLE`, not `CREATE TEMPORARY TABLE`) commit it implicitly, also when the statement itself fails. Inside a transaction the library began nothing more is sent after it (it would run in autocommit); `transaction()` reports `lost`, and so does a `rollback()` after the failed statement; after one that succeeded, `rollback()` fails for want of a transaction and the next `beginTransaction()` reports it |
+| DDL inside a transaction | most DDL statements (`CREATE TABLE`, `ALTER TABLE`, not `CREATE TEMPORARY TABLE`) commit it implicitly, also when the statement itself fails. Inside a transaction the library began nothing more is sent after it (it would run in autocommit); `transaction()` reports `lost`, and so does a `rollback()` - after the failed statement and after one that succeeded (nothing is sent then) |
 | `now()` / `utcNow()` | `NOW()` / `UTC_TIMESTAMP()` |
 
 ## Security

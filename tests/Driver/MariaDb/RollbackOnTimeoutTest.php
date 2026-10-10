@@ -50,6 +50,51 @@ class RollbackOnTimeoutTest extends TransactionEndTestCase
         $this->runIntoTheTimeout();
     }
 
+    /**
+     * A manual transaction with a named lock, the README pattern around it: the timeout reaches the
+     * catch, inTransaction() is false already (the driver asked right after it), currentTransaction()
+     * still names the transaction. rollback() tells 'lost', the lock release in finally goes through
+     * and the connection works again.
+     */
+    public function testTheReadmePatternEndsAManualTransactionTheTimeoutEnded(): void
+    {
+        $this->db->insert(self::TABLE, ['id' => 1, 'name' => 'locked by the observer']);
+        $this->db->execute('SET SESSION innodb_lock_wait_timeout = 1');
+        $this->assertTrue($this->db->namedLock('timeout-way-out'));
+        $this->events = [];
+        $code = null;
+
+        $this->observer->beginTransaction();
+        try {
+            $this->observer->update(self::TABLE, ['name' => 'held'], ['id' => 1]);
+            try {
+                $this->db->beginTransaction();
+                $this->db->insert(self::TABLE, ['id' => 10, 'name' => 'before the timeout']);
+                $this->db->update(self::TABLE, ['name' => 'waits'], ['id' => 1]);
+                $this->fail('Expected QueryException: lock wait timeout');
+            } catch (QueryException $e) {
+                $code = $this->errorInfoBehind($e, 1);
+                $pdoReported = $this->db->inTransaction();
+                if ($this->db->currentTransaction() !== null || $this->db->inTransaction()) {
+                    $this->db->rollback();
+                }
+                $this->assertFalse($pdoReported, 'the driver asked right after the timeout: inTransaction() alone would skip the rollback');
+            } finally {
+                $this->assertTrue($this->db->releaseNamedLock('timeout-way-out'), 'the release in finally goes through');
+            }
+        } finally {
+            $this->observer->rollback();
+        }
+
+        $this->assertSame(1205, $code);
+        $this->assertSame([DatabaseInterface::TRANSACTION_LOST], array_column($this->ends, 'outcome'));
+        $this->assertSame(['end'], $this->events, 'no rollback listener');
+        $this->assertNull($this->db->currentTransaction());
+        $this->assertSame([], $this->db->heldNamedLocks());
+        $this->assertSame(1, $this->db->table(self::TABLE)->count(), 'a statement goes through');
+        $this->assertVisible([1], 'row 10 was rolled back by the server');
+    }
+
     private function runIntoTheTimeout(): void
     {
         $this->db->insert(self::TABLE, ['id' => 1, 'name' => 'locked by the observer']);
