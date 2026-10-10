@@ -286,10 +286,11 @@ Keys of `Database::mariadb()`, `connect()`, the `fromEnv()` overrides and `Maria
 - `transaction.end` listener failures: after a COMMIT they arrive only in the `CommitHookException`. After a ROLLBACK
   they are told to `error` (`sql` `''`, `params` `[]`, `error`, `code`, `sqlState`, `driverCode`, then `hook`,
   `outcome`, `exception`; one whose codes cannot be read is dropped). After a manual `rollback()` the first one is
-  also thrown as a `TransactionException`, unless a rollback listener threw or the session chained a transaction to
-  the ROLLBACK: that exception wins. On the automatic rollback and on `lost` they reach only `error`. A chained
-  transaction that is not thrown is told to `error` the same way, without `hook`. An `error` listener that throws
-  there is ignored.
+  also thrown as a `TransactionException`, unless a rollback listener threw, the session chained a transaction to
+  the ROLLBACK or the state after it cannot be read: that exception wins. On the automatic rollback and on `lost`
+  they reach only `error`. After a ROLLBACK, a chained transaction or unreadable state that is not thrown is told
+  to `error` the same way, without `hook`; after a COMMIT it joins the `CommitHookException`. An `error` listener
+  that throws there is ignored.
 - Statement listeners 32 levels deep, and `transaction.end` listeners that keep beginning transactions after 32
   levels, end in a `LogicException`.
 - Listener rule: a `transaction.end` listener may steer transactions; a `query.before`, `query` or `error` listener may

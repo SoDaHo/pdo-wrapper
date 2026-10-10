@@ -61,9 +61,9 @@ use Sodaho\PdoWrapper\Exception\DatabaseException;
  *   the COMMIT (then every commit listener). After a commit their failures arrive together in a
  *   CommitHookException (the commit listeners' first), not at 'error'. After a manual rollback() an
  *   end listener's failure arrives as TransactionException (the first; all reach the 'error' hook,
- *   but one whose codes cannot be read), unless a rollback listener threw or the session chained a
- *   transaction to the ROLLBACK: that exception wins, and the end failures reach only the 'error'
- *   hook. On the automatic rollback of transaction()/updateMultiple() and on a 'lost' they reach
+ *   but one whose codes cannot be read), unless a rollback listener threw, the session chained a
+ *   transaction to the ROLLBACK or the state after it cannot be read: that exception wins, and the
+ *   end failures reach only the 'error' hook. On the automatic rollback of transaction()/updateMultiple() and on a 'lost' they reach
  *   only the 'error' hook - sql '', params [], error, code, sqlState, driverCode, then hook
  *   'transaction.end', outcome and exception; a throwing 'error' listener is ignored there -, so
  *   that the exception that ended the transaction reaches the caller unchanged. Dependent steps
