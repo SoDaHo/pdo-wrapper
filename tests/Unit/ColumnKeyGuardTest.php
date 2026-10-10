@@ -128,7 +128,7 @@ class ColumnKeyGuardTest extends TestCase
 
     /**
      * select(raw('COUNT(*)')) names its output column "COUNT(*)": having('COUNT(*)') refers to it, as
-     * MariaDB resolves the quoted name (it did before 3.1.2). Compared without case; an aliased raw
+     * MariaDB resolves the quoted name. Compared without case; an aliased raw
      * entry is named by its alias.
      */
     public function testAHavingStringNamesASelectedExpression(): void

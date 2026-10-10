@@ -8,7 +8,7 @@ use LogicException;
 
 /**
  * A query.before, query or error listener that runs a statement for every statement it is told
- * about recurses: the driver stops it at 32 levels with a LogicException - before that, PHP ran out
+ * about recurses: the driver stops it at 32 levels with a LogicException - unstopped, PHP runs out
  * of memory, a fatal error nothing catches. One statement of its own (an audit row) goes through.
  */
 class HookRecursionTest extends ContractTestCase

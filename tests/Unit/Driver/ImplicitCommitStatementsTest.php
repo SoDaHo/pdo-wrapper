@@ -262,8 +262,9 @@ class ImplicitCommitStatementsTest extends TestCase
     /**
      * The answer depends on no locale: the ctype tables of the locales differ for the bytes from
      * 0x80 on (on macOS ctype_space() takes 0xA0 for a space under a UTF-8 LC_CTYPE, not under "C"
-     * or ISO8859-1; measured), and the candidates before read whitespace with it. Every statement is
-     * judged the same under every locale of the list the machine has, "C" always among them.
+     * or ISO8859-1; measured), so a check that reads whitespace with it depends on the locale. Every
+     * statement is judged the same under every locale of the list the machine has, "C" always among
+     * them.
      */
     public function testNoLocaleChangesTheAnswer(): void
     {

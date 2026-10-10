@@ -883,9 +883,8 @@ class NamedLockTest extends ContractTestCase
     }
 
     /**
-     * An answer that is no scalar - an array here - is shown as var_export() shows it, as before
-     * 3.2 (Daybreak review of the sixth candidate: it was shown by its type alone, also without
-     * redactParameters); with the option by its type alone.
+     * An answer that is no scalar - an array here - is shown as var_export() shows it; with the
+     * option by its type alone - not without it, where the debug message names the answer.
      */
     public function testANamedLockHolderThatIsNoScalarIsShownAsItIs(): void
     {
@@ -912,9 +911,8 @@ class NamedLockTest extends ContractTestCase
 
     /**
      * One rule for an answer no method understands, in all four methods: as var_export() shows it
-     * - an array as well, as 3.1.2 showed namedLock()'s (Opus review of the eighth candidate: the
-     * eighth showed a non-scalar answer of namedLock(), isNamedLockHeld() and releaseNamedLock() by
-     * its type alone, also without redactParameters) -, with the option by its type alone.
+     * - an array as well, also for namedLock(), isNamedLockHeld() and releaseNamedLock() -, with
+     * the option by its type alone.
      */
     public function testAnAnswerThatIsNoScalarIsShownByOneRule(): void
     {

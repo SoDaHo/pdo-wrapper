@@ -32,8 +32,8 @@ class SensitiveParametersTest extends TestCase
     private const MARKER = 'marker-of-a-secret-value';
 
     /**
-     * Names that carry a value in one class alone: Schema binds the table's name in its statements
-     * (Daybreak review of the seventh candidate), elsewhere a table's name is an identifier
+     * Names that carry a value in one class alone: Schema binds the table's name in its statements,
+     * elsewhere a table's name is an identifier
      */
     private const BOUND_NAMES = [Schema::class => ['table']];
 
@@ -72,9 +72,9 @@ class SensitiveParametersTest extends TestCase
 
     /**
      * Every type under src/ - class, interface, trait, enum; found by walking the directory, so that
-     * a new one is read without being listed here (the eighth candidate listed seven classes, and
-     * Sql::value(), FrozenExpression, ConnectionSettings, FloatText::of() and the constructors of the
-     * named-lock exceptions went unread; Daybreak review) -, named by PSR-4 from its path.
+     * a new one is read without being listed here (a fixed list misses Sql::value(),
+     * FrozenExpression, ConnectionSettings, FloatText::of() and the constructors of the named-lock
+     * exceptions) -, named by PSR-4 from its path.
      *
      * @return list<class-string>
      */
@@ -128,7 +128,7 @@ class SensitiveParametersTest extends TestCase
         }
     }
 
-    /** The walk finds every type the library had when this test was written, and the ones Daybreak named among them */
+    /** The walk finds every type the library had when this test was written, those named above among them */
     public function testEveryTypeUnderSrcIsRead(): void
     {
         $types = self::sourceTypes();
@@ -162,8 +162,8 @@ class SensitiveParametersTest extends TestCase
     /**
      * A raw expression whose __toString() throws, with a secret among its bindings: the exception
      * passes through the library's frames - the builder's rendering, the CRUD methods' and
-     * Sql::value() - and none of them shows the binding (Daybreak review of the eighth candidate:
-     * a test only of refusals the library throws itself never sees such a frame).
+     * Sql::value() - and none of them shows the binding (a test only of refusals the library throws
+     * itself never sees such a frame).
      */
     public function testARawExpressionThatThrowsLeavesNoBindingInTheTrace(): void
     {

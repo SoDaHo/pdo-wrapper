@@ -16,7 +16,6 @@ use Sodaho\PdoWrapper\Exception\TransactionException;
  * own through the driver: it is not nested in the one that ended, its end is told inside the
  * listener, a rollback() it calls is explicit, and beginTransaction() tells the end of such a
  * transaction that ended behind the library's back before the next one begins - bounded at two.
- * (The cases of 3.1.2, back since end listeners may steer transactions again.)
  */
 class EndListenerTransactionScenariosTest extends TransactionEndTestCase
 {

@@ -148,8 +148,8 @@ class RedactParametersTest extends TestCase
      * of a bound secret - is replaced like a statement listener's: in the TransactionException of a
      * begin or rollback listener, in the CommitHookException of a commit or end listener (its
      * failures and debug message), in the TransactionException and the 'error' payload of an end
-     * listener after a rollback (Opus review of the eighth candidate: the library wrapped them
-     * unredacted). A RedactedPdoException with the codes stands in for each.
+     * listener after a rollback - none of them wraps the listener's exception unredacted. A
+     * RedactedPdoException with the codes stands in for each.
      */
     public function testWithTheOptionATransactionListenersPdoExceptionCarriesNoValue(): void
     {
@@ -193,9 +193,8 @@ class RedactParametersTest extends TestCase
      * An 'error' listener's PDOException - its own statement on raw PDO, failed over a duplicate of a
      * bound secret - replaces the exception of the statement it was told about (documented). With the
      * option a RedactedPdoException with the codes is thrown in its place, at both points that tell
-     * 'error': a value that cannot be bound (nothing sent) and a failed statement (Daybreak review of
-     * the ninth candidate: both let it through unredacted). Without the option the listener's own
-     * exception passes unchanged, as before.
+     * 'error': a value that cannot be bound (nothing sent) and a failed statement - neither lets it
+     * through unredacted. Without the option the listener's own exception passes unchanged.
      */
     public function testAnErrorListenersPdoExceptionIsReplacedWithTheOption(): void
     {
@@ -379,8 +378,8 @@ class RedactParametersTest extends TestCase
 
     /**
      * A float step that DECIMAL(65,30) cannot hold is refused before anything is sent, and the
-     * refusal does not show the float - a bound value: with the option no channel carries it
-     * (Daybreak review of the sixth candidate: the debug message showed it, var_export()).
+     * refusal does not show the float - a bound value: with the option no channel carries it, the
+     * debug message included.
      */
     public function testWithTheOptionARefusedFloatStepIsNotShown(): void
     {
@@ -403,8 +402,7 @@ class RedactParametersTest extends TestCase
      * PHP - and that ID may be a bound value: the server reports an explicit id back (a BIGINT
      * UNSIGNED beyond PHP_INT_MAX), a PDO class of the caller's may report anything (replayed: one
      * that reports the first bound value). With the option the debug message shows `[redacted]`
-     * for it (Daybreak review of the sixth candidate: it showed the ID next to "Params: 2
-     * redacted"); without it the ID as before.
+     * for it, not the ID next to "Params: 2 redacted"; without it the ID.
      */
     public function testWithTheOptionAnIdThatEchoesABoundValueIsNotShown(): void
     {
@@ -445,10 +443,10 @@ class RedactParametersTest extends TestCase
 
     /**
      * schema() binds the table's name in its statements: a value like any other. The debug message
-     * of an unknown table names it no more, with the option or without (Daybreak review of the
-     * seventh candidate: columns() and the helper behind indexes() and constraints() wrote it
-     * there), and it is a SensitiveParameterValue in every frame - hasTable() and the helper that
-     * sends the statements as well, seen in the trace of a statement the library refuses (the
+     * of an unknown table does not name it, with the option or without - columns() and the helper
+     * behind indexes() and constraints() included -, and it is a SensitiveParameterValue in every
+     * frame - hasTable() and the helper that sends the statements as well, seen in the trace of a
+     * statement the library refuses (the
      * transaction ended behind its back). With the option no hook payload carries it either.
      */
     public function testATableNameTheSchemaBindsIsShownNowhere(): void
@@ -487,7 +485,7 @@ class RedactParametersTest extends TestCase
     }
 
     /**
-     * namedLock() binds its timeout as well (Astra review of the seventh candidate): it is a
+     * namedLock() binds its timeout as well: it is a
      * SensitiveParameterValue in the method's frame, with the option or without - here in the trace
      * of an answer not understood (a statement class that echoes the bound name, the lock taken on
      * the server) and of a negative timeout, which the debug message shows only without the option.
@@ -520,7 +518,7 @@ class RedactParametersTest extends TestCase
      * updateMultiple() copies the bindings of a raw expression (FrozenExpression::of()); a binding
      * that became a raw expression through a reference before the call is refused there, and the
      * trace of that refusal shows the other binding - a secret - in no frame: FrozenExpression's
-     * frames carry SensitiveParameterValue (Opus review of the eighth candidate). Without the option
+     * frames carry SensitiveParameterValue. Without the option
      * as with it: the attribute does not depend on it.
      */
     public function testARefusalOfFrozenExpressionLeavesNoBindingInTheTrace(): void

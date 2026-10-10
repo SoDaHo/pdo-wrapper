@@ -14,9 +14,9 @@ use Sodaho\PdoWrapper\Tests\Contract\TransactionEnd\TransactionEndTestCase;
  * Temporary sequences against the server. MariaDB exempts only the temporary table from the
  * implicit commit (stmt_causes_implicit_commit() in sql_parse.cc, the same on 10.11, 11.4 and
  * 12.3): a CREATE [OR REPLACE] TEMPORARY SEQUENCE commits the open transaction, a DROP TEMPORARY
- * SEQUENCE does not. The library decided after TEMPORARY and sent the CREATE (Daybreak review of
- * the seventh candidate); it decides by the word after TEMPORARY now: inside a transaction it
- * refuses the CREATE, and nothing is committed, while the temporary tables and the DROP still run.
+ * SEQUENCE does not. A check that stops at TEMPORARY sends the CREATE; the library decides by the
+ * word after TEMPORARY: inside a transaction it refuses the CREATE, and nothing is committed, while
+ * the temporary tables and the DROP still run.
  */
 class ImplicitCommitTemporarySequenceTest extends TransactionEndTestCase
 {

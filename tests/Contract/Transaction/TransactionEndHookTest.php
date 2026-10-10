@@ -131,7 +131,7 @@ class TransactionEndHookTest extends ContractTestCase
     }
 
     /**
-     * The 1.1.0 path: a commit listener leaves a transaction open that cannot be rolled back, the
+     * A commit listener leaves a transaction open that cannot be rolled back, the
      * remaining commit listeners are skipped - 'transaction.end' still reports 'committed'.
      */
     public function testEndFiresCommittedEvenWhenTheRemainingCommitListenersWereSkipped(): void

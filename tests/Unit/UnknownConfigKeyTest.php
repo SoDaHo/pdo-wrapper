@@ -13,8 +13,8 @@ use Sodaho\PdoWrapper\Tests\Support\Untyped;
 
 /**
  * A config key the driver does not take is refused by every factory before anything is checked,
- * built or tried: a misspelt `redactParamters` => true connected without the redaction it asked for
- * (Daybreak review of the eighth candidate). The key is named in the debug message alone. The
+ * built or tried: a misspelt `redactParamters` => true would connect without the redaction it asks
+ * for. The key is named in the debug message alone. The
  * driver's name is a key of connect() and fromEnv(), which take it away before the driver sees the
  * rest; mariadb() and the driver itself refuse it. A connection attempt goes to a PDO class that
  * keeps the DSN and refuses it.

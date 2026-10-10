@@ -12,8 +12,8 @@ use Sodaho\PdoWrapper\Query\QueryBuilder;
 use Sodaho\PdoWrapper\Tests\Support\Untyped;
 
 /**
- * Edge case tests for bugs found by code review, as far as the builder alone decides them: the
- * SQL it renders and the input it rejects, without a database. The builder is the one the
+ * Edge cases as far as the builder alone decides them: the SQL it renders and the input it
+ * rejects, without a database. The builder is the one the
  * MariaDB driver creates (backticks); it reaches its database only to execute,
  * which no test here does. The edge cases that run against a database are in
  * tests/Contract/EdgeCases.
@@ -126,7 +126,7 @@ class EdgeCaseRenderingTest extends TestCase
 
     /**
      * An operator that is no string is refused by its type, never cast and never read as one: an
-     * int, an object whose __toString() says "=" (3.1.2 cast it and took it), and an object of the
+     * int, an object whose __toString() says "=" (a cast would take it), and an object of the
      * class Like of the global namespace, whose type name reads like an operator - a check that
      * read the type's name took it for LIKE, and an equality became a pattern match. The message
      * is static, the type only in the debug message; nothing is added.
@@ -155,7 +155,7 @@ class EdgeCaseRenderingTest extends TestCase
     }
 
     /**
-     * Null with three arguments is equality, as in 3.1.2: where(column: 'id', value: 5) leaves the
+     * Null with three arguments is equality: where(column: 'id', value: 5) leaves the
      * operator at its default, which a positional null cannot be told apart from.
      */
     public function testANullOperatorWithThreeArgumentsIsEquality(): void

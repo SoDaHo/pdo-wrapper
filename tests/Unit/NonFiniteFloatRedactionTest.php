@@ -11,9 +11,8 @@ use Sodaho\PdoWrapper\Exception\QueryException;
 /**
  * A float INF, -INF or NAN cannot be bound: refused before anything is sent, with the parameter's
  * position in the debug message and in the 'error' payload. Without redactParameters both name the
- * value; with it neither does - "a non-finite float" (Daybreak review of the eighth candidate: the
- * option promised no bound value in a debug message or a hook payload, and both showed INF). No
- * database needed: the refusal comes first.
+ * value; with it neither does - "a non-finite float": the option keeps every bound value out of
+ * debug messages and hook payloads, INF included. No database needed: the refusal comes first.
  */
 class NonFiniteFloatRedactionTest extends TestCase
 {

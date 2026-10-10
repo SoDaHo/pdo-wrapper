@@ -1084,8 +1084,8 @@ class TransactionTest extends ContractTestCase
     }
 
     /**
-     * The events trigger() hands out ('query', 'error', 'transaction.rollback') pass one variable,
-     * as in 2.0: what a listener that takes it by reference changes is what the next one is told -
+     * The events trigger() hands out ('query', 'error', 'transaction.rollback') pass one variable:
+     * what a listener that takes it by reference changes is what the next one is told -
      * a listener that redacts the parameters before a logger keeps working.
      */
     public function testAListenerTakingThePayloadByReferenceChangesWhatTheNextIsTold(): void
@@ -1112,8 +1112,8 @@ class TransactionTest extends ContractTestCase
     }
 
     /**
-     * 'transaction.commit' and 'transaction.end' listeners get an array of their own each, as in
-     * 2.0: one that takes it by reference cannot be called with it - PHP throws an Error, which is
+     * 'transaction.commit' and 'transaction.end' listeners get an array of their own each: one that
+     * takes it by reference cannot be called with it - PHP throws an Error, which is
      * that listener's failure. The others are told as always, and the transaction is committed.
      */
     public function testACommitOrEndListenerCannotTakeItsPayloadByReference(): void

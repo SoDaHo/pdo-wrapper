@@ -17,7 +17,7 @@ use Sodaho\PdoWrapper\Tests\Support\TestEnvironment;
  * Bytes beyond ASCII before the leading keywords, against the server on a latin1 connection.
  * MariaDB reads 0xA0 there as a space (the ctype table of latin1): CREATE<0xA0>TABLE,
  * <0xA0>CREATE TABLE and a `--` comment opened by 0xA0 commit the open transaction on raw PDO
- * (Astra review of the eighth candidate, measured on 10.11, 11.4 and 12.3). The library keeps no
+ * (measured on MariaDB 10.11, 11.4 and 12.3). The library keeps no
  * charset tables: inside a transaction it refuses such a statement unjudged ("NON-ASCII OR CONTROL
  * BYTES"), and nothing is committed. A byte after the point where the leading keywords are decided
  * changes nothing: such a statement is judged by them, and one that commits nothing runs.

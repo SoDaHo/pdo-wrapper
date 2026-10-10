@@ -10,8 +10,8 @@ use Sodaho\PdoWrapper\Tests\Contract\ContractTestCase;
 
 /**
  * MariaDB names an expression selected without an alias after its text: having('COUNT(*)') - the
- * quoted name - refers to a select() entry Database::raw('COUNT(*)') (measured; it worked in 3.1.1
- * and is refused only without such an entry, before anything is sent).
+ * quoted name - refers to a select() entry Database::raw('COUNT(*)') (measured); it is refused only
+ * without such an entry, before anything is sent.
  */
 class HavingSelectedExpressionTest extends ContractTestCase
 {

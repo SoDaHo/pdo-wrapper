@@ -77,8 +77,8 @@ class ImplicitCommitTest extends TransactionEndTestCase
     /**
      * A DDL statement that would fail (the table exists) commits the transaction on MariaDB all the
      * same; refused, it commits nothing: the rollback is confirmed, the row before it is not there.
-     * So is CREATE TABLE ... SELECT - refused like any CREATE, before it is sent. Re-review R-2
-     * described such a statement running into a deadlock of its own after its implicit commit, told
+     * So is CREATE TABLE ... SELECT - refused like any CREATE, before it is sent. Sent, such a
+     * statement could run into a deadlock of its own after its implicit commit and be told
      * 'rolled_back' over committed rows; this test produces no deadlock (no second connection): it
      * pins the refusal, not that sequence.
      */

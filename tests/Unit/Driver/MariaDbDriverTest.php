@@ -81,8 +81,8 @@ class MariaDbDriverTest extends TestCase
     }
 
     /**
-     * DB_PORT goes through the same check: "abc" no longer falls back to the default silently, and
-     * "1e3" or "1.9" are no longer cut down to a number.
+     * DB_PORT goes through the same check: "abc" does not fall back to the default silently, and
+     * "1e3" or "1.9" are not cut down to a number.
      */
     public function testAnInvalidPortFromTheEnvironmentIsRejected(): void
     {

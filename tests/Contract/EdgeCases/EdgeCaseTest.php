@@ -14,8 +14,8 @@ use Sodaho\PdoWrapper\Exception\UniqueViolationException;
 use Sodaho\PdoWrapper\Tests\Contract\ContractTestCase;
 
 /**
- * Edge case tests for bugs found by code review.
- * These tests verify specific bug fixes work correctly.
+ * Edge cases of the builder and the CRUD methods against a database: each test pins one behavior
+ * at a boundary of the input or of the connection's state.
  *
  * What the builder renders without a database is in tests/Unit/EdgeCaseRenderingTest and
  * tests/Unit/ContractQueryRenderingTest; what needs a subclass of the driver itself is in
