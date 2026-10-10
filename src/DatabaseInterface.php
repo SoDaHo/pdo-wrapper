@@ -13,8 +13,11 @@ use PDOStatement;
  * builder and the CRUD methods, transactions with their three outcomes (committed, rolled_back,
  * lost), named locks, reconnect() and the schema. Driver\AbstractDriver implements it; type against
  * this interface. Invariants: a statement that would run outside the transaction the caller
- * believes to be in (after the server ended it, in autocommit) is refused rather than sent; only
- * 'rolled_back' means that nothing of a transaction is committed.
+ * believes to be in (after the server ended it, in autocommit) is refused rather than sent - unless
+ * the caller begins the next one itself: beginTransaction() and transaction() tell an end PDO
+ * reports 'lost' and begin anew (after a deadlock or a 1020 they refuse), so a helper asks
+ * currentTransaction() !== null || inTransaction() before it opens one (README, Transactions);
+ * only 'rolled_back' means that nothing of a transaction is committed.
  */
 interface DatabaseInterface
 {

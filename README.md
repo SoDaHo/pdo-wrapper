@@ -4,7 +4,7 @@ A lightweight PHP PDO wrapper with a fluent query builder, for MariaDB.
 
 ## Why This Library?
 
-- **No dependencies** -- just PDO and pdo_mysql, which ship with PHP.
+- **No package dependencies** -- requires PDO, pdo_mysql and mbstring, extensions that ship with PHP.
 - **Readable codebase** -- the entire source fits in a handful of files, every decision explained where it is made. Reading all of it takes an afternoon, not minutes: the transaction paths are where the care went.
 - **One database, known well** -- MariaDB 10.11 and later: its transactions, deadlocks, implicit commits and result types are measured and handled, not guessed for several engines at once.
 - **Safe defaults** -- prepared statements, identifier quoting, operator whitelist. Hard to accidentally write an injection vulnerability.
@@ -732,7 +732,16 @@ Ask both: `currentTransaction()` is the library's view, `inTransaction()` PDO's.
   });
   ```
 - **The callback ends the transaction itself** (a `commit()` or `rollback()` of its own; a hook cannot, see [Hooks](#hooks)) - `transaction()` ends only the transaction it began. Whatever is open afterwards - a second transaction of the callback, one an end hook began in response (through the library or on raw PDO) - is neither committed nor rolled back for it and is left to whoever began it. A callback that returns gets a `CommitFailedException` with `lost`, and no `COMMIT` is sent; one that throws gets its exception back. `transaction()` is for one transaction: run several with one call each, or with `beginTransaction()` and `commit()` yourself.
-- **The callback calls `transaction()` or `beginTransaction()` again** - there are no nested transactions (no savepoints): the inner call throws a `TransactionException` `Failed to begin transaction` ("There is already an active transaction") before its callback runs. Left to escape, it rolls the outer transaction back like any other exception of the callback. A function that must work inside and outside a transaction asks `currentTransaction()` (or `inTransaction()`) first.
+- **The callback calls `transaction()` or `beginTransaction()` again** - there are no nested transactions (no savepoints): the inner call throws a `TransactionException` `Failed to begin transaction` ("There is already an active transaction") before its callback runs. Left to escape, it rolls the outer transaction back like any other exception of the callback. A helper that must work inside and outside a transaction - "if none is open, open one" - asks both, never `inTransaction()` alone:
+
+  ```php
+  function inATransaction(DatabaseInterface $db, Closure $work): mixed
+  {
+      return $db->currentTransaction() !== null || $db->inTransaction() ? $work($db) : $db->transaction($work);
+  }
+  ```
+
+  After a transaction the library began ended behind its back (a DDL statement or raw PDO ended it, a lock wait timeout under `innodb_rollback_on_timeout`), `inTransaction()` is `false` while the library still holds the transaction. A helper that asked it alone would call `transaction()`, which tells the old transaction `lost`, begins a new one and commits it - and what the callback sends after the helper would run in autocommit, each statement committed on its own. Asked both ways, the helper's work runs inside the held transaction, where every statement is refused until `rollback()`.
 - **A `transaction.commit` hook fails, or a `transaction.end` hook fails after the commit** (throws, or a commit hook leaves the connection in a state that cannot be verified or cleaned up) - the data **is committed**, the committed transaction is not rolled back (only what a commit hook left open is, raw), `CommitHookException` is thrown (see [Hooks](#hooks)). On the rollback and `lost` paths an end hook's failure never replaces the exception that ended the transaction.
 
 Every `TransactionException` that `commit()` itself throws is a `CommitFailedException` - except the `ListenerTransactionException` of a `commit()` called from inside a hook that may not steer a transaction, which tried nothing (see [Hooks](#hooks)). Only `rolled_back` means that nothing of the transaction whose commit failed is committed; treat every other value as unclear.
