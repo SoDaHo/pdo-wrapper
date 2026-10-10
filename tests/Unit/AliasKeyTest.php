@@ -24,7 +24,9 @@ class AliasKeyTest extends TestCase
     {
         try {
             $query->count();
-        } catch (LogicException $e) {
+        } catch (\Throwable $e) {
+            $this->assertInstanceOf(LogicException::class, $e, 'the statement reached query()');
+
             return $e->getMessage();
         }
         $this->fail('count() reached no query()');
