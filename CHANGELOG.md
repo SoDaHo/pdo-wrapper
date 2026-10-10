@@ -12,7 +12,8 @@
 ### Changed
 - `DatabaseInterface` declares the whole API (`insertWhen()`, `updateMultiple()`, ...); `InternalMethods` is gone.
 - In a library transaction a statement that commits implicitly throws `ImplicitCommitException`, nothing is sent.
-- Refused there unjudged: an executable comment, a byte from 0x80 on or a control character before the leading keywords.
+- Unjudged until the leading keywords are decided, and refused: an executable comment, a byte from 0x80 on.
+- Refused the same: a control character but tab, LF, VT, FF, CR. Not looked into: `CALL`, `EXECUTE`, `BEGIN NOT ATOMIC`.
 - `CREATE [OR REPLACE] TEMPORARY SEQUENCE` counts as committing implicitly; temporary tables do not.
 - A locking read (`lockForUpdate()`, `sharedLock()`) outside a transaction throws `LockOutsideTransactionException`.
 - `reconnect()` while a library transaction is open throws `TransactionOpenException`, unless `dropTransaction`.
@@ -20,16 +21,19 @@
 - `transaction.end` listeners that keep beginning transactions are stopped after 32 levels (`LogicException`).
 - The builder's `insert()` throws for a where, join, group, order, limit, offset, distinct or lock set before it.
 - A key with a dot in a column => value array throws, so do such a `$keyColumn` and an `increment()` column.
-- `options` with `ATTR_MULTI_STATEMENTS` switched on, or with `ATTR_STATEMENT_CLASS`, throw `ConnectionException`.
+- `ATTR_MULTI_STATEMENTS` in `options` other than `false` or `0` (`'0'`, `null`, `0.0` too): `ConnectionException`.
+- So does `ATTR_STATEMENT_CLASS` in `options`, whatever its value.
 - A config key other than the nine of `MariaDbDriver` throws `ConnectionException`; `driver` belongs to `connect()`.
 - A config value of the wrong type throws `ConnectionException` (was a `TypeError` or a cast).
 - A `where()` operator that is no string throws `QueryException`.
 - `updateMultiple()` checks every row before it sends one; a refused row writes nothing and fires no hook.
+- `updateMultiple()` refuses a null or unbindable key value also in a row with nothing to set (it was skipped).
+- `updateMultiple()` sends the rows as the check read them: a later change through a reference reaches no UPDATE.
 - `updateMultiple()` is refused in a library transaction that ended behind its back, or when PDO cannot tell its state.
 - Named-lock methods throw for an answer other than the server's (`1`, `0`, `-1`, `NULL`); `namedLock()` counts it.
 - `sum()` and `avg()` throw for a string that is no number.
 - `ext-mbstring` is required: `select()` aliases are compared with `mb_strtolower()`.
-- `CommitFailedException::settle()` is private.
+- `CommitFailedException::settle()` is private; `MariaDbDriver::failureToRemember()` returns `?PDOException`.
 
 ### Fixed
 - `where([...])` with a refused entry adds nothing; it kept the entries before it.
@@ -49,7 +53,7 @@
 - Drop unknown config keys, `ATTR_MULTI_STATEMENTS` and `ATTR_STATEMENT_CLASS`; pass config values of the right type.
 - Use plain column names as keys and strings as operators; start the builder's `insert()` from a fresh `table()`.
 - A class implementing `DatabaseInterface` adds the new methods; a `reconnect()` override takes `$dropTransaction`.
-- A helper that opens a transaction asks `currentTransaction() !== null || inTransaction()` first.
+- An override of `failureToRemember()` that returns the parent's result declares `?PDOException`.
 
 ## [3.1.2] - 2026-10-09
 
@@ -73,8 +77,7 @@
 
 ### Fixed
 - The driver sets `completion_type` to `NO_CHAIN` when it connects and at `reconnect()`.
-- A failed `COMMIT` on a session that may chain transactions ends as `lost`, not `rolled_back`.
-- A `COMMIT` the server answers with an error and ends (a deadlock at commit) is `lost`, not `rolled_back`.
+- A failed `COMMIT` on a session that may chain, or one the server failed and ended, is `lost`, not `rolled_back`.
 
 ## [3.1.0] - 2026-10-06
 
@@ -89,10 +92,8 @@
 
 ## [3.0.0] - 2026-10-05
 
-### Removed
-- The SQLite and PostgreSQL drivers and the builder's dialect switch; a MySQL server is refused.
-
 ### Changed
+- The SQLite and PostgreSQL drivers and the builder's dialect switch are removed; a MySQL server is refused.
 - The driver is `MariaDbDriver` (`mariadb`); MariaDB 10.11 or later and mysqlnd are checked when it connects.
 - Fetched types are pinned: `ATTR_STRINGIFY_FETCHES` off, `ATTR_ORACLE_NULLS` `NULL_NATURAL`.
 - Error 1020 ends the transaction like a deadlock.
