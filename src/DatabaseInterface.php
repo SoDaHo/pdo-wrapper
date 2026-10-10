@@ -99,7 +99,7 @@ interface DatabaseInterface
      * configured database and ":"). See Driver\AbstractDriver::namedLock().
      *
      * @param string $name The lock's name, without the prefix
-     * @param int $timeout Seconds to wait while another connection holds it (0: do not wait)
+     * @param int $timeout Seconds to wait while another connection holds it (0: do not wait); bound in the statement, a value as well
      *
      * @throws Exception\NamedLockReentryException When this connection holds the lock already
      * @throws Exception\QueryException When the name is empty or holds a NUL byte, the timeout is negative, the driver names no lock prefix, the server answers NULL, its answer cannot be read or is none of 1, 0, -1 and NULL (the name then counts as held), or the connection was replaced while the statement ran
@@ -107,7 +107,7 @@ interface DatabaseInterface
      *
      * @return bool True when taken, false when another connection held it beyond the timeout
      */
-    public function namedLock(#[\SensitiveParameter] string $name, int $timeout = 0): bool;
+    public function namedLock(#[\SensitiveParameter] string $name, #[\SensitiveParameter] int $timeout = 0): bool;
 
     /**
      * Release a named lock this connection holds (RELEASE_LOCK()).

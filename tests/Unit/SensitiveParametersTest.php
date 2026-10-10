@@ -111,7 +111,7 @@ class SensitiveParametersTest extends TestCase
         $types = $type instanceof ReflectionUnionType ? $type->getTypes() : [$type];
         foreach ($types as $one) {
             if ($one instanceof ReflectionNamedType && in_array($one->getName(), ['array', 'mixed', 'int', 'float', RawExpression::class], true)) {
-                return !in_array($name, ['timeout', 'limit', 'offset', 'count'], true);
+                return !in_array($name, ['limit', 'offset', 'count'], true);
             }
         }
 

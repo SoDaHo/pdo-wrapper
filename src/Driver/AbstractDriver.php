@@ -2719,7 +2719,7 @@ abstract class AbstractDriver implements DatabaseInterface
      * refused from a 'query' listener of the statement (see lockStatement()).
      *
      * @param string $name The lock's name, without the prefix
-     * @param int $timeout Seconds to wait while another connection holds it (0: do not wait)
+     * @param int $timeout Seconds to wait while another connection holds it (0: do not wait); bound in the statement, a value as well
      *
      * @throws NamedLockReentryException When this connection holds the lock already
      * @throws QueryException When the name is empty or holds a NUL byte, the timeout is negative, the driver names no lock prefix, the server answers NULL (an error such as a killed thread), the answer cannot be read or is none of 1, 0, -1 and NULL, or the connection was replaced while the statement ran
@@ -2727,13 +2727,14 @@ abstract class AbstractDriver implements DatabaseInterface
      *
      * @return bool True when taken, false when another connection held it beyond the timeout
      */
-    public function namedLock(#[\SensitiveParameter] string $name, int $timeout = 0): bool
+    public function namedLock(#[\SensitiveParameter] string $name, #[\SensitiveParameter] int $timeout = 0): bool
     {
         $lock = $this->lockName('namedLock', $name);
         if ($timeout < 0) {
+            // The timeout is bound in the statement: with redactParameters a value no debug message shows (Astra review of the seventh candidate)
             throw new QueryException(
                 message: 'Query failed',
-                debugMessage: sprintf('namedLock() takes a timeout of 0 or more seconds, not %d (MariaDB answers a negative one with NULL)', $timeout)
+                debugMessage: sprintf('namedLock() takes a timeout of 0 or more seconds, not %s (MariaDB answers a negative one with NULL)', $this->redactParameters ? self::REDACTED : (string) $timeout)
             );
         }
 

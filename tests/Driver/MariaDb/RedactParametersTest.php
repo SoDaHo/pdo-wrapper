@@ -381,6 +381,35 @@ class RedactParametersTest extends TestCase
         }
     }
 
+    /**
+     * namedLock() binds its timeout as well (Astra review of the seventh candidate): it is a
+     * SensitiveParameterValue in the method's frame, with the option or without - here in the trace
+     * of an answer not understood (a statement class that echoes the bound name, the lock taken on
+     * the server) and of a negative timeout, which the debug message shows only without the option.
+     */
+    public function testANamedLockTimeoutIsAValueAsWell(): void
+    {
+        $timeout = 471147;
+        foreach ([true, false] as $redact) {
+            // A name of its own per pass: the lock the first pass took may live on in its connection
+            $name = $redact ? 'redact-timeout-on' : 'redact-timeout-off';
+            $echo = Database::mariadb(TestEnvironment::mariadb() + StatementClassPdo::config(BindingEchoStatement::class) + ['redactParameters' => $redact]);
+            $taken = $this->failWith(static fn (): bool => $echo->namedLock($name, $timeout));
+            $this->assertStringContainsString(', none of 1, 0, -1 or NULL', (string) $taken->getDebugMessage());
+            $this->assertTimeoutOnlyAsSensitiveValue($taken, $timeout);
+
+            $db = Database::mariadb(TestEnvironment::mariadb() + ['redactParameters' => $redact]);
+            $negative = $this->failWith(static fn (): bool => $db->namedLock($name, -$timeout));
+            $this->assertSame(
+                sprintf('namedLock() takes a timeout of 0 or more seconds, not %s (MariaDB answers a negative one with NULL)', $redact ? '[redacted]' : '-471147'),
+                $negative->getDebugMessage(),
+                $redact ? 'with the option without the value' : 'without the option as before'
+            );
+            $this->assertTimeoutOnlyAsSensitiveValue($negative, -$timeout);
+            $this->assertSame([], $db->heldNamedLocks(), 'nothing was sent');
+        }
+    }
+
     public function testTheOptionMustBeABoolean(): void
     {
         foreach (['yes', 1, 'false', null] as $value) {
@@ -423,6 +452,19 @@ class RedactParametersTest extends TestCase
         $frames = array_values(array_filter($e->getTrace(), static fn (array $frame): bool => ($frame['class'] ?? null) === Schema::class && $frame['function'] === $function));
         $this->assertCount(1, $frames, "Schema::{$function}: its frame");
         $this->assertInstanceOf(SensitiveParameterValue::class, $frames[0]['args'][$at] ?? null, "Schema::{$function}: its argument {$at}");
+    }
+
+    /**
+     * The exception's trace has exactly one frame of namedLock(), its timeout argument is a
+     * SensitiveParameterValue, and the number appears nowhere in the trace (a number is no string:
+     * assertNoSecretInTrace() would not see it).
+     */
+    private function assertTimeoutOnlyAsSensitiveValue(Throwable $e, int $timeout): void
+    {
+        $frames = array_values(array_filter($e->getTrace(), static fn (array $frame): bool => $frame['function'] === 'namedLock'));
+        $this->assertCount(1, $frames, 'namedLock(): its frame');
+        $this->assertInstanceOf(SensitiveParameterValue::class, $frames[0]['args'][1] ?? null, 'namedLock(): its timeout');
+        $this->assertStringNotContainsString((string) abs($timeout), $e->getTraceAsString());
     }
 
     /** Every trace argument of the exception and - unless told otherwise - of every exception before it */
