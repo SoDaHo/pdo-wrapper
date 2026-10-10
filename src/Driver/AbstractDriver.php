@@ -3505,7 +3505,10 @@ abstract class AbstractDriver implements DatabaseInterface
      * is sent (that it is an array, the key column's presence, every key, every key value - also of a row with
      * nothing to set, which is skipped only once its key value passed -, and every value that
      * could not be bound): a refused row leaves nothing written, also inside a transaction of the
-     * caller, and no hook fires for it. Without an open transaction, the
+     * caller, and no hook fires for it. The rows are read once, by the check, and the statements
+     * send what it read: a value the caller holds a reference to (in the rows, in a row, among the
+     * bindings of a raw expression) and changes while the batch runs - from a listener - reaches no
+     * UPDATE. Without an open transaction, the
      * rows are updated in an own transaction with the same outcomes as transaction(). Open counts
      * one begun through this driver that ended behind its back (a DDL statement or raw PDO ended
      * it): no transaction of its own then - the rows' statements are refused like any other
@@ -3538,9 +3541,12 @@ abstract class AbstractDriver implements DatabaseInterface
         // so that a refused row leaves no earlier row written: inside a transaction of the caller
         // nothing would undo it, and a caller that catches the refusal and commits would keep part
         // of the batch. Refused like an argument: no hook fires for it. No SQL is written here: a
-        // raw expression is rendered once, by the UPDATE that sends it
+        // raw expression is rendered once, by the UPDATE that sends it. What is checked is what is
+        // sent: a copy of each row, read here once ($plan) - a value the caller holds a reference to
+        // and a listener changes between two UPDATEs would otherwise reach an UPDATE unchecked
+        $plan = []; // the columns to set and the key value of each row with something to set, in order
         foreach (array_values($rows) as $at => $row) {
-            $row = self::batchRow($row, $at);
+            $row = self::detachedRow(self::batchRow($row, $at));
             if (!array_key_exists($keyColumn, $row)) {
                 throw new QueryException(
                     message: 'Update failed',
@@ -3558,6 +3564,10 @@ abstract class AbstractDriver implements DatabaseInterface
                     message: 'Query failed',
                     debugMessage: sprintf('Row %d of updateMultiple(): %s (its UPDATE binds the values to set, then the key). Nothing was sent.', $at + 1, $unbindable)
                 );
+            }
+            if ($data !== []) {
+                /** @var array<string, mixed> $data Its keys passed columnKey() in boundValues() */
+                $plan[] = [$data, $row[$keyColumn]];
             }
         }
 
@@ -3586,11 +3596,8 @@ abstract class AbstractDriver implements DatabaseInterface
         try {
             $affected = 0;
 
-            foreach ($rows as $row) {
-                $data = array_diff_key($row, [$keyColumn => null]);
-                if ($data !== []) {
-                    $affected += $this->update($table, $data, [$keyColumn => $row[$keyColumn]]);
-                }
+            foreach ($plan as [$data, $key]) {
+                $affected += $this->update($table, $data, [$keyColumn => $key]);
             }
         } catch (Throwable $e) {
             if ($own !== null) {
@@ -3735,6 +3742,28 @@ abstract class AbstractDriver implements DatabaseInterface
         }
 
         return $row;
+    }
+
+    /**
+     * A row of updateMultiple() as a copy nobody else can change: each value read by value out of
+     * a reference the caller may hold to it, a raw expression with a copy of its bindings
+     * (FrozenExpression). The batch checks this copy and sends it - what was checked is what is
+     * sent. Objects stay the objects passed, as update() takes them.
+     *
+     * @param array<array-key, mixed> $row
+     *
+     * @throws QueryException When a raw expression's bindings hold a raw expression (put there through a reference)
+     *
+     * @return array<array-key, mixed>
+     */
+    private static function detachedRow(#[\SensitiveParameter] array $row): array
+    {
+        $copy = [];
+        foreach ($row as $column => $value) {
+            $copy[$column] = $value instanceof RawExpression ? FrozenExpression::of($value) : $value;
+        }
+
+        return $copy;
     }
 
     /**

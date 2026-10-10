@@ -627,7 +627,9 @@ interface DatabaseInterface
      * checked before the first is sent - each row an array, the key column in each row, every key a
      * plain column name, every key value (not null, also in a row with nothing to set), every value
      * one that can be bound; no SQL is written for it -: a refused row leaves nothing written, also inside a transaction of
-     * the caller, and no hook fires for it. Without an open transaction, the rows are updated in an
+     * the caller, and no hook fires for it. The statements send what the check read: a value the
+     * caller holds a reference to and changes while the batch runs (from a listener) reaches no
+     * UPDATE. Without an open transaction, the rows are updated in an
      * own transaction with the same outcomes as transaction(). Open counts one begun through the
      * library that ended behind its back (a DDL statement or raw PDO ended it): the batch is then
      * refused like any other statement there, and no transaction of its own takes the old one's
