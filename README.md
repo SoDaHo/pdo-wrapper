@@ -1123,7 +1123,7 @@ These limitations keep the QueryBuilder simple and predictable. For complex quer
 
 - PHP 8.5 or a later 8.x (`^8.5`)
 - PDO and pdo_mysql, built on mysqlnd
-- mbstring (since 3.2: the builder compares the names of output columns without case, in every script, as MariaDB does)
+- mbstring (since 3.2: the builder compares the names of output columns without case, folded with `mb_strtolower()` - `Ä` and `ä` are one name, as on the server; MariaDB's folding differs between versions for some letters, `I` and the dotless `ı` are one name on 12.3 only, and there the server refuses what the builder let through)
 - MariaDB 10.11 or later
 
 ## Testing

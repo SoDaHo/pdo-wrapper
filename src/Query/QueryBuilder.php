@@ -850,8 +850,11 @@ class QueryBuilder
 
     /**
      * A name the builder renders quoted (a column, a string entry's alias) as a comparison key.
-     * MariaDB compares column names without case, in every script: folded to lower case with
-     * mbstring - "Ä" and "ä" are one name, "a" and "ä" two (measured on 10.11).
+     * MariaDB compares column names without case: folded to lower case with mbstring - "Ä" and
+     * "ä" are one name, "a" and "ä" two (measured on 10.11). Not every letter folds as on the
+     * server, whose rules differ between versions (on 12.3 "I" and the dotless "ı" are one column
+     * name, mb_strtolower() keeps them two): where they differ, the server refuses what the builder
+     * let through (1060 Duplicate column name) or knows no such column.
      */
     private function quotedNameKey(string $name): string
     {
