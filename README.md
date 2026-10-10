@@ -1070,7 +1070,7 @@ This library is designed for simple, common use cases. The following features ar
 
 - **Aliases** - `'column as alias'` and `'table as alias'` quote the alias like every other name. The result key is the alias as written, `orderBy()`, `groupBy()` and `'alias.column'` find it under that name, and a reserved word is a valid alias. The alias must be a plain word (letters of any script, digits, underscore) at the very end; anything else - a trailing newline included - leaves the whole entry one quoted name. A condition (`where()` and the other `where*()` methods) declares no alias: `'has as col'` is the name of one column there, as in `orderBy()`. An alias inside a `Database::raw()` entry is sent as written.
 
-- **Builder clauses on `insert()`** - `table('t')->where(...)->insert($row)` inserts the row and ignores the clauses; use `insertWhen()` for a conditional insert (there, clauses throw).
+- **Builder clauses on `insert()`** - `table('t')->where(...)->insert($row)` throws a `QueryException` (`Insert failed`) before anything is sent: a `where()`, join, `groupBy()`/`having()`, `orderBy()`, `limit()`/`offset()`, `distinct()` or row lock is not part of an `INSERT`, and dropping it would insert the row whatever it said. Use `insertWhen()` for a conditional insert (it takes the condition as an argument; clauses on the builder throw there too). `select()` is no clause of an insert and stays.
 
 These limitations keep the QueryBuilder simple and predictable. For complex queries, use the `query()` method with raw SQL - prepared statements still protect against SQL injection.
 

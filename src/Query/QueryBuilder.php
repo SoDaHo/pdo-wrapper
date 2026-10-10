@@ -1067,14 +1067,21 @@ class QueryBuilder
     /**
      * Insert a row via the query builder.
      *
+     * A where(), join, groupBy()/having(), orderBy(), limit()/offset(), distinct() or row lock set on
+     * this builder is not part of an INSERT: it throws instead of being dropped without a word (the
+     * row would be inserted whatever the condition said) - for an insert that depends on a
+     * condition, use insertWhen().
+     *
      * @param array<string, mixed> $data Column => value pairs
      *
-     * @throws QueryException On failure, and after the row is inserted when the ID the database reports is no integer of PHP (see DatabaseInterface::insert())
+     * @throws QueryException When a builder clause is set (nothing is sent), on failure, and after the row is inserted when the ID the database reports is no integer of PHP (see DatabaseInterface::insert())
      *
      * @return int Last insert ID, 0 when the database generated none
      */
     public function insert(array $data): int
     {
+        $this->refuseClauses('insert', 'inserts one row, unconditionally (insertWhen() takes a condition)');
+
         return $this->db->insert($this->table, $data);
     }
 
