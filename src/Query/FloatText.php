@@ -18,7 +18,7 @@ final class FloatText
     /**
      * @param float $value A finite float (INF and NAN have no decimal text)
      */
-    public static function of(float $value): string
+    public static function of(#[\SensitiveParameter] float $value): string
     {
         // PHP's own shortest round-trip writer (zend_gcvt, mode 0) at precision -1, without a
         // locale (%H) and without an ini setting: "1.0E+21", "5.684341886080802E-14", "100", "-0"

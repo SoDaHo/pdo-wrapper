@@ -41,6 +41,7 @@ class RawExpression
      */
     public function __construct(
         public readonly string $value,
+        #[\SensitiveParameter]
         array $bindings = []
     ) {
         foreach ($bindings as $binding) {

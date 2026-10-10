@@ -100,7 +100,7 @@ class QueryBuilder
      *
      * @throws QueryException When a raw expression carries bindings (only a value may)
      */
-    public function select(string|array $columns = '*'): self
+    public function select(#[\SensitiveParameter] string|array $columns = '*'): self
     {
         if ($columns === '*') {
             $this->columns = ['*'];
@@ -182,7 +182,7 @@ class QueryBuilder
      *
      * @throws QueryException When the value is null with an operator other than IS / IS NOT (use whereNull()/whereNotNull()), the operator is not allowed, the array form has a numeric key, or the column is an expression with bindings
      */
-    public function where(string|RawExpression|array $column, #[\SensitiveParameter] mixed $operatorOrValue = null, #[\SensitiveParameter] mixed $value = null): self
+    public function where(#[\SensitiveParameter] string|RawExpression|array $column, #[\SensitiveParameter] mixed $operatorOrValue = null, #[\SensitiveParameter] mixed $value = null): self
     {
         // Array syntax: where(['active' => 1, 'role' => 'admin'])
         if (is_array($column)) {
@@ -299,7 +299,7 @@ class QueryBuilder
      *
      * @throws QueryException When $values contains null, or the column is an expression with bindings
      */
-    public function whereIn(string|RawExpression $column, #[\SensitiveParameter] array $values): self
+    public function whereIn(#[\SensitiveParameter] string|RawExpression $column, #[\SensitiveParameter] array $values): self
     {
         $this->guardAgainstBoundRaw('whereIn', [$column]);
         if ($values === []) {
@@ -331,7 +331,7 @@ class QueryBuilder
      *
      * @throws QueryException When $values is empty or contains null, or the column is an expression with bindings
      */
-    public function whereNotIn(string|RawExpression $column, #[\SensitiveParameter] array $values): self
+    public function whereNotIn(#[\SensitiveParameter] string|RawExpression $column, #[\SensitiveParameter] array $values): self
     {
         $this->guardAgainstBoundRaw('whereNotIn', [$column]);
         if (empty($values)) {
@@ -360,7 +360,7 @@ class QueryBuilder
      *
      * @throws QueryException When $values doesn't have exactly 2 elements or one of them is null, or the column is an expression with bindings
      */
-    public function whereBetween(string|RawExpression $column, #[\SensitiveParameter] array $values): self
+    public function whereBetween(#[\SensitiveParameter] string|RawExpression $column, #[\SensitiveParameter] array $values): self
     {
         $this->guardAgainstBoundRaw('whereBetween', [$column]);
         if (count($values) !== 2) {
@@ -389,7 +389,7 @@ class QueryBuilder
      *
      * @throws QueryException When $values doesn't have exactly 2 elements or one of them is null, or the column is an expression with bindings
      */
-    public function whereNotBetween(string|RawExpression $column, #[\SensitiveParameter] array $values): self
+    public function whereNotBetween(#[\SensitiveParameter] string|RawExpression $column, #[\SensitiveParameter] array $values): self
     {
         $this->guardAgainstBoundRaw('whereNotBetween', [$column]);
         if (count($values) !== 2) {
@@ -417,7 +417,7 @@ class QueryBuilder
      *
      * @throws QueryException When the column is an expression with bindings
      */
-    public function whereNull(string|RawExpression $column): self
+    public function whereNull(#[\SensitiveParameter] string|RawExpression $column): self
     {
         $this->guardAgainstBoundRaw('whereNull', [$column]);
         $this->wheres[] = [
@@ -436,7 +436,7 @@ class QueryBuilder
      *
      * @throws QueryException When the column is an expression with bindings
      */
-    public function whereNotNull(string|RawExpression $column): self
+    public function whereNotNull(#[\SensitiveParameter] string|RawExpression $column): self
     {
         $this->guardAgainstBoundRaw('whereNotNull', [$column]);
         $this->wheres[] = [
@@ -460,7 +460,7 @@ class QueryBuilder
      *
      * @throws QueryException When the column is an expression with bindings
      */
-    public function whereLike(string|RawExpression $column, #[\SensitiveParameter] string $pattern): self
+    public function whereLike(#[\SensitiveParameter] string|RawExpression $column, #[\SensitiveParameter] string $pattern): self
     {
         $this->guardAgainstBoundRaw('whereLike', [$column]);
         $this->wheres[] = [
@@ -481,7 +481,7 @@ class QueryBuilder
      *
      * @throws QueryException When the column is an expression with bindings
      */
-    public function whereNotLike(string|RawExpression $column, #[\SensitiveParameter] string $pattern): self
+    public function whereNotLike(#[\SensitiveParameter] string|RawExpression $column, #[\SensitiveParameter] string $pattern): self
     {
         $this->guardAgainstBoundRaw('whereNotLike', [$column]);
         $this->wheres[] = [
@@ -581,7 +581,7 @@ class QueryBuilder
      *
      * @throws QueryException When the direction is neither ASC nor DESC, or the expression carries bindings
      */
-    public function orderBy(string|RawExpression $column, string $direction = 'ASC'): self
+    public function orderBy(#[\SensitiveParameter] string|RawExpression $column, string $direction = 'ASC'): self
     {
         $normalized = strtoupper(trim($direction));
         if (!in_array($normalized, ['ASC', 'DESC'], true)) {
@@ -652,7 +652,7 @@ class QueryBuilder
      *
      * @throws QueryException When a raw expression carries bindings (only a value may)
      */
-    public function groupBy(string|RawExpression|array $columns): self
+    public function groupBy(#[\SensitiveParameter] string|RawExpression|array $columns): self
     {
         if (is_string($columns)) {
             $columns = array_map('trim', explode(',', $columns));
@@ -681,7 +681,7 @@ class QueryBuilder
      *
      * @throws QueryException When the operator is not allowed, the value is null with an operator other than IS / IS NOT, or a raw expression used as the column carries bindings (as the value it may)
      */
-    public function having(string|RawExpression $column, string $operator, #[\SensitiveParameter] mixed $value): self
+    public function having(#[\SensitiveParameter] string|RawExpression $column, string $operator, #[\SensitiveParameter] mixed $value): self
     {
         $operator = $this->validateOperator($operator);
         $this->guardAgainstBoundRaw('having', [$column]);
@@ -830,7 +830,7 @@ class QueryBuilder
      * of any script count (u, as in quoteIdentifier()), and the name ends the entry - a trailing
      * newline is no part of the pattern's end (D).
      */
-    private function aliasKey(string|RawExpression $entry): ?string
+    private function aliasKey(#[\SensitiveParameter] string|RawExpression $entry): ?string
     {
         $pattern = $entry instanceof RawExpression ? '/\s+as\s+(["`]?)(\w+)\1$/iuD' : '/\s+as\s+()(\w+)$/iuD';
 
@@ -973,7 +973,7 @@ class QueryBuilder
      *
      * @throws QueryException
      */
-    private static function numberAsDelivered(string $function, mixed $value): float|string|null
+    private static function numberAsDelivered(string $function, #[\SensitiveParameter] mixed $value): float|string|null
     {
         if ($value === null || is_float($value) || is_string($value)) {
             return $value;
@@ -1343,7 +1343,7 @@ class QueryBuilder
      * The float's exact text (FloatText), or null when DECIMAL(65,30) cannot hold it: more than 35
      * integer or 30 fraction digits, or INF or NAN.
      */
-    private static function decimalText(float $value): ?string
+    private static function decimalText(#[\SensitiveParameter] float $value): ?string
     {
         if (!is_finite($value)) {
             return null;
@@ -1758,7 +1758,7 @@ class QueryBuilder
      *
      * @throws QueryException When an entry is a RawExpression with bindings
      */
-    private function guardAgainstBoundRaw(string $method, array $entries): void
+    private function guardAgainstBoundRaw(string $method, #[\SensitiveParameter] array $entries): void
     {
         foreach ($entries as $entry) {
             if ($entry instanceof RawExpression && $entry->bindings !== []) {
@@ -1896,7 +1896,7 @@ class QueryBuilder
      *
      * @throws QueryException When an element is null
      */
-    private function guardAgainstNullElement(string $method, string|RawExpression $column, #[\SensitiveParameter] array $values): void
+    private function guardAgainstNullElement(string $method, #[\SensitiveParameter] string|RawExpression $column, #[\SensitiveParameter] array $values): void
     {
         foreach ($values as $value) {
             if ($value === null) {
@@ -1920,7 +1920,7 @@ class QueryBuilder
      *
      * @throws QueryException When a bound is null
      */
-    private function guardAgainstNullBound(string $method, string|RawExpression $column, #[\SensitiveParameter] array $values): void
+    private function guardAgainstNullBound(string $method, #[\SensitiveParameter] string|RawExpression $column, #[\SensitiveParameter] array $values): void
     {
         foreach ($values as $value) {
             if ($value === null) {

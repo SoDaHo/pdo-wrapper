@@ -25,7 +25,7 @@ final class ConnectionSettings
     /**
      * @param array<int, mixed> $options
      */
-    public function __construct(?string $username, #[\SensitiveParameter] ?string $password, array $options)
+    public function __construct(?string $username, #[\SensitiveParameter] ?string $password, #[\SensitiveParameter] array $options)
     {
         $this->username = new SensitiveParameterValue($username);
         $this->password = new SensitiveParameterValue($password);

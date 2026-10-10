@@ -26,6 +26,7 @@ class NamedLocksHeldException extends ConnectionException
         string $message = 'Database connection failed',
         ?Throwable $previous = null,
         ?string $debugMessage = null,
+        #[\SensitiveParameter]
         public readonly array $lockNames = []
     ) {
         parent::__construct($message, $previous, $debugMessage);

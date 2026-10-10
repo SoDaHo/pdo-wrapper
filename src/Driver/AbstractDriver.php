@@ -926,7 +926,7 @@ abstract class AbstractDriver implements DatabaseInterface
      *
      * @param array<mixed> $errorInfo PDO::errorInfo() or PDOStatement::errorInfo()
      */
-    private function silentFailure(string $what, array $errorInfo, ?Throwable $previous = null): PDOException
+    private function silentFailure(string $what, #[\SensitiveParameter] array $errorInfo, ?Throwable $previous = null): PDOException
     {
         $reason = is_string($errorInfo[2] ?? null) ? $errorInfo[2] : 'unknown error';
         $state = is_string($errorInfo[0] ?? null) ? $errorInfo[0] : '';
@@ -946,7 +946,7 @@ abstract class AbstractDriver implements DatabaseInterface
      *
      * @param array<mixed> $errorInfo errorInfo() of the handle the operation ran on
      */
-    protected function failureBehind(Throwable $thrown, array $errorInfo): ?PDOException
+    protected function failureBehind(Throwable $thrown, #[\SensitiveParameter] array $errorInfo): ?PDOException
     {
         if ($thrown instanceof PDOException && $thrown->errorInfo !== null) {
             return $thrown;
@@ -963,7 +963,7 @@ abstract class AbstractDriver implements DatabaseInterface
      *
      * @param array<mixed> $errorInfo errorInfo() of the handle the operation ran on
      */
-    private function warnedFailure(Throwable $thrown, array $errorInfo): ?PDOException
+    private function warnedFailure(Throwable $thrown, #[\SensitiveParameter] array $errorInfo): ?PDOException
     {
         // Only PDO::ERRMODE_WARNING raises warnings: in every other mode the exception is not PDO's doing
         if ($this->pdo->getAttribute(PDO::ATTR_ERRMODE) !== PDO::ERRMODE_WARNING) {

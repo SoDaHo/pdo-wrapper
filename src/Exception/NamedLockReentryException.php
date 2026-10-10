@@ -25,6 +25,7 @@ class NamedLockReentryException extends QueryException
         string $message = 'Query failed',
         ?Throwable $previous = null,
         ?string $debugMessage = null,
+        #[\SensitiveParameter]
         public readonly string $lockName = ''
     ) {
         parent::__construct($message, $previous, $debugMessage);

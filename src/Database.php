@@ -194,7 +194,7 @@ class Database
      * $safe = Database::escapeLike($userInput); // "100%" → "100\%"
      * $db->table('users')->whereLike('name', '%' . $safe . '%')->get();
      */
-    public static function escapeLike(string $value): string
+    public static function escapeLike(#[\SensitiveParameter] string $value): string
     {
         return str_replace(
             ['\\', '%', '_'],
