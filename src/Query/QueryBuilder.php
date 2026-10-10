@@ -822,11 +822,13 @@ class QueryBuilder
     /**
      * The alias of a select() entry as a comparison key, or null: a trailing `AS name`. In a raw
      * expression the name may be bare, double-quoted or backtick-quoted. MariaDB compares aliases
-     * without case, quoted or not: the key is folded like a column name (quotedNameKey()).
+     * without case, quoted or not: the key is folded like a column name (quotedNameKey()). Letters
+     * of any script count (u, as in quoteIdentifier()), and the name ends the entry - a trailing
+     * newline is no part of the pattern's end (D).
      */
     private function aliasKey(string|RawExpression $entry): ?string
     {
-        $pattern = $entry instanceof RawExpression ? '/\s+as\s+(["`]?)(\w+)\1$/i' : '/\s+as\s+()(\w+)$/i';
+        $pattern = $entry instanceof RawExpression ? '/\s+as\s+(["`]?)(\w+)\1$/iuD' : '/\s+as\s+()(\w+)$/iuD';
 
         return preg_match($pattern, (string) $entry, $match) === 1 ? $this->quotedNameKey($match[2]) : null;
     }
