@@ -330,6 +330,95 @@ class ListenerTransactionControlTest extends ContractTestCase
     }
 
     /**
+     * A listener that may not steer refuses for every listener inside it, an end listener included:
+     * a query.before listener entered outside a transaction runs transaction() - allowed -, and the
+     * end listener of that transaction, running inside the statement listener, may not begin one
+     * raw. Were the innermost listener asked alone, that transaction would stay open and take the
+     * caller's statement in, in autocommit - and a rollback would take it back out.
+     */
+    public function testAnEndListenerInsideAStatementListenerCannotBeginRaw(): void
+    {
+        $db = $this->connect();
+        $observer = $this->connect();
+        $listenersOwn = null;
+        $refused = null;
+        $armed = true;
+        $db->on('query.before', static function () use ($db, &$armed, &$listenersOwn): void {
+            if (!$armed) {
+                return; // the listener's own statements tell the event again
+            }
+            $armed = false;
+            $db->transaction(static function (DatabaseInterface $db) use (&$listenersOwn): void {
+                $listenersOwn = $db->currentTransaction();
+                $db->insert('ledger', ['id' => 100, 'name' => 'by the listener']);
+            });
+        });
+        $db->on('transaction.end', static function (array $data) use ($db, &$listenersOwn, &$refused): void {
+            if ($data['transaction'] !== $listenersOwn) {
+                return; // armed for the end of the statement listener's own transaction alone
+            }
+            try {
+                $db->beginTransaction();
+            } catch (ListenerTransactionException $e) {
+                $refused = $e;
+            }
+        });
+
+        try {
+            $db->insert('ledger', ['id' => 1, 'name' => 'the caller']);
+
+            $this->assertInstanceOf(ListenerTransactionException::class, $refused);
+            $this->assertStringStartsWith('beginTransaction() was called from inside a query.before listener of this driver:', (string) $refused->getDebugMessage());
+            $this->assertNull($db->currentTransaction());
+            $this->assertFalse($db->inTransaction());
+            $this->assertSame([1, 100], array_column($observer->table('ledger')->orderBy('id')->get(), 'id'), 'the caller\'s statement ran in autocommit, outside any transaction of the listeners');
+        } finally {
+            if ($db->getPdo()->inTransaction()) {
+                $db->getPdo()->rollBack(); // a broken rule leaves the end listener's transaction open: not left for the DROP of the tables
+            }
+        }
+    }
+
+    /**
+     * The same from a statement listener entered inside the caller's transaction, which may run no
+     * transaction at all: its reconnect(dropTransaction: true) gives the caller's transaction up
+     * ('lost'), and the end listener of that 'lost', running inside it, may not run transaction()
+     * either - nothing of it is written.
+     */
+    public function testAnEndListenerInsideAStatementListenerEnteredInATransactionCannotRunOne(): void
+    {
+        $db = $this->connect();
+        $ends = [];
+        $refused = null;
+        $armed = true;
+        $db->on('query', static function () use ($db, &$armed): void {
+            if (!$armed) {
+                return;
+            }
+            $armed = false;
+            $db->reconnect(dropTransaction: true);
+        });
+        $db->on('transaction.end', static function (array $data) use ($db, &$ends, &$refused): void {
+            $ends[] = $data['outcome'];
+            try {
+                $db->transaction(static fn (DatabaseInterface $db): int => $db->insert('ledger', ['id' => 99, 'name' => 'by the end listener']));
+            } catch (ListenerTransactionException $e) {
+                $refused = $e;
+            }
+        });
+
+        $db->beginTransaction();
+        $db->insert('ledger', ['id' => 1, 'name' => 'the caller']); // its query listener reconnects
+
+        $this->assertSame([DatabaseInterface::TRANSACTION_LOST], $ends, 'the caller\'s transaction, given up with the session; no transaction of the end listener');
+        $this->assertInstanceOf(ListenerTransactionException::class, $refused);
+        $this->assertStringStartsWith('transaction() was called from inside a query listener of this driver entered inside a transaction:', (string) $refused->getDebugMessage());
+        $this->assertNull($db->currentTransaction());
+        $this->assertFalse($db->inTransaction());
+        $this->assertSame([], $db->findAll('ledger'), 'nothing of the end listener, nothing of the caller\'s lost transaction');
+    }
+
+    /**
      * transaction.end listeners that each begin a transaction whose end runs them again are
      * stopped after 32 levels: beginTransaction() throws a LogicException there, which reaches each
      * enclosing transaction() as its end listener's failure.
