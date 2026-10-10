@@ -308,6 +308,7 @@ class SchemaTest extends ContractTestCase
             }
         } finally {
             $this->db->execute("DROP USER IF EXISTS 'pdo_wrapper_schema'@'%'");
+            $this->db->execute("DROP USER IF EXISTS 'pdo_wrapper_schema'@'localhost'");
             $this->db->execute('DROP TABLE IF EXISTS meta_keys');
         }
     }
@@ -317,9 +318,13 @@ class SchemaTest extends ContractTestCase
      */
     private function schemaAs(string $grant): Schema
     {
-        $this->db->execute("DROP USER IF EXISTS 'pdo_wrapper_schema'@'%'");
-        $this->db->execute("CREATE USER 'pdo_wrapper_schema'@'%' IDENTIFIED BY 'schema'");
-        $this->db->execute(sprintf("GRANT %s TO 'pdo_wrapper_schema'@'%%'", $grant));
+        // At 'localhost' as well: a server with anonymous accounts (''@'localhost', as distribution
+        // packages create them) would match a connection from this machine to them first
+        foreach (['%', 'localhost'] as $host) {
+            $this->db->execute(sprintf("DROP USER IF EXISTS 'pdo_wrapper_schema'@'%s'", $host));
+            $this->db->execute(sprintf("CREATE USER 'pdo_wrapper_schema'@'%s' IDENTIFIED BY 'schema'", $host));
+            $this->db->execute(sprintf("GRANT %s TO 'pdo_wrapper_schema'@'%s'", $grant, $host));
+        }
 
         return Database::mariadb(['username' => 'pdo_wrapper_schema', 'password' => 'schema'] + TestEnvironment::mariadb())->schema();
     }
