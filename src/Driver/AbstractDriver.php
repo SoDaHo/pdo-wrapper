@@ -2805,13 +2805,14 @@ abstract class AbstractDriver implements DatabaseInterface
     }
 
     /**
-     * A named-lock answer no method understands, as a debug message shows it: a scalar as its value
-     * (var_export()), anything else by its type - and with redactParameters every answer by its type
-     * alone: a statement class of the caller's may deliver anything, the bound name among it.
+     * A named-lock answer no method understands, as a debug message shows it - one rule for all four
+     * methods: as var_export() shows it, as in 3.1.2 (an array or an object too), and with
+     * redactParameters by its type alone: a statement class of the caller's may deliver anything,
+     * the bound name among it.
      */
     private function shownAnswer(#[\SensitiveParameter] mixed $answer): string
     {
-        return !$this->redactParameters && is_scalar($answer) ? var_export($answer, true) : get_debug_type($answer);
+        return $this->redactParameters ? get_debug_type($answer) : var_export($answer, true);
     }
 
     /**
@@ -2876,12 +2877,11 @@ abstract class AbstractDriver implements DatabaseInterface
     {
         $holder = $this->lockStatement('namedLockHolder', 'SELECT IS_USED_LOCK(?)', [$this->lockName('namedLockHolder', $name)]);
         if ($holder !== null && !is_int($holder)) {
-            // Without redactParameters as before: every answer as var_export() shows it, an array or an object too
             throw new QueryException(
                 message: 'Query failed',
                 debugMessage: sprintf(
                     'namedLockHolder(): IS_USED_LOCK() answered %s for %s, neither a connection id nor NULL',
-                    $this->redactParameters ? $this->shownAnswer($holder) : var_export($holder, true),
+                    $this->shownAnswer($holder),
                     $this->shownLockName($name)
                 )
             );

@@ -911,6 +911,34 @@ class NamedLockTest extends ContractTestCase
     }
 
     /**
+     * One rule for an answer no method understands, in all four methods: as var_export() shows it
+     * - an array as well, as 3.1.2 showed namedLock()'s (Opus review of the eighth candidate: the
+     * eighth showed a non-scalar answer of namedLock(), isNamedLockHeld() and releaseNamedLock() by
+     * its type alone, also without redactParameters) -, with the option by its type alone.
+     */
+    public function testAnAnswerThatIsNoScalarIsShownByOneRule(): void
+    {
+        foreach ([false, true] as $redact) {
+            $db = Database::mariadb(TestEnvironment::mariadb() + StatementClassPdo::config(ArrayColumnStatement::class) + ['redactParameters' => $redact]);
+            $shown = $redact ? 'array for the lock (name redacted)' : var_export([1], true) . ' for "job"';
+            foreach ([
+                'namedLock' => [fn (): bool => $db->namedLock('job'), 'namedLock(): GET_LOCK() answered '],
+                'isNamedLockHeld' => [fn (): bool => $db->isNamedLockHeld('job'), 'isNamedLockHeld(): IS_USED_LOCK() = CONNECTION_ID() answered '],
+                'releaseNamedLock' => [fn (): bool => $db->releaseNamedLock('job'), 'releaseNamedLock(): RELEASE_LOCK() answered '],
+            ] as $method => [$call, $start]) {
+                try {
+                    $call();
+                    $this->fail('Expected QueryException: ' . $method);
+                } catch (QueryException $e) {
+                    $this->assertStringStartsWith($start . $shown . ', none of ', (string) $e->getDebugMessage(), $method . ($redact ? ', redacted' : ''));
+                }
+            }
+            $this->assertTrue($this->second->namedLock('job'), 'released on the server');
+            $this->assertTrue($this->second->releaseNamedLock('job'));
+        }
+    }
+
+    /**
      * An answer of another type - a statement class of the connection's that delivers the server's
      * answer as text - is not understood, never read as the nearest answer: namedLock() counts the
      * name (GET_LOCK() did take the lock) and throws, so that reconnect() cannot give it up unseen;
