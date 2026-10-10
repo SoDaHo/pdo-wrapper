@@ -1112,10 +1112,12 @@ MARIADB_PORT=3307 ./vendor/bin/phpunit      # against 11.4
 docker compose down
 ```
 
+`composer test` runs the same without a coverage driver; `composer test:coverage` writes an HTML report into `coverage/` (it needs pcov or Xdebug, CI requires every statement of `src/` covered).
+
 The suite has three parts:
 
 - `tests/Unit` needs no database: the SQL the builder renders, the exceptions, the hooks.
-- `tests/Contract` is what every driver of this library must do the same way. These tests name no database and write no DDL: they reach the database only through a **binding** (`tests/Support/Binding/DriverBinding.php`) - how to connect, the tables from a small set of column types, and the few facts that do differ between databases (error codes, the types of aggregates, the order of a SET list). The binding is chosen with `PDO_WRAPPER_TEST_DRIVER` (default `mariadb`).
+- `tests/Contract` is what every driver of this library must do the same way, typed against `DatabaseInterface` alone. These tests name no database and write no DDL: they reach the database only through a **binding** (`tests/Support/Binding/DriverBinding.php`) - how to connect, the tables from a small set of column types, and the few facts that do differ between databases (error codes, the types of aggregates, the order of a SET list). The binding is chosen with `PDO_WRAPPER_TEST_DRIVER` (default `mariadb`).
 - `tests/Driver/MariaDb` is what only MariaDB has: deadlocks and error 1020, implicit commits, the version and client checks, the pinned result types.
 
 **The contract for a new driver:** a driver for another database comes with a binding of its own (registered in `ContractTestCase::binding()`), and it passes all of `tests/Contract` with it, unchanged - plus tests of its own for what only its database does. Only then is it part of the library. The contract tests what a driver does, not the SQL text: the SQL the builder renders is tested in `tests/Unit` and `tests/Driver/MariaDb`. What it does includes the PHP types of the values: the column types of the binding arrive as the types of [What Comes Back](#what-comes-back). It runs the shared base (`AbstractDriver`, `QueryBuilder`) through the driver, and that base renders MariaDB's SQL (backtick quoting, `FROM DUAL`, `ON DUPLICATE KEY UPDATE`): a driver for a database with another dialect first brings a dialect seam back into it.

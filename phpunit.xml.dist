@@ -33,12 +33,8 @@
         </include>
     </source>
 
-    <coverage>
-        <report>
-            <html outputDirectory="coverage"/>
-            <text outputFile="php://stdout"/>
-        </report>
-    </coverage>
+    <!-- No coverage report here: without a coverage driver PHPUnit would warn and fail the run (failOnWarning).
+         CI asks for one with dash-dash-coverage-clover, composer test:coverage with dash-dash-coverage-html -->
 
     <php>
         <!-- The MariaDB test database (Unit needs none; Contract and Driver do) -->
