@@ -3556,10 +3556,12 @@ abstract class AbstractDriver implements DatabaseInterface
         try {
             $open = $this->transactionOpen();
         } catch (Throwable $e) {
+            // Refused, nothing sent: PDO's exception is no failure of the batch, and its codes (a 2006) are not the refusal's
             throw new TransactionException(
                 message: 'Connection state unknown',
                 previous: $e,
-                debugMessage: 'updateMultiple() could not tell whether a transaction is open (the previous exception): the rows would run in one nobody can confirm, or in a transaction of its own over one that is open. Nothing was sent and no transaction was begun.'
+                debugMessage: 'updateMultiple() could not tell whether a transaction is open (the previous exception): the rows would run in one nobody can confirm, or in a transaction of its own over one that is open. Nothing was sent and no transaction was begun.',
+                codesOfPrevious: false
             );
         }
         $own = null; // the number of the transaction begun here; none inside a transaction of the caller

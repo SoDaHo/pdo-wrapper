@@ -102,7 +102,9 @@ class UpdateMultipleAfterAnEndTest extends TransactionEndTestCase
     /**
      * Without a transaction of the library, a state PDO cannot tell: the rows would run in a
      * transaction nobody can confirm, or in one of its own over one that is open - refused with a
-     * TransactionException, PDO's exception as previous, nothing sent, nothing begun.
+     * TransactionException, PDO's exception as previous, nothing sent, nothing begun. The refusal
+     * carries no codes: those of PDO's exception (a lost connection, 2006) are not the batch's -
+     * a caller that reconnects or retries on 2006 would take a refusal for a database failure.
      */
     public function testAStateThatCannotBeReadIsRefusedBeforeAnythingIsSent(): void
     {
@@ -111,6 +113,7 @@ class UpdateMultipleAfterAnEndTest extends TransactionEndTestCase
             $sent[] = $data['sql'];
         });
         $this->pdo->stateUnreadable = true;
+        $this->pdo->stateFailureInfo = ['HY000', 2006, 'MySQL server has gone away'];
         try {
             $this->db->updateMultiple(self::TABLE, [['id' => 1, 'name' => 'by the batch']]);
             $this->fail('Expected TransactionException');
@@ -118,6 +121,8 @@ class UpdateMultipleAfterAnEndTest extends TransactionEndTestCase
             $this->assertSame('Connection state unknown', $e->getMessage());
             $this->assertInstanceOf(PDOException::class, $e->getPrevious());
             $this->assertSame('state unreadable (scenario)', $e->getPrevious()->getMessage());
+            $this->assertSame(['HY000', 2006], [$e->getPrevious()->errorInfo[0] ?? null, $e->getPrevious()->errorInfo[1] ?? null], 'PDO\'s exception keeps its codes');
+            $this->assertSame([null, null], [$e->sqlState, $e->driverCode], 'the refusal carries none');
         } finally {
             $this->pdo->stateUnreadable = false;
         }

@@ -57,6 +57,14 @@ final class ScenarioPdo extends PDO
 
     public bool $stateUnreadable = false;
 
+    /**
+     * With $stateUnreadable: the errorInfo of the PDOException inTransaction() throws - the codes of
+     * a lost connection, ['HY000', 2006, ...] -; none by default
+     *
+     * @var array<int, mixed>|null
+     */
+    public ?array $stateFailureInfo = null;
+
     /** exec() fails: what a driver's own question to the server (a statement on raw PDO) runs into on a broken connection */
     public bool $failExec = false;
 
@@ -170,7 +178,10 @@ final class ScenarioPdo extends PDO
     {
         $this->interrupt($this->duringInTransaction);
         if ($this->stateUnreadable) {
-            throw new PDOException('state unreadable (scenario)');
+            $failure = new PDOException('state unreadable (scenario)');
+            $failure->errorInfo = $this->stateFailureInfo;
+
+            throw $failure;
         }
 
         return $this->hideTransaction ? false : parent::inTransaction();
