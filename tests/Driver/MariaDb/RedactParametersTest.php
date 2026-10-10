@@ -158,7 +158,7 @@ class RedactParametersTest extends TestCase
 
     public function testTheOptionMustBeABoolean(): void
     {
-        foreach (['yes', 1, 'false'] as $value) {
+        foreach (['yes', 1, 'false', null] as $value) {
             try {
                 Untyped::create(MariaDbDriver::class, ['redactParameters' => $value] + TestEnvironment::mariadb());
                 $this->fail('Expected ConnectionException');

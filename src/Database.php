@@ -87,8 +87,9 @@ class Database
      *
      * What is passed in $overrides counts instead of the environment - also null and an empty
      * string: fromEnv(['password' => null]) connects without a password whatever DB_PASSWORD
-     * says. The keys are those of connect(), 'charset', 'options' and 'pdoClass' included: these
-     * three have no variable. A class name from the environment would be handed the credentials.
+     * says. The keys are those of connect(), 'charset', 'options', 'pdoClass' and
+     * 'redactParameters' included: these four have no variable. A class name from the environment
+     * would be handed the credentials.
      *
      * @param array{driver?: string|null, host?: string|null, database?: string|null, username?: string|null, password?: string|null, port?: int|string, charset?: string, options?: array<int, mixed>, pdoClass?: class-string<PDO>|null, redactParameters?: bool} $overrides
      *

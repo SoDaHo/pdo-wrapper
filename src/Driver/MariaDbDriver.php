@@ -84,7 +84,8 @@ class MariaDbDriver extends AbstractDriver
         $password = $config['password'] ?? null;
         $port = self::validPort($config['port'] ?? 3306);
         $pdoClass = self::validPdoClass($config['pdoClass'] ?? PDO::class);
-        $redactParameters = self::validSwitch('redactParameters', $config['redactParameters'] ?? false);
+        // A key that is present is checked as it is: null switches nothing off without a word
+        $redactParameters = self::validSwitch('redactParameters', array_key_exists('redactParameters', $config) ? $config['redactParameters'] : false);
         $charset = $config['charset'] ?? 'utf8mb4';
 
         // Empty counts as missing: pdo_mysql would take an empty host for the local socket, an empty

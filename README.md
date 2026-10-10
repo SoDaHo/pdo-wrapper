@@ -45,7 +45,7 @@ $db = Database::mariadb([
     'charset' => 'utf8mb4',     // optional, default: utf8mb4
     'options' => [],            // optional, PDO options
     'pdoClass' => PDO::class,   // optional, the class of the PDO object (see "The PDO Class")
-    'redactParameters' => true, // optional, default: false - bound values out of hooks and exceptions (see Hooks)
+    'redactParameters' => true, // optional, default: false - bound values out of hooks and exceptions (see Hooks); anything but true or false, null included, is refused
 ]);
 ```
 
@@ -108,7 +108,7 @@ $db = Database::fromEnv(['driver' => 'mariadb', 'charset' => 'utf8mb4']);
 
 The list is complete: no other variable is read, and none of these anywhere else.
 
-**Priority:** `$overrides` > `$_ENV` > the process environment. A key that is passed counts instead of its variable, also with `null` or an empty value: `fromEnv(['password' => null])` connects without a password whatever `DB_PASSWORD` says. The keys are those of `connect()`; `charset`, `options` and `pdoClass` have no variable and can only be passed. `$_ENV` is checked first (thread-safe), then `getenv($name, true)`.
+**Priority:** `$overrides` > `$_ENV` > the process environment. A key that is passed counts instead of its variable, also with `null` or an empty value: `fromEnv(['password' => null])` connects without a password whatever `DB_PASSWORD` says. The keys are those of `connect()`; `charset`, `options`, `pdoClass` and `redactParameters` have no variable and can only be passed. `$_ENV` is checked first (thread-safe), then `getenv($name, true)`.
 
 The second source is the process environment and nothing else: `getenv()` is asked with `local_only`. Without it PHP asks the web server module first, and that answers with what came with the request - under PHP-FPM the FastCGI parameters, every request header among them as `HTTP_*`. A `DB_*` value that is only a FastCGI parameter (`fastcgi_param DB_HOST ...;` in nginx) or an Apache `SetEnv` is therefore not found there. Set it where the process gets it - `env[DB_HOST] = ...` in the FPM pool, the service's or the container's environment - or load it into `$_ENV`. One thing the library cannot change: with `E` in `variables_order` (PHP's default without a `php.ini`; `php.ini-production` and `php.ini-development` leave it out) PHP-FPM fills `$_ENV` with the request's parameters as well, so a `fastcgi_param DB_HOST` still arrives through `$_ENV` there. A client cannot use that: what it sends arrives as `HTTP_*`, never as `DB_*`.
 
