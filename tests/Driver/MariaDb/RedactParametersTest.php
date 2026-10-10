@@ -49,6 +49,7 @@ class RedactParametersTest extends TestCase
     protected function tearDown(): void
     {
         RevealingInsertIdPdo::reset();
+        InsertIdEchoPdo::$echoed = null;
         RevealingColumnStatement::$mode = 'throws';
         RevealingColumnStatement::$quoted = '';
         ini_set('zend.exception_ignore_args', $this->ignoreArgs === false ? '1' : $this->ignoreArgs);
@@ -289,6 +290,51 @@ class RedactParametersTest extends TestCase
             $this->assertStringContainsString('not shown: a bound value', (string) $e->getDebugMessage(), $method);
         }
         $this->assertSame([], $payloads->getArrayCopy(), 'nothing was sent, no hook was told');
+    }
+
+    /**
+     * insert() throws after the row was inserted when the ID the database reports is no integer of
+     * PHP - and that ID may be a bound value: the server reports an explicit id back (a BIGINT
+     * UNSIGNED beyond PHP_INT_MAX), a PDO class of the caller's may report anything (replayed: one
+     * that reports the first bound value). With the option the debug message shows `[redacted]`
+     * for it (Daybreak review of the sixth candidate: it showed the ID next to "Params: 2
+     * redacted"); without it the ID as before.
+     */
+    public function testWithTheOptionAnIdThatEchoesABoundValueIsNotShown(): void
+    {
+        $echo = self::SECRET . '.echo';
+        foreach ([true, false] as $redact) {
+            $db = Database::mariadb(TestEnvironment::mariadb() + ['pdoClass' => InsertIdEchoPdo::class, 'redactParameters' => $redact]);
+            $e = $this->failWith(static fn (): int => $db->insert(self::TABLE, ['email' => $echo, 'id' => 7]));
+            $this->assertSame('Insert ID out of range', $e->getMessage());
+            if ($redact) {
+                $this->assertNoSecretIn($e);
+                $this->assertStringContainsString('the ID the database reports for it, [redacted], is no integer of PHP', (string) $e->getDebugMessage());
+                $this->assertStringEndsWith(' | Params: 2 redacted', (string) $e->getDebugMessage());
+            } else {
+                $this->assertStringContainsString('the ID the database reports for it, "' . $echo . '", is no integer of PHP', (string) $e->getDebugMessage(), 'without the option as before');
+            }
+            $this->assertSame(1, $db->delete(self::TABLE, ['id' => 7]), 'the row was inserted');
+        }
+    }
+
+    /**
+     * The server itself echoes a bound value: an explicit id beyond PHP_INT_MAX in a BIGINT
+     * UNSIGNED column is the ID it reports. With the option the debug message does not show it.
+     */
+    public function testWithTheOptionAnIdTheServerReportsBackIsNotShown(): void
+    {
+        $db = Database::mariadb(TestEnvironment::mariadb() + ['redactParameters' => true]);
+        $db->getPdo()->exec('DROP TABLE IF EXISTS redact_big');
+        $db->getPdo()->exec('CREATE TABLE redact_big (id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, name VARCHAR(20))');
+        try {
+            $e = $this->failWith(static fn (): int => $db->insert('redact_big', ['id' => '18446744073709547110', 'name' => 'big']));
+            $this->assertSame('Insert ID out of range', $e->getMessage());
+            $this->assertStringNotContainsString('18446744073709547110', (string) $e, 'the bound id, reported back');
+            $this->assertStringContainsString(', [redacted], is no integer of PHP', (string) $e->getDebugMessage());
+        } finally {
+            $db->getPdo()->exec('DROP TABLE IF EXISTS redact_big');
+        }
     }
 
     public function testTheOptionMustBeABoolean(): void

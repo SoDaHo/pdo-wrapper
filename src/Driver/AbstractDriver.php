@@ -3084,8 +3084,10 @@ abstract class AbstractDriver implements DatabaseInterface
             throw new QueryException(
                 message: 'Insert ID out of range',
                 debugMessage: sprintf(
-                    'The row was inserted, but the ID the database reports for it, "%s", is no integer of PHP | SQL: %s | Params: %s',
-                    $lastId,
+                    'The row was inserted, but the ID the database reports for it, %s, is no integer of PHP | SQL: %s | Params: %s',
+                    // The ID may be a bound value: one the row was inserted with, which the server reports
+                    // back (an explicit id, a negative one as 2^64 minus it), or what a pdoClass of the caller's returns
+                    $this->redactParameters ? self::REDACTED : '"' . $lastId . '"',
                     $sql,
                     $this->encodeParams($params)
                 )
