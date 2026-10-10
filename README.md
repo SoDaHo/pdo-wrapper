@@ -32,7 +32,8 @@ $db->transaction(function (DatabaseInterface $db) use ($id): void {
 ## Reference
 
 Type against `Sodaho\PdoWrapper\DatabaseInterface`: its method docs are the full contract, the hook contract is in
-`Traits\HasHooks`. A method that sends SQL throws a `QueryException` when the statement fails.
+`Traits\HasHooks`. The statement, CRUD and builder methods throw a `QueryException` when a statement fails, the
+transaction methods a `TransactionException`.
 
 ### Database (static factory)
 
@@ -68,7 +69,7 @@ shortest text that reads back as the same float.
 | Signature | Description |
 |---|---|
 | `insert(string $table, array $data): int` | Inserts a row; returns the id, 0 without AUTO_INCREMENT. |
-| `update(string $table, array $data, array $where): int` | `$where`: equalities joined with AND, no `null`. |
+| `update(string $table, array $data, array $where): int` | `$where`: equalities, AND, no `null`; empty throws. |
 | `delete(string $table, array $where): int` | Empty `$where` throws. |
 | `findOne(string $table, array $where): ?array` | `SELECT * ... LIMIT 1`; empty `$where` throws. |
 | `findAll(string $table, array $where = []): array` | The matching rows; without `$where` all rows. |
