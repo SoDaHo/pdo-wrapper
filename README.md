@@ -140,7 +140,7 @@ the builder; `$column` of the where methods may be an expression without binding
 
 ```php
 // Clauses
-select(string|array $columns = '*'): self       // 'id, name', ['id', 'u.name as n'], Database::raw('COUNT(*)')
+select(string|array $columns = '*'): self       // 'id, name', ['id', 'u.name as n', Database::raw('COUNT(*)')]
 distinct(): self                                // SELECT DISTINCT
 where(string|RawExpression|array $column, mixed $operatorOrValue = null, mixed $value = null): self
 whereRaw(string $sql, array $bindings = []): self                      // trusted SQL in parentheses, AND-joined
@@ -277,13 +277,15 @@ Keys of `Database::mariadb()`, `connect()`, the `fromEnv()` overrides and `Maria
   listeners after it, and its exception reaches the caller (a `PDOException` from `query.before` or `query` as
   `QueryException` "Query hook failed", from `transaction.begin` or `transaction.rollback` as `TransactionException`).
   Not so on the automatic rollback of `transaction()`/`updateMultiple()`: a rollback listener's exception is dropped
-  and the exception that ended the transaction reaches the caller.
+  and the exception that ended the transaction reaches the caller. An `error` listener that throws while the library
+  only reports a failure (one the caller does not get as the thrown one, below) is ignored.
 - A failing `transaction.commit` or `transaction.end` listener does not stop the next one; after a commit their
   failures arrive together in a `CommitHookException`. The remaining commit listeners are skipped, and listed as
   failures, when a commit listener left a raw transaction open that cannot be rolled back, the state cannot be read,
   or the session chained a new transaction to the COMMIT.
-- `error` also gets end listener failures of the automatic rollback, with the extra keys `hook`, `outcome` and
-  `exception`; an `error` listener that throws there is ignored.
+- `error` also gets `transaction.end` listener failures that do not reach the caller (after a rollback, automatic or
+  manual, and a `lost` end), with the extra keys `hook`, `outcome` and `exception`; an `error` listener that throws
+  there is ignored.
 - Statement listeners 32 levels deep, and `transaction.end` listeners that keep beginning transactions after 32
   levels, end in a `LogicException`.
 - Listener rule: a `transaction.end` listener may steer transactions; a `query.before`, `query` or `error` listener may
