@@ -18,7 +18,8 @@ class DatabaseException extends Exception
 {
     /**
      * The SQLSTATE of the database failure behind this exception - '42S02', '23000', 'HY000' -
-     * or null when no database failure stands behind it (a refused argument) and where this
+     * or null when no database failure stands behind it (a refused argument, also one refused
+     * because PDO could not tell its transaction state) and where this
      * library puts the exception around what a listener threw after the operation went through
      * ('Query hook failed', CommitHookException, a failing rollback or end listener): the codes say
      * how the operation itself failed, and there the database did what it was asked - a listener's
@@ -39,16 +40,18 @@ class DatabaseException extends Exception
     /**
      * @param Throwable|null $previous The cause. A PDOException's errorInfo, or the codes of a DatabaseException, become $sqlState and $driverCode
      * @param bool $listenerFailure True when $previous is what a listener threw and not the failure of the operation this exception is about: $sqlState and $driverCode stay null
+     * @param bool $codesOfPrevious False when $previous is no failure of the operation for another reason: what was thrown while the library looked before it refused the operation (PDO could not tell its transaction state) - nothing was sent, $sqlState and $driverCode stay null as well
      */
     public function __construct(
         string $message = 'Database error',
         ?Throwable $previous = null,
         protected ?string $debugMessage = null,
-        bool $listenerFailure = false
+        bool $listenerFailure = false,
+        bool $codesOfPrevious = true
     ) {
         parent::__construct($message, 0, $previous);
 
-        [$this->sqlState, $this->driverCode] = $listenerFailure ? [null, null] : Codes::behind($previous);
+        [$this->sqlState, $this->driverCode] = $listenerFailure || !$codesOfPrevious ? [null, null] : Codes::behind($previous);
     }
 
     /**

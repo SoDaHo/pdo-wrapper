@@ -26,6 +26,6 @@ class LockOutsideTransactionException extends QueryException
     ) {
         // No database failure stands behind the refusal - nothing was sent: the codes stay null, also
         // when the previous exception is what PDO threw while its state was read
-        parent::__construct($message, $previous, $debugMessage, listenerFailure: true);
+        parent::__construct($message, $previous, $debugMessage, codesOfPrevious: false);
     }
 }
