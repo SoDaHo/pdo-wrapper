@@ -6,6 +6,7 @@ namespace Sodaho\PdoWrapper\Tests\Contract\Query;
 
 use Sodaho\PdoWrapper\Database;
 use Sodaho\PdoWrapper\Exception\QueryException;
+use Sodaho\PdoWrapper\Query\RawExpression;
 use Sodaho\PdoWrapper\Tests\Contract\ContractTestCase;
 use Sodaho\PdoWrapper\Tests\Support\Untyped;
 use stdClass;
@@ -86,6 +87,37 @@ class UpdateMultiplePreflightTest extends ContractTestCase
         $this->assertSame(1, $this->db->updateMultiple('batch', [['id' => 1], ['id' => 2, 'name' => 'changed']]));
         $this->assertSame(['one', 'changed'], array_column($this->db->table('batch')->orderBy('id')->get(), 'name'));
         $this->assertCount(1, array_filter($this->sent, static fn (string $sql): bool => str_starts_with($sql, 'UPDATE')), 'one UPDATE');
+    }
+
+    /**
+     * The check writes no SQL: a raw expression - of a class of its own whose __toString() counts
+     * how often it is rendered - is rendered once, by the UPDATE that sends it, as a key value and
+     * as a value to set. Rendered by the check as well, the key would have read 2 and hit the other row.
+     */
+    public function testTheCheckRendersNoRawExpression(): void
+    {
+        $key = new class ('') extends RawExpression {
+            public int $renders = 0;
+
+            public function __toString(): string
+            {
+                return (string) ++$this->renders;
+            }
+        };
+        $name = new class ('') extends RawExpression {
+            public int $renders = 0;
+
+            public function __toString(): string
+            {
+                return sprintf("'rendered %d'", ++$this->renders);
+            }
+        };
+
+        $this->assertSame(1, $this->db->updateMultiple('batch', [['id' => $key, 'name' => $name]]));
+
+        $this->assertSame([1, 1], [$key->renders, $name->renders], 'each rendered once');
+        $this->assertContains("UPDATE `batch` SET `name` = 'rendered 1' WHERE `id` = 1", $this->sent);
+        $this->assertSame(['rendered 1', 'two'], array_column($this->db->table('batch')->orderBy('id')->get(), 'name'));
     }
 
     /**

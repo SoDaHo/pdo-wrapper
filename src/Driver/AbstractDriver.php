@@ -3522,7 +3522,8 @@ abstract class AbstractDriver implements DatabaseInterface
         // refused, not skipped) and every value to set or match that query() would refuse to bind -,
         // so that a refused row leaves no earlier row written: inside a transaction of the caller
         // nothing would undo it, and a caller that catches the refusal and commits would keep part
-        // of the batch. Refused like an argument: no hook fires for it
+        // of the batch. Refused like an argument: no hook fires for it. No SQL is written here: a
+        // raw expression is rendered once, by the UPDATE that sends it
         self::columnKey($keyColumn, 'The key column of updateMultiple()');
         foreach (array_values($rows) as $at => $row) {
             if (!array_key_exists($keyColumn, $row)) {
@@ -3531,11 +3532,10 @@ abstract class AbstractDriver implements DatabaseInterface
                     debugMessage: sprintf('Missing key column "%s" in row', $keyColumn)
                 );
             }
-            [, $params] = $this->buildWhereClause([$keyColumn => $row[$keyColumn]]);
+            $params = self::boundValues([$keyColumn => $row[$keyColumn]], 'The WHERE conditions', condition: true);
             $data = array_diff_key($row, [$keyColumn => null]);
             if ($data !== []) {
-                [, $setParams] = $this->buildSetClause($data);
-                $params = [...$setParams, ...$params]; // the order of update()'s statement
+                $params = [...self::boundValues($data, 'The columns to set', condition: false), ...$params]; // the order of update()'s statement
             }
             $unbindable = $this->unbindableParameter($params);
             if ($unbindable !== null) {
@@ -3695,6 +3695,42 @@ abstract class AbstractDriver implements DatabaseInterface
         }
 
         return [implode(' AND ', $clauses), $params];
+    }
+
+    /**
+     * What a column => value array would bind, in its order, without writing any SQL: a value as it
+     * is, a RawExpression by its bindings - its SQL is not rendered (an expression of a class of its
+     * own may do more in __toString() than return its text; the statement renders it once). The keys
+     * are checked as buildSetClause() and buildWhereClause() check them, a null condition refused as
+     * there. For updateMultiple()'s check of every row before the first is sent.
+     *
+     * @param array<array-key, mixed> $pairs Column => value pairs
+     * @param bool $condition The pairs are WHERE conditions: a null value is refused
+     *
+     * @throws QueryException When a key is no plain column name, or a condition is null
+     *
+     * @return list<mixed>
+     */
+    private static function boundValues(#[\SensitiveParameter] array $pairs, string $what, bool $condition): array
+    {
+        $values = [];
+        foreach ($pairs as $column => $value) {
+            if ($condition && $value === null) {
+                throw new QueryException(
+                    message: 'Query failed',
+                    debugMessage: sprintf(
+                        'NULL value for column "%s" in WHERE condition. Use whereNull() via the query builder, or a raw query with IS NULL.',
+                        $column
+                    )
+                );
+            }
+            self::columnKey($column, $what);
+            foreach ($value instanceof RawExpression ? $value->bindings : [$value] as $bound) {
+                $values[] = $bound;
+            }
+        }
+
+        return $values;
     }
 
     /**
