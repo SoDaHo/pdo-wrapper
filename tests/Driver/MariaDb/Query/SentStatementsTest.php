@@ -39,7 +39,7 @@ class SentStatementsTest extends ContractTestCase
     /**
      * The statement the query hook sees: SQL and params as sent.
      *
-     * @return array{string, array<int, mixed>}
+     * @return array{string, array<mixed>}
      */
     private function sent(callable $run): array
     {

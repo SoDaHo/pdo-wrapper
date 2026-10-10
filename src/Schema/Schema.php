@@ -187,7 +187,7 @@ final class Schema
      *
      * @throws QueryException When the current database has no such table
      *
-     * @return list<list<mixed>> The views' rows without their leading 1
+     * @return list<list<string|int|null>> The views' rows without their leading 1
      */
     private function ofTable(string $method, string $table, int $width, string $order, string ...$parts): array
     {
@@ -213,13 +213,17 @@ final class Schema
     }
 
     /**
+     * The rows of an information_schema query, by position. Its columns are names, types and
+     * numbers: mysqlnd delivers them as strings and integers, NULL as null (the types the library
+     * pins, see MariaDbDriver).
+     *
      * @param list<string> $params
      *
-     * @return list<list<mixed>>
+     * @return list<list<string|int|null>>
      */
     private function rows(string $sql, array $params): array
     {
-        /** @var list<list<mixed>> */
+        /** @var list<list<string|int|null>> */
         return $this->db->query($sql, $params)->fetchAll(PDO::FETCH_NUM);
     }
 }

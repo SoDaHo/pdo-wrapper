@@ -40,7 +40,11 @@ class QueryBuilder
     /** @var array<int, string|RawExpression> */
     private array $columns = ['*'];
 
-    /** @var array<int, array<string, mixed>> */
+    /**
+     * The conditions, in order, each in the shape its kind has
+     *
+     * @var list<array{type: 'basic', column: string|RawExpression, operator: string, value: mixed}|array{type: 'raw', sql: string, bindings: list<mixed>}|array{type: 'in'|'between', column: string|RawExpression, values: array<array-key, mixed>, not: bool}|array{type: 'null', column: string|RawExpression, not: bool}>
+     */
     private array $wheres = [];
 
     /** @var array<int, array<string, string>> */
@@ -209,7 +213,8 @@ class QueryBuilder
         } elseif ($operatorOrValue === null) {
             $operator = '=';
         } else {
-            $operator = $this->validateOperator((string) $operatorOrValue);
+            // Anything but a string is no operator: named by its type, validateOperator() refuses it
+            $operator = $this->validateOperator(is_string($operatorOrValue) ? $operatorOrValue : get_debug_type($operatorOrValue));
         }
 
         // where('col', null) and where('col', '=', null): a NULL comparison never matches by accident.
@@ -722,8 +727,10 @@ class QueryBuilder
         [$sql, $params] = $this->toSql();
         $this->refuseALockOutsideATransaction();
         $stmt = $this->db->query($sql, $params);
+        /** @var array<int, array<string, mixed>> $rows FETCH_ASSOC: each row an array of column name => value */
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        return $rows;
     }
 
     /**
@@ -1664,18 +1671,24 @@ class QueryBuilder
         $params = [];
 
         foreach ($this->wheres as $where) {
-            $type = (string)($where['type'] ?? '');
+            if ($where['type'] === 'raw') {
+                // Trusted developer SQL (see whereRaw()); its values are bound in order with the others
+                $clauses[] = '(' . $where['sql'] . ')';
+                foreach ($where['bindings'] as $binding) {
+                    $params[] = $binding;
+                }
+                continue;
+            }
+
             // A name is quoted; an expression (Database::json(), raw() without bindings) stands as it is.
             // A condition declares no alias: "has as col" is the name of one column, as in orderBy()
-            $column = $where['column'] ?? '';
-            $column = $column instanceof RawExpression ? (string) $column : $this->quoteReference((string) $column);
+            $column = $where['column'] instanceof RawExpression ? (string) $where['column'] : $this->quoteReference($where['column']);
 
-            switch ($type) {
+            switch ($where['type']) {
                 case 'basic':
-                    $operator = (string)($where['operator'] ?? '=');
-                    $value = $where['value'] ?? null;
-                    $right = Sql::value($value, $params);
-                    $clause = $this->comparison($column, $operator, $right, $value instanceof RawExpression);
+                    $operator = $where['operator'];
+                    $right = Sql::value($where['value'], $params);
+                    $clause = $this->comparison($column, $operator, $right, $where['value'] instanceof RawExpression);
                     if ($operator === 'LIKE' || $operator === 'NOT LIKE') {
                         $clause .= ' ESCAPE ?';
                         $params[] = self::LIKE_ESCAPE;
@@ -1683,33 +1696,20 @@ class QueryBuilder
                     $clauses[] = $clause;
                     break;
 
-                case 'raw':
-                    // Trusted developer SQL (see whereRaw()); its values are bound in order with the others
-                    $clauses[] = '(' . (string)($where['sql'] ?? '') . ')';
-                    /** @var array<int, mixed> $bindings */
-                    $bindings = is_array($where['bindings'] ?? null) ? array_values($where['bindings']) : [];
-                    foreach ($bindings as $binding) {
-                        $params[] = $binding;
-                    }
-                    break;
-
                 case 'in':
                     // array_values(): string keys would be renumbered by the later merge and could shadow each other
-                    /** @var array<int, mixed> $values */
-                    $values = is_array($where['values'] ?? null) ? array_values($where['values']) : [];
                     $slots = [];
-                    foreach ($values as $item) {
+                    foreach (array_values($where['values']) as $item) {
                         $slots[] = Sql::value($item, $params);
                     }
-                    $inOperator = ($where['not'] ?? false) ? 'NOT IN' : 'IN';
+                    $inOperator = $where['not'] ? 'NOT IN' : 'IN';
                     $clauses[] = $column . " {$inOperator} (" . implode(', ', $slots) . ')';
                     break;
 
                 case 'between':
-                    $betweenOperator = ($where['not'] ?? false) ? 'NOT BETWEEN' : 'BETWEEN';
+                    $betweenOperator = $where['not'] ? 'NOT BETWEEN' : 'BETWEEN';
                     // array_values(): ['min' => 1, 'max' => 2] must not silently become NULL AND NULL
-                    /** @var array<int, mixed> $betweenValues */
-                    $betweenValues = is_array($where['values'] ?? null) ? array_values($where['values']) : [null, null];
+                    $betweenValues = array_values($where['values']);
                     $bounds = [];
                     foreach ([$betweenValues[0] ?? null, $betweenValues[1] ?? null] as $bound) {
                         $bounds[] = Sql::value($bound, $params);
@@ -1718,7 +1718,7 @@ class QueryBuilder
                     break;
 
                 case 'null':
-                    $nullOperator = ($where['not'] ?? false) ? 'IS NOT NULL' : 'IS NULL';
+                    $nullOperator = $where['not'] ? 'IS NOT NULL' : 'IS NULL';
                     $clauses[] = $column . ' ' . $nullOperator;
                     break;
             }

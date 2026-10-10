@@ -132,13 +132,13 @@ class RawValueTest extends ContractTestCase
     /**
      * The statement the query hook sees: SQL and params as sent.
      *
-     * @return array{string, array<int, mixed>}
+     * @return array{string, array<mixed>}
      */
     private function sent(callable $run): array
     {
         $seen = [];
         $this->db->on('query', static function (array $data) use (&$seen): void {
-            $seen[] = [$data['sql'], $data['params']];
+            $seen[] = [(string) $data['sql'], is_array($data['params']) ? $data['params'] : []];
         });
         $run();
 

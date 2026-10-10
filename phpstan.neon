@@ -1,9 +1,12 @@
 parameters:
-    level: 9
+    level: max
     paths:
         - src
         - tests
     tmpDir: .phpstan.cache
     ignoreErrors:
-        # Explicit string casts from mixed are intentional type assertions
-        - identifier: cast.string
+        # The tests read hook payloads and fetched rows, whose types are mixed, as strings for their
+        # assertions: a value of a wrong type fails the assertion itself. src/ casts nothing it has not narrowed.
+        -
+            identifier: cast.string
+            path: tests/*

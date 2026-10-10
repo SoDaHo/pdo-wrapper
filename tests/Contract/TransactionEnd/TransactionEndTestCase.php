@@ -39,7 +39,7 @@ abstract class TransactionEndTestCase extends ContractTestCase
     /** @var list<?string> What a CommitFailedException handed to the end listener said at that moment; null for every other error */
     protected array $outcomesSeen = [];
 
-    /** @var list<array<string, mixed>> */
+    /** @var list<array<mixed>> */
     protected array $errors = [];
 
     protected function setUp(): void

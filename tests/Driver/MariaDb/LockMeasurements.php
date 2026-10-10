@@ -11,7 +11,7 @@ use Throwable;
  */
 final class LockMeasurements
 {
-    /** @var list<array<string, mixed>> What the 'transaction.end' listener was handed */
+    /** @var list<array<mixed>> What the 'transaction.end' listener was handed */
     public array $ends = [];
 
     /** The cause of the failure the callback swallowed */

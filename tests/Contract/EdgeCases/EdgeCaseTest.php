@@ -656,7 +656,7 @@ class EdgeCaseTest extends ContractTestCase
         $db->on('query', static function (array $data) use ($db, &$repeated): void {
             if (!$repeated) { // the first statement told: the insert itself
                 $repeated = true;
-                $db->execute($data['sql'], $data['params']);
+                $db->execute((string) $data['sql'], is_array($data['params']) ? $data['params'] : []);
             }
         });
 

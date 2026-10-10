@@ -923,7 +923,7 @@ abstract class AbstractDriver implements DatabaseInterface
      * The exception for a statement that PDO reported as failed by returning false (non-exception
      * error mode): carries the driver's error code and the full errorInfo, like a thrown PDOException.
      *
-     * @param array<int, mixed> $errorInfo PDO::errorInfo() or PDOStatement::errorInfo()
+     * @param array<mixed> $errorInfo PDO::errorInfo() or PDOStatement::errorInfo()
      */
     private function silentFailure(string $what, array $errorInfo, ?Throwable $previous = null): PDOException
     {
@@ -943,7 +943,7 @@ abstract class AbstractDriver implements DatabaseInterface
      * for a PDO warning - of any class, a PDOException of its own making included - as the failure
      * PDO recorded (see warnedFailure()); any other PDOException as it is.
      *
-     * @param array<int, mixed> $errorInfo errorInfo() of the handle the operation ran on
+     * @param array<mixed> $errorInfo errorInfo() of the handle the operation ran on
      */
     protected function failureBehind(Throwable $thrown, array $errorInfo): ?PDOException
     {
@@ -960,7 +960,7 @@ abstract class AbstractDriver implements DatabaseInterface
      * failure: then the exception is someone else's and passes unchanged. PDO clears the errorInfo
      * at the start of every operation, so an earlier failure is never mistaken for this one.
      *
-     * @param array<int, mixed> $errorInfo errorInfo() of the handle the operation ran on
+     * @param array<mixed> $errorInfo errorInfo() of the handle the operation ran on
      */
     private function warnedFailure(Throwable $thrown, array $errorInfo): ?PDOException
     {
@@ -3284,7 +3284,10 @@ abstract class AbstractDriver implements DatabaseInterface
 
         $stmt = $this->query($sql, $params);
 
-        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        /** @var array<int, array<string, mixed>> $rows FETCH_ASSOC: each row an array of column name => value */
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        return $rows;
     }
 
     /**

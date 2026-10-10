@@ -122,10 +122,10 @@ final class MariaDbBinding implements DriverBinding
         $config = TestEnvironment::mariadb();
 
         return [
-            'Database::mariadb()' => static fn (array $extra): AbstractDriver => Database::mariadb($config + $extra),
-            'new MariaDbDriver()' => static fn (array $extra): AbstractDriver => new MariaDbDriver($config + $extra),
-            'Database::connect()' => static fn (array $extra): AbstractDriver => self::driver(Database::connect(['driver' => 'mariadb'] + $config + $extra)),
-            'Database::fromEnv() with everything passed' => static fn (array $extra): AbstractDriver => self::driver(Database::fromEnv(['driver' => 'mariadb'] + $config + $extra)),
+            'Database::mariadb()' => static fn (array $extra): AbstractDriver => Database::mariadb($config + self::extra($extra)),
+            'new MariaDbDriver()' => static fn (array $extra): AbstractDriver => new MariaDbDriver($config + self::extra($extra)),
+            'Database::connect()' => static fn (array $extra): AbstractDriver => self::driver(Database::connect(['driver' => 'mariadb'] + $config + self::extra($extra))),
+            'Database::fromEnv() with everything passed' => static fn (array $extra): AbstractDriver => self::driver(Database::fromEnv(['driver' => 'mariadb'] + $config + self::extra($extra))),
             'Database::fromEnv() with DB_*' => static function (array $extra) use ($config): AbstractDriver {
                 $_ENV['DB_DRIVER'] = 'mariadb';
                 $_ENV['DB_HOST'] = $config['host'];
@@ -134,12 +134,26 @@ final class MariaDbBinding implements DriverBinding
                 $_ENV['DB_USERNAME'] = $config['username'];
                 $_ENV['DB_PASSWORD'] = $config['password'];
                 try {
-                    return self::driver(Database::fromEnv($extra));
+                    return self::driver(Database::fromEnv(self::extra($extra)));
                 } finally {
                     unset($_ENV['DB_DRIVER'], $_ENV['DB_HOST'], $_ENV['DB_PORT'], $_ENV['DB_DATABASE'], $_ENV['DB_USERNAME'], $_ENV['DB_PASSWORD']);
                 }
             },
         ];
+    }
+
+    /**
+     * The extra keys a factory is handed, as the type the factories declare for them (the closures
+     * take a plain array).
+     *
+     * @param array<mixed> $extra
+     *
+     * @return array{pdoClass?: class-string<\PDO>|null, options?: array<int, mixed>}
+     */
+    private static function extra(array $extra): array
+    {
+        /** @var array{pdoClass?: class-string<\PDO>|null, options?: array<int, mixed>} $extra */
+        return $extra;
     }
 
     public function driversOwnPdoClass(): string

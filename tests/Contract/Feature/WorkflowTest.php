@@ -787,8 +787,9 @@ class WorkflowTest extends ContractTestCase
         $this->assertCount(2, $result);
 
         $userIds = array_column($result, 'user_id');
-        $this->assertContains((string) $user1, array_map('strval', $userIds));
-        $this->assertContains((string) $user3, array_map('strval', $userIds));
+        $text = array_map(static fn (mixed $id): string => (string) $id, $userIds);
+        $this->assertContains((string) $user1, $text);
+        $this->assertContains((string) $user3, $text);
     }
 
     /**
@@ -862,7 +863,7 @@ class WorkflowTest extends ContractTestCase
         }
 
         $this->assertCount(1, $errors);
-        $this->assertStringContainsString('nonexistent_table', $errors[0]['sql']);
+        $this->assertStringContainsString('nonexistent_table', (string) $errors[0]['sql']);
     }
 
     /**

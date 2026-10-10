@@ -64,6 +64,7 @@ class TransactionTest extends ContractTestCase
         $this->db->commit();
 
         $stmt = $this->db->query('SELECT * FROM users');
+        /** @var list<array<string, mixed>> $users */
         $users = $stmt->fetchAll();
 
         $this->assertCount(1, $users);

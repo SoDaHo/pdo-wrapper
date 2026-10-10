@@ -24,10 +24,10 @@ class QueryBeforeTest extends ContractTestCase
         parent::setUp();
         $this->create('users', ['id' => 'id', 'name' => 'text']);
         $this->db->on('query', function (array $data): void {
-            $this->told[] = 'query: ' . $data['sql'];
+            $this->told[] = 'query: ' . (string) $data['sql'];
         });
         $this->db->on('error', function (array $data): void {
-            $this->told[] = 'error: ' . $data['sql'];
+            $this->told[] = 'error: ' . (string) $data['sql'];
         });
     }
 
@@ -35,7 +35,7 @@ class QueryBeforeTest extends ContractTestCase
     {
         $payloads = [];
         $this->db->on('query.before', function (array $data) use (&$payloads): void {
-            $this->told[] = 'before: ' . $data['sql'];
+            $this->told[] = 'before: ' . (string) $data['sql'];
             $payloads[] = $data;
         });
 
@@ -47,8 +47,8 @@ class QueryBeforeTest extends ContractTestCase
         $this->assertSame([
             'before: SELECT ? AS one',
             'query: SELECT ? AS one',
-            'before: ' . $payloads[1]['sql'],
-            'query: ' . $payloads[1]['sql'],
+            'before: ' . (string) $payloads[1]['sql'],
+            'query: ' . (string) $payloads[1]['sql'],
         ], $this->told);
     }
 
@@ -118,7 +118,7 @@ class QueryBeforeTest extends ContractTestCase
     public function testItFiresAlsoForAStatementTheLibraryRefuses(): void
     {
         $this->db->on('query.before', function (array $data): void {
-            $this->told[] = 'before: ' . $data['sql'];
+            $this->told[] = 'before: ' . (string) $data['sql'];
         });
 
         try {
@@ -206,8 +206,10 @@ class QueryBeforeTest extends ContractTestCase
         $this->db->insert('users', ['id' => 1, 'name' => 'Max']);
         $this->db->insert('users', ['id' => 2, 'name' => 'Moritz']);
         $this->db->on('query.before', static function (array $data): void {
-            $data['params'][0] = 2;
-            $data['params']['spare'] = 'x';
+            $params = is_array($data['params']) ? $data['params'] : [];
+            $params[0] = 2;
+            $params['spare'] = 'x';
+            $data['params'] = $params;
         });
         $id = 1;
         $params = [&$id];

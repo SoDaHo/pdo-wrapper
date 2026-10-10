@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Sodaho\PdoWrapper\Tests\Contract\Query;
 
 use Sodaho\PdoWrapper\Database;
+use Sodaho\PdoWrapper\Query\QueryBuilder;
 use Sodaho\PdoWrapper\Tests\Contract\ContractTestCase;
 use Sodaho\PdoWrapper\Tests\Support\Fetched;
 
@@ -35,7 +36,7 @@ class FloatBindingTest extends ContractTestCase
     {
         $this->db->insert('measures', ['id' => 1, 'value' => self::SIXTEEN_DIGITS]);
         $this->db->insert('measures', ['id' => 2, 'value' => 0.12345678901235]);
-        $ids = fn ($builder): array => array_column($builder->orderBy('id')->get(), 'id');
+        $ids = fn (QueryBuilder $builder): array => array_column($builder->orderBy('id')->get(), 'id');
 
         $this->assertSame([1], $ids($this->db->table('measures')->where('value', self::SIXTEEN_DIGITS)));
         $this->assertSame([1], $ids($this->db->table('measures')->whereIn('value', [self::SIXTEEN_DIGITS, 5.5])));

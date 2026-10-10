@@ -30,7 +30,7 @@ class TransactionEndHookTest extends ContractTestCase
     /** @var list<array{outcome: string, error: ?Throwable}> */
     private array $ends = [];
 
-    /** @var list<array<string, mixed>> */
+    /** @var list<array<mixed>> */
     private array $errors = [];
 
     protected function setUp(): void
@@ -774,7 +774,7 @@ class TransactionEndHookTest extends ContractTestCase
         });
         $db->on('transaction.end', function (array $data): void {
             $this->events[] = 'end';
-            $this->ends[] = ['outcome' => $data['outcome'], 'error' => $data['error']];
+            $this->ends[] = ['outcome' => (string) $data['outcome'], 'error' => $data['error'] instanceof Throwable ? $data['error'] : null];
         });
         $db->on('error', function (array $data): void {
             $this->errors[] = $data;

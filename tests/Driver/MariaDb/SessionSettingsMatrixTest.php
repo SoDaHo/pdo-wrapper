@@ -120,9 +120,9 @@ class SessionSettingsMatrixTest extends ContractTestCase
                 $pdo->rollBack();
             }
 
-            return $outcome . ($chained ? ', chained' : '');
+            return (string) $outcome . ($chained ? ', chained' : '');
         } catch (Throwable) {
-            return $outcome . ', closed';
+            return (string) $outcome . ', closed';
         }
     }
 

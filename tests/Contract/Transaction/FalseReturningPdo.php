@@ -49,7 +49,7 @@ final class FalseReturningPdo extends PDO
     }
 
     /**
-     * @return array<int, mixed>
+     * @return array<mixed>
      */
     public function errorInfo(): array
     {

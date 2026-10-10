@@ -100,7 +100,7 @@ class EdgeCaseTest extends ContractTestCase
             public bool $busy = false;
         };
         $driver->on('query', static function (array $data) use ($driver, $state): void {
-            if (!$state->busy && ($data['params'] === ['session setting'] || str_contains($data['sql'], '`users`'))) {
+            if (!$state->busy && ($data['params'] === ['session setting'] || str_contains((string) $data['sql'], '`users`'))) {
                 $state->busy = true;
                 $driver->insert('audit', ['note' => 'from the listener']);
                 $state->busy = false;
