@@ -371,7 +371,7 @@ trait HasHooks
      * @param string $event Event name
      * @param array<string, mixed> $data Event data to pass to callbacks
      */
-    protected function trigger(string $event, array $data): void
+    protected function trigger(string $event, #[\SensitiveParameter] array $data): void
     {
         foreach ($this->hooks[$event] ?? [] as $callback) {
             // by reference into the closure: what a listener changes in $data reaches the next one

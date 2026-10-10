@@ -30,7 +30,7 @@ interface DatabaseInterface
      * @throws Exception\ImplicitCommitException When the statement would commit the open transaction implicitly (inside a transaction begun through this library; nothing is sent, the transaction stays open)
      * @throws Exception\QueryException When the statement fails (also when PDO reports that without an exception), when a parameter is not null, a scalar or a Stringable object, is a float INF or NAN, or is a Query\RawExpression (the statement is not sent), when the server has thrown the open transaction away (after a deadlock or a 1020 - see MariaDbDriver - nothing is sent until that transaction is ended: by rollback(), by a refused commit() that tells 'lost', and for a transaction begun on raw PDO also once PDO reports none), when the transaction begun through this library is gone or may be - the driver, asked right after an earlier failure, found it gone or could not find out, or PDO reports no transaction any more (raw PDO ended it): nothing is sent until rollback() tells its end -, or when a 'query' listener threw a PDOException ('Query hook failed': the statement did run) or a 'query.before' listener did (the statement was not sent)
      */
-    public function query(string $sql, array $params = []): PDOStatement;
+    public function query(string $sql, #[\SensitiveParameter] array $params = []): PDOStatement;
 
     /**
      * Execute a SQL statement and return affected rows.
@@ -42,7 +42,7 @@ interface DatabaseInterface
      *
      * @return int Number of affected rows
      */
-    public function execute(string $sql, array $params = []): int;
+    public function execute(string $sql, #[\SensitiveParameter] array $params = []): int;
 
     /**
      * Get the underlying PDO instance.
@@ -95,7 +95,7 @@ interface DatabaseInterface
      *
      * @return bool True when taken, false when another connection held it beyond the timeout
      */
-    public function namedLock(string $name, int $timeout = 0): bool;
+    public function namedLock(#[\SensitiveParameter] string $name, int $timeout = 0): bool;
 
     /**
      * Release a named lock this connection holds (RELEASE_LOCK()).
@@ -105,7 +105,7 @@ interface DatabaseInterface
      *
      * @return bool True when released, false when this connection did not hold it
      */
-    public function releaseNamedLock(string $name): bool;
+    public function releaseNamedLock(#[\SensitiveParameter] string $name): bool;
 
     /**
      * Whether this connection holds the named lock, asked on the server.
@@ -113,7 +113,7 @@ interface DatabaseInterface
      * @throws Exception\QueryException When the name is empty or holds a NUL byte, the driver names no lock prefix, the query fails, its answer cannot be read, or the connection was replaced while the statement ran
      * @throws \Throwable What an error handler throws for reading the answer that is not about a failure PDO recorded (passed on unchanged)
      */
-    public function isNamedLockHeld(string $name): bool;
+    public function isNamedLockHeld(#[\SensitiveParameter] string $name): bool;
 
     /**
      * The connection id of the connection that holds the named lock, this one included, or null
@@ -122,7 +122,7 @@ interface DatabaseInterface
      * @throws Exception\QueryException When the name is empty or holds a NUL byte, the driver names no lock prefix, the query fails, the server answers something else, its answer cannot be read, or the connection was replaced while the statement ran
      * @throws \Throwable What an error handler throws for reading the answer that is not about a failure PDO recorded (passed on unchanged)
      */
-    public function namedLockHolder(string $name): ?int;
+    public function namedLockHolder(#[\SensitiveParameter] string $name): ?int;
 
     /**
      * The named locks this driver holds as far as it knows - what the answers of namedLock() and
@@ -381,7 +381,7 @@ interface DatabaseInterface
      * @return int Last insert ID, 0 when the database generated none (a table without
      *             AUTO_INCREMENT)
      */
-    public function insert(string $table, array $data): int;
+    public function insert(string $table, #[\SensitiveParameter] array $data): int;
 
     /**
      * Update rows matching WHERE conditions.
@@ -398,7 +398,7 @@ interface DatabaseInterface
      *
      * @return int Number of affected rows as the database counts them: MariaDB counts the rows actually changed - the rows matched with ATTR_FOUND_ROWS, and possibly on a persistent connection an earlier request opened with it
      */
-    public function update(string $table, array $data, array $where): int;
+    public function update(string $table, #[\SensitiveParameter] array $data, #[\SensitiveParameter] array $where): int;
 
     /**
      * Delete rows matching WHERE conditions.
@@ -410,7 +410,7 @@ interface DatabaseInterface
      *
      * @return int Number of affected rows
      */
-    public function delete(string $table, array $where): int;
+    public function delete(string $table, #[\SensitiveParameter] array $where): int;
 
     /**
      * Find a single row by WHERE conditions.
@@ -422,7 +422,7 @@ interface DatabaseInterface
      *
      * @return array<string, mixed>|null Row as associative array or null
      */
-    public function findOne(string $table, array $where): ?array;
+    public function findOne(string $table, #[\SensitiveParameter] array $where): ?array;
 
     /**
      * Find all rows matching WHERE conditions.
@@ -434,7 +434,7 @@ interface DatabaseInterface
      *
      * @return array<int, array<string, mixed>> Array of rows
      */
-    public function findAll(string $table, array $where = []): array;
+    public function findAll(string $table, #[\SensitiveParameter] array $where = []): array;
 
     // =========================================================================
     // Query Builder

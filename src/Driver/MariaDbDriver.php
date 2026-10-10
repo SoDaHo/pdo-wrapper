@@ -57,14 +57,20 @@ class MariaDbDriver extends AbstractDriver
      * - pdoClass: Name of a class that extends PDO (default: PDO). The connection is created as
      *   an object of that class, with the arguments PDO's constructor takes; getPdo() returns it.
      *   For a test that needs a COMMIT to fail, or for the driver's own class (Pdo\Mysql).
+     * - redactParameters: true to keep the values a statement binds out of every hook payload
+     *   ('query.before', 'query', 'error': each value replaced by '[redacted]', the database's
+     *   message by its codes), every debug message and every previous exception of the library
+     *   (a RedactedPdoException with the SQLSTATE and driver code stands in for PDO's); default
+     *   false. The trace arguments of the library's methods that take values are marked
+     *   #[\SensitiveParameter] either way.
      *
      * Multi-statements are switched off: no statement this library sends needs them, and with them
      * a string that reaches raw PDO (getPdo()->exec()) or an emulated prepare could carry a second
      * statement. Pass the driver's ATTR_MULTI_STATEMENTS option as true to get them back.
      *
-     * @param array{host?: string|null, database?: string|null, username?: string|null, password?: string|null, port?: int|string, charset?: string, options?: array<int, mixed>, pdoClass?: class-string<PDO>|null} $config
+     * @param array{host?: string|null, database?: string|null, username?: string|null, password?: string|null, port?: int|string, charset?: string, options?: array<int, mixed>, pdoClass?: class-string<PDO>|null, redactParameters?: bool} $config
      *
-     * @throws ConnectionException When required config is missing, 'pdoClass' names no class that extends PDO, 'options' turn ATTR_STRINGIFY_FETCHES on, the connection fails, or the server is no MariaDB 10.11 or later, the client no mysqlnd or ATTR_ORACLE_NULLS not NULL_NATURAL, or completion_type cannot be set to NO_CHAIN
+     * @throws ConnectionException When required config is missing, 'pdoClass' names no class that extends PDO, 'redactParameters' is no boolean, 'options' turn ATTR_STRINGIFY_FETCHES on, the connection fails, or the server is no MariaDB 10.11 or later, the client no mysqlnd or ATTR_ORACLE_NULLS not NULL_NATURAL, or completion_type cannot be set to NO_CHAIN
      * @throws \Throwable What a 'pdoClass', or an error handler under a non-exception error mode, throws while the connection opens besides a PDOException: unchanged
      */
     public function __construct(#[\SensitiveParameter] array $config)
@@ -75,6 +81,7 @@ class MariaDbDriver extends AbstractDriver
         $password = $config['password'] ?? null;
         $port = self::validPort($config['port'] ?? 3306);
         $pdoClass = self::validPdoClass($config['pdoClass'] ?? PDO::class);
+        $redactParameters = self::validSwitch('redactParameters', $config['redactParameters'] ?? false);
         $charset = $config['charset'] ?? 'utf8mb4';
 
         // Empty counts as missing: pdo_mysql would take an empty host for the local socket, an empty
@@ -143,7 +150,26 @@ class MariaDbDriver extends AbstractDriver
             self::pinCompletionType($pdo, $host, $port);
 
             return $pdo;
-        });
+        }, $redactParameters);
+    }
+
+    /**
+     * A configured switch as the boolean it must be, or a ConnectionException: a "0" or "false" from
+     * a configuration file would otherwise switch it on, or off, without a word. The message names
+     * the key, never the value.
+     *
+     * @throws ConnectionException When the value is not true or false
+     */
+    private static function validSwitch(string $key, mixed $value): bool
+    {
+        if (!is_bool($value)) {
+            throw new ConnectionException(
+                message: 'Database connection failed',
+                debugMessage: sprintf('Invalid config value "%s": expected true or false', $key)
+            );
+        }
+
+        return $value;
     }
 
     /**
@@ -270,7 +296,7 @@ class MariaDbDriver extends AbstractDriver
      *
      * @throws QueryException When the connection was opened with ATTR_FOUND_ROWS or is persistent, $data is empty or the query fails for another reason than a duplicate
      */
-    public function insertIgnore(string $table, array $data): int
+    public function insertIgnore(string $table, #[\SensitiveParameter] array $data): int
     {
         $unclear = $this->whyCountsAreUnclear();
         if ($unclear !== null) {
@@ -297,7 +323,7 @@ class MariaDbDriver extends AbstractDriver
      *
      * @throws QueryException When the connection was opened with ATTR_FOUND_ROWS or is persistent, $row or $update is empty, or the query fails
      */
-    public function upsert(string $table, array $row, array $update): int
+    public function upsert(string $table, #[\SensitiveParameter] array $row, #[\SensitiveParameter] array $update): int
     {
         $this->refuseACountOfMatchedRows('upsert()');
 
@@ -314,7 +340,7 @@ class MariaDbDriver extends AbstractDriver
      *
      * @throws QueryException When $update is given on a connection opened with ATTR_FOUND_ROWS or a persistent one, $data or the condition is empty, a binding is a RawExpression, or the query fails
      */
-    public function insertWhen(string $table, array $data, string $condition, array $bindings = [], array $update = []): int
+    public function insertWhen(string $table, #[\SensitiveParameter] array $data, string $condition, #[\SensitiveParameter] array $bindings = [], #[\SensitiveParameter] array $update = []): int
     {
         if ($update !== []) {
             $this->refuseACountOfMatchedRows('insertWhen() with $update');

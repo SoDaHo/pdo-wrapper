@@ -14,8 +14,9 @@ use Throwable;
  * the cause without reading the message. It is null for every other failure: a connection that
  * could not be opened (its PDOException is getPrevious(), its codes are $sqlState and
  * $driverCode), a refused configuration, a reconnect() that cannot be done. That PDOException
- * holds the DSN and the username in its trace while zend.exception_ignore_args is off (PDO keeps
- * the password out).
+ * holds the DSN, the username and the options - an INIT_COMMAND among them - in its trace while
+ * zend.exception_ignore_args is off (PDO keeps the password out), and serialize() then fails on
+ * the connector Closure in it.
  */
 class ConnectionException extends DatabaseException
 {

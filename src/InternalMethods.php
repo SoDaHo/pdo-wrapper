@@ -66,7 +66,7 @@ interface InternalMethods
      *
      * @return int Inserted rows, 1 or 0; with $update MariaDB's count (1 inserted, 2 updated, 0 neither)
      */
-    public function insertWhen(string $table, array $data, string $condition, array $bindings = [], array $update = []): int;
+    public function insertWhen(string $table, #[\SensitiveParameter] array $data, string $condition, #[\SensitiveParameter] array $bindings = [], #[\SensitiveParameter] array $update = []): int;
 
     /**
      * insertWhen() that returns the row: `... RETURNING <columns>`. Null when the condition was
@@ -84,7 +84,7 @@ interface InternalMethods
      *
      * @return array<string, mixed>|null The row, or null when the condition was false
      */
-    public function insertWhenReturning(string $table, array $data, string $condition, array $bindings = [], array $update = [], array $columns = ['*']): ?array;
+    public function insertWhenReturning(string $table, #[\SensitiveParameter] array $data, string $condition, #[\SensitiveParameter] array $bindings = [], #[\SensitiveParameter] array $update = [], array $columns = ['*']): ?array;
 
     /**
      * Insert a row, or change the row it collides with: `INSERT INTO table (...) VALUES (...)
@@ -112,7 +112,7 @@ interface InternalMethods
      *
      * @return int 1 inserted, 2 updated, 0 unchanged
      */
-    public function upsert(string $table, array $row, array $update): int;
+    public function upsert(string $table, #[\SensitiveParameter] array $row, #[\SensitiveParameter] array $update): int;
 
     /**
      * upsert() that returns the row after the statement: `... RETURNING <columns>` - the inserted
@@ -128,7 +128,7 @@ interface InternalMethods
      *
      * @return array<string, mixed> The row
      */
-    public function upsertReturning(string $table, array $row, array $update, array $columns = ['*']): array;
+    public function upsertReturning(string $table, #[\SensitiveParameter] array $row, #[\SensitiveParameter] array $update, array $columns = ['*']): array;
 
     /**
      * Insert a row unless it collides with an existing one: on a duplicate of ANY unique key or
@@ -152,7 +152,7 @@ interface InternalMethods
      *
      * @return int Inserted rows: 1 or 0
      */
-    public function insertIgnore(string $table, array $data): int;
+    public function insertIgnore(string $table, #[\SensitiveParameter] array $data): int;
 
     /**
      * Update multiple rows by their key column.
@@ -170,5 +170,5 @@ interface InternalMethods
      *
      * @return int Number of affected rows
      */
-    public function updateMultiple(string $table, array $rows, string $keyColumn = 'id'): int;
+    public function updateMultiple(string $table, #[\SensitiveParameter] array $rows, string $keyColumn = 'id'): int;
 }

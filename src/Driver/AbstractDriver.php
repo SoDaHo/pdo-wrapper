@@ -20,6 +20,7 @@ use Sodaho\PdoWrapper\Exception\ListenerTransactionException;
 use Sodaho\PdoWrapper\Exception\NamedLockReentryException;
 use Sodaho\PdoWrapper\Exception\NamedLocksHeldException;
 use Sodaho\PdoWrapper\Exception\QueryException;
+use Sodaho\PdoWrapper\Exception\RedactedPdoException;
 use Sodaho\PdoWrapper\Exception\TransactionException;
 use Sodaho\PdoWrapper\Exception\TransactionOpenException;
 use Sodaho\PdoWrapper\Exception\UniqueViolationException;
@@ -201,15 +202,27 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
     /** How many named-lock statements have run and their methods not yet returned, one inside a listener of the other: reconnect() refuses meanwhile */
     private int $lockStatementsRunning = 0;
 
+    /** What stands for a bound value where the option redactParameters hides it */
+    private const REDACTED = '[redacted]';
+
+    /**
+     * The option redactParameters: the values a statement binds appear in no hook payload, no debug
+     * message and no previous exception of the library - the database's message, which quotes
+     * values (a duplicate key), is replaced by its codes. Fixed for the driver's life.
+     */
+    private bool $redactParameters = false;
+
     /**
      * @param (Closure(): PDO)|null $connect Opens the connection - with the settings the driver was
      *                                       created with, now and for reconnect(). Null for a driver
      *                                       that sets $pdo itself: it cannot reconnect.
+     * @param bool $redactParameters The option redactParameters (see $redactParameters)
      *
      * @throws ConnectionException What $connect throws when the connection fails
      */
-    public function __construct(?Closure $connect = null)
+    public function __construct(?Closure $connect = null, bool $redactParameters = false)
     {
+        $this->redactParameters = $redactParameters;
         if ($connect !== null) {
             $this->connector = $connect;
             $this->pdo = $connect();
@@ -305,7 +318,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      *
      * @return PDOStatement Executed statement
      */
-    public function query(string $sql, array $params = []): PDOStatement
+    public function query(string $sql, #[\SensitiveParameter] array $params = []): PDOStatement
     {
         // Only for the statement it was set for: not for one an overriding query() sends ahead of it
         // (a session setting: other SQL), and not for one a listener runs (deeper in the hooks), even
@@ -321,8 +334,10 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
         // First: the checks below see what a listener did (a statement of its own, a reconnect())
         try {
             // The parameters as values: an element that is a reference would let a listener change what is bound
-            $this->triggerFromQuery('query.before', ['sql' => $sql, 'params' => array_map(static fn (mixed $value): mixed => $value, $params)]);
+            $this->triggerFromQuery('query.before', ['sql' => $sql, 'params' => $this->shownParams(array_map(static fn (mixed $value): mixed => $value, $params))]);
         } catch (PDOException $e) {
+            $e = $this->withoutValues($e);
+
             throw new QueryException(
                 message: 'Query hook failed',
                 previous: $e,
@@ -392,7 +407,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
         if ($unbindable !== null) {
             $this->triggerFromQuery('error', [
                 'sql' => $sql,
-                'params' => $params,
+                'params' => $this->shownParams($params),
                 'error' => $unbindable,
                 'code' => 0,
                 'sqlState' => null, // nothing was sent: no database failure stands behind it
@@ -447,11 +462,13 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
         try {
             $this->triggerFromQuery('query', [
                 'sql' => $sql,
-                'params' => $params,
+                'params' => $this->shownParams($params),
                 'duration' => microtime(true) - $start,
                 'rows' => $rows,
             ]);
         } catch (PDOException $e) {
+            $e = $this->withoutValues($e);
+
             throw new QueryException(
                 message: 'Query hook failed',
                 previous: $e,
@@ -473,13 +490,16 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      *
      * @param array<int|string, mixed> $params
      */
-    private function failedQuery(string $sql, array $params, PDOException $e): QueryException
+    private function failedQuery(string $sql, #[\SensitiveParameter] array $params, #[\SensitiveParameter] PDOException $e): QueryException
     {
+        // Read from the database's message before redactParameters may replace it: a key's name is no value
+        $constraint = $this->isUniqueViolation($e) ? $this->violatedConstraint($e) : null;
+        $e = $this->withoutValues($e);
         $this->noteStatementFailure($e);
         [$sqlState, $driverCode] = Codes::behind($e); // what the exception below will carry
         $this->triggerFromQuery('error', [
             'sql' => $sql,
-            'params' => $params,
+            'params' => $this->shownParams($params),
             'error' => $e->getMessage(),
             'code' => $e->getCode(),
             'sqlState' => $sqlState,
@@ -493,7 +513,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
                 message: 'Query failed',
                 previous: $e,
                 debugMessage: $debugMessage,
-                constraint: $this->violatedConstraint($e)
+                constraint: $constraint
             );
         }
 
@@ -543,7 +563,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      *
      * @throws LogicException When MAX_HOOK_DEPTH listeners run one inside the other already
      */
-    private function triggerFromQuery(string $event, array $data): void
+    private function triggerFromQuery(string $event, #[\SensitiveParameter] array $data): void
     {
         if ($this->hookDepth >= self::MAX_HOOK_DEPTH) {
             throw new LogicException(sprintf(
@@ -580,7 +600,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      *
      * @throws QueryException As query()
      */
-    protected function queryThen(string $sql, array $params, Closure $afterExecute): PDOStatement
+    protected function queryThen(string $sql, #[\SensitiveParameter] array $params, Closure $afterExecute): PDOStatement
     {
         // Restored afterwards: a queryThen() nested in a hook of a statement sent ahead must not drop the outer step
         $outer = $this->afterExecute;
@@ -785,7 +805,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      *
      * @param array<int|string, mixed> $params
      */
-    protected function unbindableParameter(array $params): ?string
+    protected function unbindableParameter(#[\SensitiveParameter] array $params): ?string
     {
         foreach ($params as $key => $value) {
             $position = is_int($key) ? '#' . ($key + 1) : '"' . $key . '"';
@@ -812,14 +832,63 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
     }
 
     /**
-     * Parameters as JSON for a debug message. Never fails: bytes that are not UTF-8 (binary values)
-     * are substituted instead of turning the whole list into "false".
+     * Parameters as JSON for a debug message - with redactParameters only their number. Never fails:
+     * bytes that are not UTF-8 (binary values) are substituted instead of turning the whole list
+     * into "false".
      *
      * @param array<int|string, mixed> $params
      */
-    private function encodeParams(array $params): string
+    private function encodeParams(#[\SensitiveParameter] array $params): string
     {
+        if ($this->redactParameters) {
+            return sprintf('%d redacted', count($params));
+        }
+
         return (string) json_encode($params, JSON_PARTIAL_OUTPUT_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE);
+    }
+
+    /**
+     * The parameters as a hook payload shows them: as passed, or - with redactParameters - every
+     * value replaced, the keys kept (a listener that counts or names them goes on working).
+     *
+     * @param array<int|string, mixed> $params
+     *
+     * @return array<int|string, mixed>
+     */
+    private function shownParams(#[\SensitiveParameter] array $params): array
+    {
+        return $this->redactParameters ? array_map(static fn (): string => self::REDACTED, $params) : $params;
+    }
+
+    /**
+     * A failure as the library hands it on: as it is, or - with redactParameters - a PDOException of
+     * its own that keeps the SQLSTATE and the driver code (in errorInfo and as code) but not the
+     * database's message, which quotes values (a duplicate entry, an incorrect value), nor the
+     * exceptions before it (an error handler's message quotes it too). Built here, from a call whose
+     * value parameters are SensitiveParameter: its trace holds no value either.
+     */
+    private function withoutValues(#[\SensitiveParameter] PDOException $failure): PDOException
+    {
+        if (!$this->redactParameters) {
+            return $failure;
+        }
+        [$state, $code] = Codes::behind($failure);
+        $redacted = new RedactedPdoException(
+            sprintf('SQLSTATE[%s]: driver error %s (the message is redacted: redactParameters)', $state ?? '-', $code ?? '-'),
+            $state
+        );
+        $redacted->errorInfo = [$state ?? '', $code, 'the message is redacted: redactParameters'];
+
+        return $redacted;
+    }
+
+    /**
+     * A named lock's name as a debug message shows it: quoted, or - with redactParameters, the name is
+     * bound to the statement - not at all.
+     */
+    private function shownLockName(#[\SensitiveParameter] string $name): string
+    {
+        return $this->redactParameters ? 'the lock (name redacted)' : '"' . $name . '"';
     }
 
     /**
@@ -836,7 +905,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      *
      * @return bool False when PDO reports the failure without an exception
      */
-    protected function bindAndExecute(PDOStatement $stmt, array $params): bool
+    protected function bindAndExecute(PDOStatement $stmt, #[\SensitiveParameter] array $params): bool
     {
         // A new array, not an in-place rewrite: a reference inside $params would otherwise be written through
         $bound = [];
@@ -919,7 +988,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      *
      * @return int Number of affected rows
      */
-    public function execute(string $sql, array $params = []): int
+    public function execute(string $sql, #[\SensitiveParameter] array $params = []): int
     {
         return $this->query($sql, $params)->rowCount();
     }
@@ -2330,7 +2399,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
                 message: 'Database connection failed',
                 debugMessage: sprintf(
                     'reconnect() would give up the named locks this driver holds (%s) with the old session. Release them first, or call reconnect(dropNamedLocks: true) to give them up knowingly.',
-                    implode(', ', array_map(static fn (string $name): string => '"' . $name . '"', $names))
+                    implode(', ', array_map($this->shownLockName(...), $names))
                 ),
                 lockNames: $names
             );
@@ -2475,7 +2544,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      *
      * @return bool True when taken, false when another connection held it beyond the timeout
      */
-    public function namedLock(string $name, int $timeout = 0): bool
+    public function namedLock(#[\SensitiveParameter] string $name, int $timeout = 0): bool
     {
         $lock = $this->lockName('namedLock', $name);
         if ($timeout < 0) {
@@ -2499,12 +2568,12 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
             0 => false,
             -1 => throw new NamedLockReentryException(
                 message: 'Query failed',
-                debugMessage: sprintf('namedLock(): this connection holds "%s" already; MariaDB would count a second hold, and one release would not free it. Release it first, or ask isNamedLockHeld().', $name),
+                debugMessage: sprintf('namedLock(): this connection holds %s already; MariaDB would count a second hold, and one release would not free it. Release it first, or ask isNamedLockHeld().', $this->shownLockName($name)),
                 lockName: $name
             ),
             default => throw new QueryException(
                 message: 'Query failed',
-                debugMessage: sprintf('namedLock(): GET_LOCK() answered %s for "%s" - an error on the server, not a busy lock', var_export($taken, true), $name)
+                debugMessage: sprintf('namedLock(): GET_LOCK() answered %s for %s - an error on the server, not a busy lock', var_export($taken, true), $this->shownLockName($name))
             ),
         };
     }
@@ -2523,7 +2592,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      *              (heldNamedLocks()), recorded where the statement ran; when it did not run, it
      *              still does.
      */
-    public function releaseNamedLock(string $name): bool
+    public function releaseNamedLock(#[\SensitiveParameter] string $name): bool
     {
         return $this->lockStatement('releaseNamedLock', 'SELECT RELEASE_LOCK(?)', [$this->lockName('releaseNamedLock', $name)], function () use ($name): void {
             unset($this->heldNamedLocks[$name]);
@@ -2538,7 +2607,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      * @throws QueryException When the name is empty or holds a NUL byte, the driver names no lock prefix, the query fails, its answer cannot be read, or the connection was replaced while the statement ran
      * @throws Throwable What an error handler throws for reading the answer that is not about a failure PDO recorded: passed on unchanged
      */
-    public function isNamedLockHeld(string $name): bool
+    public function isNamedLockHeld(#[\SensitiveParameter] string $name): bool
     {
         return $this->lockStatement('isNamedLockHeld', 'SELECT IS_USED_LOCK(?) = CONNECTION_ID()', [$this->lockName('isNamedLockHeld', $name)]) === 1;
     }
@@ -2553,13 +2622,13 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      * @throws QueryException When the name is empty or holds a NUL byte, the driver names no lock prefix, the query fails, its answer cannot be read, the server answers something else, or the connection was replaced while the statement ran
      * @throws Throwable What an error handler throws for reading the answer that is not about a failure PDO recorded: passed on unchanged
      */
-    public function namedLockHolder(string $name): ?int
+    public function namedLockHolder(#[\SensitiveParameter] string $name): ?int
     {
         $holder = $this->lockStatement('namedLockHolder', 'SELECT IS_USED_LOCK(?)', [$this->lockName('namedLockHolder', $name)]);
         if ($holder !== null && !is_int($holder)) {
             throw new QueryException(
                 message: 'Query failed',
-                debugMessage: sprintf('namedLockHolder(): IS_USED_LOCK() answered %s for "%s", neither a connection id nor NULL', var_export($holder, true), $name)
+                debugMessage: sprintf('namedLockHolder(): IS_USED_LOCK() answered %s for %s, neither a connection id nor NULL', var_export($holder, true), $this->shownLockName($name))
             );
         }
 
@@ -2601,7 +2670,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      * @throws QueryException When the query fails, its answer cannot be read, or the connection was replaced while it ran
      * @throws Throwable What a listener throws, and what an error handler throws for a failed read that PDO did not record: passed on unchanged (the read is recorded as unknown)
      */
-    private function lockStatement(string $method, string $sql, array $params, ?Closure $settle = null): mixed
+    private function lockStatement(string $method, string $sql, #[\SensitiveParameter] array $params, ?Closure $settle = null): mixed
     {
         $ranOn = null;
         $refusing = false;
@@ -2675,7 +2744,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      *
      * @throws QueryException When the name is empty or holds a NUL byte, or the driver names no prefix
      */
-    private function lockName(string $method, string $name): string
+    private function lockName(string $method, #[\SensitiveParameter] string $name): string
     {
         if ($name === '') {
             throw new QueryException(
@@ -2741,7 +2810,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      *
      * @return int Last insert ID, 0 when the database generated none
      */
-    public function insert(string $table, array $data): int
+    public function insert(string $table, #[\SensitiveParameter] array $data): int
     {
         if (empty($data)) {
             throw new QueryException(
@@ -2822,7 +2891,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      *
      * @return int Inserted rows, 1 or 0; with $update MariaDB's count (1 inserted, 2 updated, 0 neither)
      */
-    public function insertWhen(string $table, array $data, string $condition, array $bindings = [], array $update = []): int
+    public function insertWhen(string $table, #[\SensitiveParameter] array $data, string $condition, #[\SensitiveParameter] array $bindings = [], #[\SensitiveParameter] array $update = []): int
     {
         [$sql, $params] = $this->conditionalInsert('insertWhen', $table, $data, $condition, $bindings, $update);
 
@@ -2843,7 +2912,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      *
      * @return array<string, mixed>|null The row, or null when the condition was false
      */
-    public function insertWhenReturning(string $table, array $data, string $condition, array $bindings = [], array $update = [], array $columns = ['*']): ?array
+    public function insertWhenReturning(string $table, #[\SensitiveParameter] array $data, string $condition, #[\SensitiveParameter] array $bindings = [], #[\SensitiveParameter] array $update = [], array $columns = ['*']): ?array
     {
         [$sql, $params] = $this->conditionalInsert('insertWhenReturning', $table, $data, $condition, $bindings, $update);
 
@@ -2861,7 +2930,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      *
      * @return int 1 inserted, 2 updated, 0 unchanged
      */
-    public function upsert(string $table, array $row, array $update): int
+    public function upsert(string $table, #[\SensitiveParameter] array $row, #[\SensitiveParameter] array $update): int
     {
         [$sql, $params] = $this->upsertStatement('upsert', $table, $row, $update);
 
@@ -2880,7 +2949,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      *
      * @return array<string, mixed> The row
      */
-    public function upsertReturning(string $table, array $row, array $update, array $columns = ['*']): array
+    public function upsertReturning(string $table, #[\SensitiveParameter] array $row, #[\SensitiveParameter] array $update, array $columns = ['*']): array
     {
         [$sql, $params] = $this->upsertStatement('upsertReturning', $table, $row, $update);
         $returned = $this->returnedRow($sql . $this->returningClause('upsertReturning', $columns), $params);
@@ -2906,7 +2975,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      *
      * @return array{0: string, 1: array<int, mixed>}
      */
-    private function conditionalInsert(string $method, string $table, array $data, string $condition, array $bindings, array $update): array
+    private function conditionalInsert(string $method, string $table, #[\SensitiveParameter] array $data, string $condition, #[\SensitiveParameter] array $bindings, #[\SensitiveParameter] array $update): array
     {
         if (empty($data)) {
             throw new QueryException(
@@ -2957,7 +3026,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      *
      * @return array{0: string, 1: array<int, mixed>}
      */
-    private function upsertStatement(string $method, string $table, array $row, array $update): array
+    private function upsertStatement(string $method, string $table, #[\SensitiveParameter] array $row, #[\SensitiveParameter] array $update): array
     {
         if (empty($row)) {
             throw new QueryException(
@@ -3023,7 +3092,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      *
      * @return array<string, mixed>|null
      */
-    private function returnedRow(string $sql, array $params): ?array
+    private function returnedRow(string $sql, #[\SensitiveParameter] array $params): ?array
     {
         /** @var array<string, mixed>|false $returned */
         $returned = $this->query($sql, $params)->fetch(PDO::FETCH_ASSOC);
@@ -3044,7 +3113,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      *
      * @return int Inserted rows: 1 or 0
      */
-    public function insertIgnore(string $table, array $data): int
+    public function insertIgnore(string $table, #[\SensitiveParameter] array $data): int
     {
         if (empty($data)) {
             throw new QueryException(
@@ -3080,7 +3149,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      *
      * @return int Number of affected rows
      */
-    public function update(string $table, array $data, array $where): int
+    public function update(string $table, #[\SensitiveParameter] array $data, #[\SensitiveParameter] array $where): int
     {
         if (empty($data)) {
             throw new QueryException(
@@ -3120,7 +3189,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      *
      * @return int Number of affected rows
      */
-    public function delete(string $table, array $where): int
+    public function delete(string $table, #[\SensitiveParameter] array $where): int
     {
         if (empty($where)) {
             throw new QueryException(
@@ -3150,7 +3219,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      *
      * @return array<string, mixed>|null Row as associative array or null if not found
      */
-    public function findOne(string $table, array $where): ?array
+    public function findOne(string $table, #[\SensitiveParameter] array $where): ?array
     {
         if (empty($where)) {
             throw new QueryException(
@@ -3184,7 +3253,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      *
      * @return array<int, array<string, mixed>> Array of rows as associative arrays
      */
-    public function findAll(string $table, array $where = []): array
+    public function findAll(string $table, #[\SensitiveParameter] array $where = []): array
     {
         if (empty($where)) {
             $sql = sprintf('SELECT * FROM %s', $this->quoteIdentifier($table));
@@ -3219,7 +3288,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      *
      * @return int Total number of affected rows
      */
-    public function updateMultiple(string $table, array $rows, string $keyColumn = 'id'): int
+    public function updateMultiple(string $table, #[\SensitiveParameter] array $rows, string $keyColumn = 'id'): int
     {
         if (empty($rows)) {
             return 0;
@@ -3300,7 +3369,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      *
      * @return array{0: string, 1: string, 2: array<int, mixed>} [columns sql, values sql, params]
      */
-    protected function buildInsertParts(array $data): array
+    protected function buildInsertParts(#[\SensitiveParameter] array $data): array
     {
         $columns = [];
         $values = [];
@@ -3326,7 +3395,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      *
      * @return array{0: string, 1: array<int, mixed>} [sql, params]
      */
-    protected function buildSetClause(array $data): array
+    protected function buildSetClause(#[\SensitiveParameter] array $data): array
     {
         $clauses = [];
         $params = [];
@@ -3350,7 +3419,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      *
      * @return array{0: string, 1: array<int, mixed>} [sql, params] - SQL string and parameter values
      */
-    protected function buildWhereClause(array $where): array
+    protected function buildWhereClause(#[\SensitiveParameter] array $where): array
     {
         $clauses = [];
         $params = [];

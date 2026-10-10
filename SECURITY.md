@@ -33,7 +33,9 @@ Likewise outside the library's reach, and documented in the README:
   the previous exception (a duplicate key's message quotes the value), `(string) $e` and the arguments in a
   trace (while `zend.exception_ignore_args` is off) carry the SQL and the bound parameters as passed, secrets
   included - the README's "Parameters are secrets" lists every channel. An application that writes them to a
-  log or an error page unredacted leaks them itself.
+  log or an error page unredacted leaks them itself. Since 3.2 the option `redactParameters` keeps the values
+  out of the hook payloads, the debug messages and the previous exceptions, and the library's value
+  parameters are `#[\SensitiveParameter]` in every trace.
 - **PDO options.** `options` replace the secure defaults (native prepared statements, exceptions,
   no multi-statements on MySQL/MariaDB). Switching to emulated prepares, multi-statements or a
   runtime `SET NAMES` is the application's decision and risk.

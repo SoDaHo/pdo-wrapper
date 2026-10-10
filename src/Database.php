@@ -32,7 +32,7 @@ class Database
      * Create a MariaDB connection from the given config (see MariaDbDriver for the keys).
      * Nothing is read from the environment: use fromEnv() for that.
      *
-     * @param array{host?: string|null, database?: string|null, username?: string|null, password?: string|null, port?: int|string, charset?: string, options?: array<int, mixed>, pdoClass?: class-string<PDO>|null} $config
+     * @param array{host?: string|null, database?: string|null, username?: string|null, password?: string|null, port?: int|string, charset?: string, options?: array<int, mixed>, pdoClass?: class-string<PDO>|null, redactParameters?: bool} $config
      *
      * @throws Exception\ConnectionException When a required value is missing or the connection fails
      */
@@ -49,7 +49,7 @@ class Database
      * 'postgres', 'postgresql' and 'sqlite' throw, saying so. Nothing is read from the
      * environment: use fromEnv() for that.
      *
-     * @param array{driver?: string|null, host?: string|null, database?: string|null, username?: string|null, password?: string|null, port?: int|string, charset?: string, options?: array<int, mixed>, pdoClass?: class-string<PDO>|null} $config
+     * @param array{driver?: string|null, host?: string|null, database?: string|null, username?: string|null, password?: string|null, port?: int|string, charset?: string, options?: array<int, mixed>, pdoClass?: class-string<PDO>|null, redactParameters?: bool} $config
      *
      * @throws ConnectionException When no or an unknown driver is named, a required value is missing, or the connection fails
      */
@@ -90,7 +90,7 @@ class Database
      * says. The keys are those of connect(), 'charset', 'options' and 'pdoClass' included: these
      * three have no variable. A class name from the environment would be handed the credentials.
      *
-     * @param array{driver?: string|null, host?: string|null, database?: string|null, username?: string|null, password?: string|null, port?: int|string, charset?: string, options?: array<int, mixed>, pdoClass?: class-string<PDO>|null} $overrides
+     * @param array{driver?: string|null, host?: string|null, database?: string|null, username?: string|null, password?: string|null, port?: int|string, charset?: string, options?: array<int, mixed>, pdoClass?: class-string<PDO>|null, redactParameters?: bool} $overrides
      *
      * @throws ConnectionException When no or an unknown driver is named, a required value is missing, or the connection fails
      */
@@ -139,7 +139,7 @@ class Database
      * $db->update('counters', ['hits' => Database::raw('hits + 1')], ['id' => $id]);
      * $db->update('jobs', ['run_at' => Database::raw('run_at + ?', [$delay])], ['id' => $id]);
      */
-    public static function raw(string $value, array $bindings = []): RawExpression
+    public static function raw(string $value, #[\SensitiveParameter] array $bindings = []): RawExpression
     {
         return new RawExpression($value, $bindings);
     }

@@ -45,7 +45,7 @@ final class Sql
      *
      * @param array<int, mixed> $params
      */
-    public static function value(mixed $value, array &$params): string
+    public static function value(#[\SensitiveParameter] mixed $value, #[\SensitiveParameter] array &$params): string
     {
         if (!$value instanceof RawExpression) {
             $params[] = $value;
