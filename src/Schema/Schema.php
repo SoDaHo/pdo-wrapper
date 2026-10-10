@@ -30,6 +30,10 @@ use Sodaho\PdoWrapper\Exception\QueryException;
  * compared there: `e` and `é` are two indexes, a UNIQUE named `PRÍMARY` is no primary key
  * (measured); a table's name is looked up as the server looks up tables.
  *
+ * A table's name is bound in the statements: a value like any other - #[\SensitiveParameter] in every
+ * frame, and no debug message names it (with redactParameters or without; Daybreak review of the
+ * seventh candidate).
+ *
  * It is no snapshot: a table another connection changes at that moment can show either state, or
  * a mix - the table found, its rows from after the change (none after a DROP: columns() throws,
  * indexes() and constraints() return none; a view's columns where a view replaced it).
@@ -65,7 +69,7 @@ final class Schema
      * Whether the current database has this table, compared as the server compares table names
      * (with case where lower_case_table_names=0, the default on Linux - measured).
      */
-    public function hasTable(string $table): bool
+    public function hasTable(#[\SensitiveParameter] string $table): bool
     {
         return $this->rows('SELECT 1 FROM information_schema.TABLES WHERE ' . self::TABLE . ' AND TABLE_NAME = ?', [$table]) !== [];
     }
@@ -89,7 +93,7 @@ final class Schema
      *
      * @return list<array{name: string, type: string, nullable: bool, default: string|null, extra: string}>
      */
-    public function columns(string $table): array
+    public function columns(#[\SensitiveParameter] string $table): array
     {
         $columns = [];
         foreach ($this->ofTable('columns', $table, 6, '7', 'SELECT 1, COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT, EXTRA, ORDINAL_POSITION FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?') as $row) {
@@ -102,9 +106,10 @@ final class Schema
             ];
         }
         if ($columns === []) {
+            // Without the table's name: it is a bound value of the statement, and redactParameters keeps those out of every debug message
             throw new QueryException(
                 message: 'Query failed',
-                debugMessage: sprintf('columns(): the current database shows no column of table "%s" (no SELECT, INSERT, UPDATE or REFERENCES privilege on one, or the table was dropped meanwhile)', $table)
+                debugMessage: 'columns(): the current database shows no column of the table (its name not shown: a bound value) - no SELECT, INSERT, UPDATE or REFERENCES privilege on one, or the table was dropped meanwhile'
             );
         }
 
@@ -122,7 +127,7 @@ final class Schema
      *
      * @return list<array{name: string, columns: list<string>, unique: bool, primary: bool}>
      */
-    public function indexes(string $table): array
+    public function indexes(#[\SensitiveParameter] string $table): array
     {
         /** @var array<string, array{name: string, columns: list<string>, unique: bool, primary: bool}> $indexes */
         $indexes = [];
@@ -149,7 +154,7 @@ final class Schema
      *
      * @return list<array{name: string, type: string}>
      */
-    public function constraints(string $table): array
+    public function constraints(#[\SensitiveParameter] string $table): array
     {
         // a key by its first column: one row per key, no name compared; a key shows with all its
         // columns or not at all (measured). Only the primary key is named 'PRIMARY' in its bytes
@@ -189,7 +194,7 @@ final class Schema
      *
      * @return list<list<string|int|null>> The views' rows without their leading 1
      */
-    private function ofTable(string $method, string $table, int $width, string $order, string ...$parts): array
+    private function ofTable(string $method, #[\SensitiveParameter] string $table, int $width, string $order, string ...$parts): array
     {
         $rows = $this->rows(
             'SELECT 0 AS part' . str_repeat(', NULL', $width) . ' FROM information_schema.TABLES WHERE ' . self::TABLE . ' AND TABLE_NAME = ?'
@@ -198,9 +203,10 @@ final class Schema
             array_fill(0, 1 + count($parts), $table)
         );
         if (($rows[0][0] ?? null) !== 0) {
+            // Without the table's name: it is a bound value of the statement (see columns())
             throw new QueryException(
                 message: 'Query failed',
-                debugMessage: sprintf('%s(): the current database has no table "%s"', $method, $table)
+                debugMessage: sprintf('%s(): the current database has no table of the name given (not shown: a bound value)', $method)
             );
         }
 
@@ -221,7 +227,7 @@ final class Schema
      *
      * @return list<list<string|int|null>>
      */
-    private function rows(string $sql, array $params): array
+    private function rows(string $sql, #[\SensitiveParameter] array $params): array
     {
         /** @var list<list<string|int|null>> */
         return $this->db->query($sql, $params)->fetchAll(PDO::FETCH_NUM);

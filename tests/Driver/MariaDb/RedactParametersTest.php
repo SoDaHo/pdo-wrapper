@@ -17,6 +17,7 @@ use Sodaho\PdoWrapper\Exception\NamedLocksHeldException;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Exception\RedactedPdoException;
 use Sodaho\PdoWrapper\Exception\UniqueViolationException;
+use Sodaho\PdoWrapper\Schema\Schema;
 use Sodaho\PdoWrapper\Tests\Support\StatementClassPdo;
 use Sodaho\PdoWrapper\Tests\Support\TestEnvironment;
 use Sodaho\PdoWrapper\Tests\Support\Untyped;
@@ -337,6 +338,49 @@ class RedactParametersTest extends TestCase
         }
     }
 
+    /**
+     * schema() binds the table's name in its statements: a value like any other. The debug message
+     * of an unknown table names it no more, with the option or without (Daybreak review of the
+     * seventh candidate: columns() and the helper behind indexes() and constraints() wrote it
+     * there), and it is a SensitiveParameterValue in every frame - hasTable() and the helper that
+     * sends the statements as well, seen in the trace of a statement the library refuses (the
+     * transaction ended behind its back). With the option no hook payload carries it either.
+     */
+    public function testATableNameTheSchemaBindsIsShownNowhere(): void
+    {
+        $db = null;
+        try {
+            foreach ([true, false] as $redact) {
+                [$db, $payloads] = $this->driver($redact);
+                foreach (['columns', 'indexes', 'constraints'] as $method) {
+                    $e = $this->failWith(static fn (): mixed => $db->schema()->{$method}(self::SECRET));
+                    $this->assertSame($method . '(): the current database has no table of the name given (not shown: a bound value)', $e->getDebugMessage());
+                    $this->assertNoSecretIn($e);
+                    $this->assertSensitiveArgument($e, $method, 0);
+                    $this->assertSensitiveArgument($e, 'ofTable', 1);
+                }
+
+                $db->beginTransaction();
+                $db->getPdo()->exec('CREATE TABLE IF NOT EXISTS redact_ddl (id INT)'); // commits implicitly, behind the library's back
+                $refused = $this->failWith(static fn (): bool => $db->schema()->hasTable(self::SECRET));
+                $this->assertStringStartsWith('Not sent: ', (string) $refused->getDebugMessage());
+                $this->assertNoSecretIn($refused);
+                $this->assertSensitiveArgument($refused, 'hasTable', 0);
+                $this->assertSensitiveArgument($refused, 'rows', 1);
+                $db->rollback();
+
+                if ($redact) {
+                    $this->assertGreaterThan(0, count($payloads));
+                    foreach ($payloads as $payload) {
+                        $this->assertNoSecretInValue($payload, (string) $payload['event']);
+                    }
+                }
+            }
+        } finally {
+            $db?->getPdo()->exec('DROP TABLE IF EXISTS redact_ddl');
+        }
+    }
+
     public function testTheOptionMustBeABoolean(): void
     {
         foreach (['yes', 1, 'false', null] as $value) {
@@ -368,6 +412,17 @@ class RedactParametersTest extends TestCase
         }
         $this->assertStringNotContainsString(self::SECRET, (string) $e, '(string) $e, the previous exceptions included');
         $this->assertNoSecretInTrace($e);
+    }
+
+    /**
+     * The exception's trace has exactly one frame of Schema's $function, and its argument at $at is
+     * a SensitiveParameterValue: the check above is not passed by a frame that is missing.
+     */
+    private function assertSensitiveArgument(Throwable $e, string $function, int $at): void
+    {
+        $frames = array_values(array_filter($e->getTrace(), static fn (array $frame): bool => ($frame['class'] ?? null) === Schema::class && $frame['function'] === $function));
+        $this->assertCount(1, $frames, "Schema::{$function}: its frame");
+        $this->assertInstanceOf(SensitiveParameterValue::class, $frames[0]['args'][$at] ?? null, "Schema::{$function}: its argument {$at}");
     }
 
     /** Every trace argument of the exception and - unless told otherwise - of every exception before it */

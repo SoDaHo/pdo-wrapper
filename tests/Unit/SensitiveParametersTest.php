@@ -17,14 +17,16 @@ use Sodaho\PdoWrapper\Driver\MariaDbDriver;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Query\QueryBuilder;
 use Sodaho\PdoWrapper\Query\RawExpression;
+use Sodaho\PdoWrapper\Schema\Schema;
 use Throwable;
 
 /**
  * Every public and protected parameter that may carry a value - an array, mixed, a number, a
  * RawExpression with its bindings, a named lock's name - is #[\SensitiveParameter] in the API
  * (DatabaseInterface, AbstractDriver with its protected and private helpers, the MariaDB driver's
- * overrides and helpers, QueryBuilder with its private helpers, Database, RawExpression): with
- * zend.exception_ignore_args off a trace shows a SensitiveParameterValue in its place. Pinned by reflection, so that a new or changed signature
+ * overrides and helpers, QueryBuilder with its private helpers, Database, RawExpression, Schema with
+ * its private helpers - the table's name is a value Schema binds -): with zend.exception_ignore_args
+ * off a trace shows a SensitiveParameterValue in its place. Pinned by reflection, so that a new or changed signature
  * cannot drop it unnoticed, and by the traces of inputs the library refuses before anything is
  * sent (the driver's own trace test is tests/Driver/MariaDb/RedactParametersTest).
  */
@@ -32,8 +34,14 @@ class SensitiveParametersTest extends TestCase
 {
     private const MARKER = 'marker-of-a-secret-value';
 
-    /** The classes whose private methods are read as well: the driver's and the builder's helpers */
-    private const PRIVATE_HELPERS = [AbstractDriver::class, MariaDbDriver::class, QueryBuilder::class];
+    /** The classes whose private methods are read as well: the driver's, the builder's and the schema's helpers */
+    private const PRIVATE_HELPERS = [AbstractDriver::class, MariaDbDriver::class, QueryBuilder::class, Schema::class];
+
+    /**
+     * Names that carry a value in one class alone: Schema binds the table's name in its statements
+     * (Daybreak review of the seventh candidate), elsewhere a table's name is an identifier
+     */
+    private const BOUND_NAMES = [Schema::class => ['table']];
 
     /** Parameters of those types that carry names, not values */
     private const NO_VALUES = [
@@ -59,6 +67,7 @@ class SensitiveParametersTest extends TestCase
         'columnKey.key', // the key of a column => value array: a column's name
         'quotedNameKey.name', // the builder's names of output columns
         'selectsTheName.name',
+        'ofTable.width', // how many columns each part of Schema's statement selects
     ];
 
     /**
@@ -71,7 +80,7 @@ class SensitiveParametersTest extends TestCase
     public static function valueParameters(): iterable
     {
         $methods = [];
-        foreach ([DatabaseInterface::class, AbstractDriver::class, MariaDbDriver::class, QueryBuilder::class, Database::class, RawExpression::class] as $class) {
+        foreach ([DatabaseInterface::class, AbstractDriver::class, MariaDbDriver::class, QueryBuilder::class, Database::class, RawExpression::class, Schema::class] as $class) {
             // The private helpers of the driver and the builder too: they are frames of the same traces
             $filter = ReflectionMethod::IS_PUBLIC | ReflectionMethod::IS_PROTECTED | (in_array($class, self::PRIVATE_HELPERS, true) ? ReflectionMethod::IS_PRIVATE : 0);
             foreach (new \ReflectionClass($class)->getMethods($filter) as $method) {
@@ -85,7 +94,8 @@ class SensitiveParametersTest extends TestCase
         foreach ($methods as $method) {
             foreach ($method->getParameters() as $parameter) {
                 $key = $method->getName() . '.' . $parameter->getName();
-                if (in_array($key, self::NO_VALUES, true) || !self::mayCarryAValue($parameter->getType(), $parameter->getName())) {
+                $bound = in_array($parameter->getName(), self::BOUND_NAMES[$method->getDeclaringClass()->getName()] ?? [], true);
+                if (!$bound && (in_array($key, self::NO_VALUES, true) || !self::mayCarryAValue($parameter->getType(), $parameter->getName()))) {
                     continue;
                 }
                 yield $method->getDeclaringClass()->getShortName() . '::' . $key => [$parameter];

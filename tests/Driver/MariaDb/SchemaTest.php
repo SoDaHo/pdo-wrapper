@@ -249,7 +249,7 @@ class SchemaTest extends ContractTestCase
                         $this->schema()->{$method}($table);
                         $this->fail("Expected QueryException: {$method}({$table})");
                     } catch (QueryException $e) {
-                        $this->assertSame(sprintf('%s(): the current database has no table "%s"', $method, $table), $e->getDebugMessage());
+                        $this->assertSame($method . '(): the current database has no table of the name given (not shown: a bound value)', $e->getDebugMessage());
                     }
                 }
             }
@@ -304,7 +304,7 @@ class SchemaTest extends ContractTestCase
                 $delete->columns('meta_parent');
                 $this->fail('Expected QueryException was not thrown');
             } catch (QueryException $e) {
-                $this->assertSame('columns(): the current database shows no column of table "meta_parent" (no SELECT, INSERT, UPDATE or REFERENCES privilege on one, or the table was dropped meanwhile)', $e->getDebugMessage());
+                $this->assertSame('columns(): the current database shows no column of the table (its name not shown: a bound value) - no SELECT, INSERT, UPDATE or REFERENCES privilege on one, or the table was dropped meanwhile', $e->getDebugMessage());
             }
         } finally {
             $this->db->execute("DROP USER IF EXISTS 'pdo_wrapper_schema'@'%'");
