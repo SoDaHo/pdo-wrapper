@@ -12,7 +12,10 @@ use PDOException;
  * failure the driver remembers and hands on, the 'error' hook's 'error' - when the driver was
  * opened with redactParameters: the database's message quotes values (a duplicate entry, an
  * incorrect value), so it carries only the SQLSTATE and the driver code - as getCode() and in
- * errorInfo, as PDO's own does - and no exception before it.
+ * errorInfo, as PDO's own does - and no exception before it. It is thrown by itself in one case: in
+ * place of a PDOException an 'error' listener throws, which reaches the caller instead of the failed
+ * statement's exception or of the refusal of a value that cannot be bound (without the option the
+ * listener's own exception does).
  */
 class RedactedPdoException extends PDOException
 {

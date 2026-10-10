@@ -903,7 +903,7 @@ Any hook may still run statements (inside your transaction, when there is one), 
 
 ## Exceptions
 
-All exceptions of the library extend `DatabaseException`, which extends PHP's base `Exception` - except `RedactedPdoException`, a `PDOException` that stands in for PDO's exception under `redactParameters`: you meet it behind a library exception (`getPrevious()`), it is not thrown by itself. A listener recursion stopped after 32 levels is PHP's `LogicException`:
+All exceptions of the library extend `DatabaseException`, which extends PHP's base `Exception` - except `RedactedPdoException`, a `PDOException` that stands in for PDO's exception under `redactParameters`: you meet it behind a library exception (`getPrevious()`), and thrown by itself in exactly one case - in place of a `PDOException` an `error` listener throws, which reaches you instead of the failed statement's exception or of the refusal of a value that cannot be bound (without the option the listener's own exception does). A listener recursion stopped after 32 levels is PHP's `LogicException`:
 
 ```php
 use Sodaho\PdoWrapper\Exception\DatabaseException;
@@ -919,6 +919,8 @@ try {
     $db->query('...');
 } catch (DatabaseException $e) {
     // Catches ConnectionException, QueryException, TransactionException, CommitHookException
+    // Not a PDOException an 'error' listener throws: it reaches you in place of the QueryException -
+    // with redactParameters as a RedactedPdoException, without the option as the listener's own
 }
 
 try {
