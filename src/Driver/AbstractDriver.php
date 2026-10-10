@@ -2758,7 +2758,7 @@ abstract class AbstractDriver implements DatabaseInterface
      * class of the caller's ('pdoClass') delivered another type: thrown, never read as the nearest
      * answer (a '1' read as "not taken" would let a lock the connection holds go unrecorded).
      */
-    private function answerNotUnderstood(string $method, string $function, string $expected, mixed $answer, #[\SensitiveParameter] string $name, string $consequence): QueryException
+    private function answerNotUnderstood(string $method, string $function, string $expected, #[\SensitiveParameter] mixed $answer, #[\SensitiveParameter] string $name, string $consequence): QueryException
     {
         return new QueryException(
             message: 'Query failed',

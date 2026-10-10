@@ -22,9 +22,9 @@ use Throwable;
 /**
  * Every public and protected parameter that may carry a value - an array, mixed, a number, a
  * RawExpression with its bindings, a named lock's name - is #[\SensitiveParameter] in the API
- * (DatabaseInterface, AbstractDriver with its protected helpers, the MariaDB driver's overrides,
- * QueryBuilder, Database, RawExpression): with zend.exception_ignore_args off a trace shows a
- * SensitiveParameterValue in its place. Pinned by reflection, so that a new or changed signature
+ * (DatabaseInterface, AbstractDriver with its protected and private helpers, the MariaDB driver's
+ * overrides and helpers, QueryBuilder with its private helpers, Database, RawExpression): with
+ * zend.exception_ignore_args off a trace shows a SensitiveParameterValue in its place. Pinned by reflection, so that a new or changed signature
  * cannot drop it unnoticed, and by the traces of inputs the library refuses before anything is
  * sent (the driver's own trace test is tests/Driver/MariaDb/RedactParametersTest).
  */
@@ -32,13 +32,33 @@ class SensitiveParametersTest extends TestCase
 {
     private const MARKER = 'marker-of-a-secret-value';
 
+    /** The classes whose private methods are read as well: the driver's and the builder's helpers */
+    private const PRIVATE_HELPERS = [AbstractDriver::class, MariaDbDriver::class, QueryBuilder::class];
+
     /** Parameters of those types that carry names, not values */
     private const NO_VALUES = [
         'raw.value', // the SQL of the expression, developer code; its bindings are values
         '__construct.value',
         'lastInsertId.name', // the name of a sequence (MariaDB's PDO ignores it)
-        'validPort.port', // the port and the PDO class of the configuration, as the caller wrote them: what a failed connection is debugged with
+        'validPort.port', // the port, the PDO class and a switch of the configuration, as the caller wrote them: what a failed connection is debugged with
         'validPdoClass.class',
+        'validSwitch.value',
+        'pinCompletionType.port',
+        'refuseAnUnsupportedConnection.port',
+        // the private helpers' numbers of transactions, calls and statements, and their places
+        'commitOwnTransaction.own', 'rollbackQuietly.own', 'stillTheTransaction.number', 'failIfNoLongerOpen.number',
+        'rollbackJustBegunQuietly.number', 'endedSince.ended', 'endedSince.number', 'endFailedCommitIfGone.ended',
+        'endFailedCommitIfGone.number', 'endFailedCommitIfGone.sentBefore', 'noteACommitThatMayHaveTakenEffect.ended',
+        'noteACommitThatMayHaveTakenEffect.number', 'noteACommitThatMayHaveTakenEffect.sentBefore', 'thrownByThisCommit.call',
+        'batchRow.at',
+        'dispatchTransactionEnd.at', // [number, depth] of a transaction
+        'endLostTransaction.at',
+        'runCommitListeners.at',
+        'reportQuietly.context', // the hook and the outcome an 'error' payload names
+        'reportTransactionEndFailures.failures', // the listeners' exceptions, handed to the 'error' hook as they are
+        'columnKey.key', // the key of a column => value array: a column's name
+        'quotedNameKey.name', // the builder's names of output columns
+        'selectsTheName.name',
     ];
 
     /**
@@ -52,7 +72,9 @@ class SensitiveParametersTest extends TestCase
     {
         $methods = [];
         foreach ([DatabaseInterface::class, AbstractDriver::class, MariaDbDriver::class, QueryBuilder::class, Database::class, RawExpression::class] as $class) {
-            foreach (new \ReflectionClass($class)->getMethods(ReflectionMethod::IS_PUBLIC | ReflectionMethod::IS_PROTECTED) as $method) {
+            // The private helpers of the driver and the builder too: they are frames of the same traces
+            $filter = ReflectionMethod::IS_PUBLIC | ReflectionMethod::IS_PROTECTED | (in_array($class, self::PRIVATE_HELPERS, true) ? ReflectionMethod::IS_PRIVATE : 0);
+            foreach (new \ReflectionClass($class)->getMethods($filter) as $method) {
                 if ($method->getDeclaringClass()->getName() !== $class) {
                     continue; // read where it is declared
                 }
