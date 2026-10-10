@@ -10,6 +10,7 @@ use PHPUnit\Framework\TestCase;
 use SensitiveParameterValue;
 use Sodaho\PdoWrapper\Database;
 use Sodaho\PdoWrapper\DatabaseInterface;
+use Sodaho\PdoWrapper\Driver\FrozenExpression;
 use Sodaho\PdoWrapper\Driver\MariaDbDriver;
 use Sodaho\PdoWrapper\Exception\ConnectionException;
 use Sodaho\PdoWrapper\Exception\NamedLockReentryException;
@@ -391,8 +392,9 @@ class RedactParametersTest extends TestCase
     {
         $timeout = 471147;
         foreach ([true, false] as $redact) {
-            // A name of its own per pass: the lock the first pass took may live on in its connection
-            $name = $redact ? 'redact-timeout-on' : 'redact-timeout-off';
+            // A name of its own per pass and per run: the lock the first pass took may live on in its
+            // connection, and another run against the same database would make GET_LOCK() wait the timeout
+            $name = uniqid($redact ? 'redact-timeout-on-' : 'redact-timeout-off-', true);
             $echo = Database::mariadb(TestEnvironment::mariadb() + StatementClassPdo::config(BindingEchoStatement::class) + ['redactParameters' => $redact]);
             $taken = $this->failWith(static fn (): bool => $echo->namedLock($name, $timeout));
             $this->assertStringContainsString(', none of 1, 0, -1 or NULL', (string) $taken->getDebugMessage());
@@ -407,6 +409,32 @@ class RedactParametersTest extends TestCase
             );
             $this->assertTimeoutOnlyAsSensitiveValue($negative, -$timeout);
             $this->assertSame([], $db->heldNamedLocks(), 'nothing was sent');
+        }
+    }
+
+    /**
+     * updateMultiple() copies the bindings of a raw expression (FrozenExpression::of()); a binding
+     * that became a raw expression through a reference before the call is refused there, and the
+     * trace of that refusal shows the other binding - a secret - in no frame: FrozenExpression's
+     * frames carry SensitiveParameterValue (Opus review of the eighth candidate). Without the option
+     * as with it: the attribute does not depend on it.
+     */
+    public function testARefusalOfFrozenExpressionLeavesNoBindingInTheTrace(): void
+    {
+        foreach ([true, false] as $redact) {
+            [$db] = $this->driver($redact);
+            $later = 'x';
+            $raw = Database::raw('CONCAT(?, ?)', [self::SECRET, &$later]);
+            $later = Database::raw('NOW()'); // through the reference, after the expression was built
+            $refused = $this->failWith(static fn (): int => $db->updateMultiple(self::TABLE, [['id' => 1, 'email' => $raw]]));
+
+            $frames = array_values(array_filter($refused->getTrace(), static fn (array $frame): bool => ($frame['class'] ?? '') === FrozenExpression::class));
+            $this->assertSame(['__construct', 'of'], array_column($frames, 'function'), 'FrozenExpression\'s frames are in the trace');
+            foreach ($frames as $frame) {
+                $this->assertContainsOnlyInstancesOf(SensitiveParameterValue::class, $frame['args'] ?? [], $frame['function']);
+            }
+            $this->assertNoSecretInTrace($refused);
+            $this->assertTrue(Database::mariadb(TestEnvironment::mariadb())->table(self::TABLE)->where('id', 1)->where('email', self::SECRET)->exists(), 'nothing was written');
         }
     }
 

@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Sodaho\PdoWrapper\Tests\Unit;
 
 use PHPUnit\Framework\TestCase;
-use ReflectionMethod;
 use ReflectionNamedType;
 use ReflectionParameter;
 use ReflectionType;
@@ -13,7 +12,6 @@ use ReflectionUnionType;
 use Sodaho\PdoWrapper\Database;
 use Sodaho\PdoWrapper\DatabaseInterface;
 use Sodaho\PdoWrapper\Driver\AbstractDriver;
-use Sodaho\PdoWrapper\Driver\MariaDbDriver;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Query\QueryBuilder;
 use Sodaho\PdoWrapper\Query\RawExpression;
@@ -21,21 +19,17 @@ use Sodaho\PdoWrapper\Schema\Schema;
 use Throwable;
 
 /**
- * Every public and protected parameter that may carry a value - an array, mixed, a number, a
- * RawExpression with its bindings, a named lock's name - is #[\SensitiveParameter] in the API
- * (DatabaseInterface, AbstractDriver with its protected and private helpers, the MariaDB driver's
- * overrides and helpers, QueryBuilder with its private helpers, Database, RawExpression, Schema with
- * its private helpers - the table's name is a value Schema binds -): with zend.exception_ignore_args
- * off a trace shows a SensitiveParameterValue in its place. Pinned by reflection, so that a new or changed signature
+ * Every parameter that may carry a value - an array, mixed, a number, a RawExpression with its
+ * bindings, a named lock's name, a password - is #[\SensitiveParameter] in every method of every
+ * type under src/, public, protected and private (found by walking the directory; the table's
+ * name is a value Schema binds): with zend.exception_ignore_args off a trace shows a
+ * SensitiveParameterValue in its place. Pinned by reflection, so that a new or changed signature
  * cannot drop it unnoticed, and by the traces of inputs the library refuses before anything is
  * sent (the driver's own trace test is tests/Driver/MariaDb/RedactParametersTest).
  */
 class SensitiveParametersTest extends TestCase
 {
     private const MARKER = 'marker-of-a-secret-value';
-
-    /** The classes whose private methods are read as well: the driver's, the builder's and the schema's helpers */
-    private const PRIVATE_HELPERS = [AbstractDriver::class, MariaDbDriver::class, QueryBuilder::class, Schema::class];
 
     /**
      * Names that carry a value in one class alone: Schema binds the table's name in its statements
@@ -68,24 +62,55 @@ class SensitiveParametersTest extends TestCase
         'quotedNameKey.name', // the builder's names of output columns
         'selectsTheName.name',
         'ofTable.width', // how many columns each part of Schema's statement selects
+        'driverName.driver', // the driver's name as configured (mariadb), what a failed connection is debugged with
+        // ImplicitCommit reads the SQL text - developer code, not covered (README) - and positions in it
+        'classify.tokens', 'word.tokens', 'word.at', 'word.read', 'createsATemporaryTable.tokens', 'createsATemporaryTable.read',
+        'analyzesATable.tokens', 'analyzesATable.read', 'replication.tokens', 'replication.read', 'statementAfterFor.tokens', 'quoteEnd.at',
+        '__construct.failures', // CommitHookException: the listeners' exceptions, handed on as they are
+        '__construct.fallbacks', // JsonExpression: the names of the columns COALESCE falls back to
     ];
 
     /**
-     * Every public and protected method of the API's classes - an override of the MariaDB driver
-     * and a protected helper of the driver are frames of the traces as much as the public methods
-     * are - and the value parameters among their parameters.
+     * Every type under src/ - class, interface, trait, enum; found by walking the directory, so that
+     * a new one is read without being listed here (the eighth candidate listed seven classes, and
+     * Sql::value(), FrozenExpression, ConnectionSettings, FloatText::of() and the constructors of the
+     * named-lock exceptions went unread; Daybreak review) -, named by PSR-4 from its path.
+     *
+     * @return list<class-string>
+     */
+    private static function sourceTypes(): array
+    {
+        $root = dirname(__DIR__, 2) . '/src';
+        $types = [];
+        foreach (new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($root, \FilesystemIterator::SKIP_DOTS)) as $file) {
+            if (!$file instanceof \SplFileInfo || $file->getExtension() !== 'php') {
+                continue;
+            }
+            $type = 'Sodaho\\PdoWrapper\\' . str_replace('/', '\\', substr($file->getPathname(), strlen($root) + 1, -4));
+            if (!class_exists($type) && !interface_exists($type) && !trait_exists($type) && !enum_exists($type)) {
+                throw new \UnexpectedValueException(sprintf('%s declares no type of its path\'s name', $file->getPathname()));
+            }
+            $types[] = $type;
+        }
+        sort($types);
+
+        return $types;
+    }
+
+    /**
+     * Every method of every type under src/ - public, protected and private: an override, a helper
+     * and an exception's constructor are frames of the traces as much as the API is -, read where it
+     * is declared, and the value parameters among their parameters.
      *
      * @return iterable<string, array{ReflectionParameter}>
      */
     public static function valueParameters(): iterable
     {
         $methods = [];
-        foreach ([DatabaseInterface::class, AbstractDriver::class, MariaDbDriver::class, QueryBuilder::class, Database::class, RawExpression::class, Schema::class] as $class) {
-            // The private helpers of the driver and the builder too: they are frames of the same traces
-            $filter = ReflectionMethod::IS_PUBLIC | ReflectionMethod::IS_PROTECTED | (in_array($class, self::PRIVATE_HELPERS, true) ? ReflectionMethod::IS_PRIVATE : 0);
-            foreach (new \ReflectionClass($class)->getMethods($filter) as $method) {
-                if ($method->getDeclaringClass()->getName() !== $class) {
-                    continue; // read where it is declared
+        foreach (self::sourceTypes() as $type) {
+            foreach (new \ReflectionClass($type)->getMethods() as $method) {
+                if ($method->getDeclaringClass()->getName() !== $type || $method->isInternal()) {
+                    continue; // read where it is declared; PHP's own (an enum's from()) carry no attribute of the library's
                 }
                 $methods[] = $method;
             }
@@ -103,10 +128,20 @@ class SensitiveParametersTest extends TestCase
         }
     }
 
+    /** The walk finds every type the library had when this test was written, and the ones Daybreak named among them */
+    public function testEveryTypeUnderSrcIsRead(): void
+    {
+        $types = self::sourceTypes();
+        $this->assertGreaterThanOrEqual(30, count($types));
+        foreach ([\Sodaho\PdoWrapper\Query\Sql::class, \Sodaho\PdoWrapper\Driver\FrozenExpression::class, \Sodaho\PdoWrapper\Driver\ConnectionSettings::class, \Sodaho\PdoWrapper\Query\FloatText::class, \Sodaho\PdoWrapper\Exception\NamedLockReentryException::class, \Sodaho\PdoWrapper\Exception\NamedLocksHeldException::class, \Sodaho\PdoWrapper\Traits\HasHooks::class] as $type) {
+            $this->assertContains($type, $types);
+        }
+    }
+
     private static function mayCarryAValue(?ReflectionType $type, string $name): bool
     {
-        if (in_array($name, ['value', 'pattern', 'name'], true)) {
-            return true; // a value as a string: escapeLike()'s, a LIKE pattern, a named lock's name
+        if (in_array($name, ['value', 'pattern', 'name', 'lockName', 'password'], true)) {
+            return true; // a value as a string: escapeLike()'s, a LIKE pattern, a named lock's name, a password
         }
         $types = $type instanceof ReflectionUnionType ? $type->getTypes() : [$type];
         foreach ($types as $one) {
@@ -122,6 +157,46 @@ class SensitiveParametersTest extends TestCase
     public function testAValueParameterIsMarkedSensitive(ReflectionParameter $parameter): void
     {
         $this->assertCount(1, $parameter->getAttributes(\SensitiveParameter::class));
+    }
+
+    /**
+     * A raw expression whose __toString() throws, with a secret among its bindings: the exception
+     * passes through the library's frames - the builder's rendering, the CRUD methods' and
+     * Sql::value() - and none of them shows the binding (Daybreak review of the eighth candidate:
+     * a test only of refusals the library throws itself never sees such a frame).
+     */
+    public function testARawExpressionThatThrowsLeavesNoBindingInTheTrace(): void
+    {
+        $db = new class () extends AbstractDriver {
+        };
+        $throwing = new class ('?', [self::MARKER]) extends RawExpression {
+            public function __toString(): string
+            {
+                throw new \RuntimeException('render failed');
+            }
+        };
+        $ignoreArgs = ini_set('zend.exception_ignore_args', '0');
+        try {
+            foreach ([
+                'where() rendered' => static fn (): mixed => $db->table('t')->where('a', $throwing)->toSql(),
+                'update()' => static fn (): mixed => $db->update('t', ['a' => $throwing], ['id' => 1]),
+                'insert()' => static fn (): mixed => $db->insert('t', ['a' => $throwing]),
+                'the builder\'s update()' => static fn (): mixed => $db->table('t')->where('id', 1)->update(['a' => $throwing]),
+            ] as $how => $call) {
+                try {
+                    $call();
+                    $this->fail('Expected RuntimeException: ' . $how);
+                } catch (\RuntimeException $e) {
+                    $this->assertSame('render failed', $e->getMessage(), $how);
+                    $trace = var_export($e->getTrace(), true);
+                    // str_contains(), not assertStringNotContainsString(): a failure would export the whole trace
+                    $this->assertTrue(str_contains($trace, 'SensitiveParameterValue'), $how . ': the arguments are in the trace');
+                    $this->assertFalse(str_contains($trace, self::MARKER), $how . ': the binding is in a frame of the trace');
+                }
+            }
+        } finally {
+            ini_set('zend.exception_ignore_args', $ignoreArgs === false ? '1' : $ignoreArgs);
+        }
     }
 
     /**
