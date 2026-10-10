@@ -217,8 +217,8 @@ class QueryBuilder
         } elseif ($operatorOrValue === null) {
             $operator = '=';
         } elseif (!is_string($operatorOrValue)) {
-            // Anything but a string is no operator - refused by its type, never read as one: an object
-            // of a class named Like was the operator LIKE in the eighth candidate (Astra review)
+            // Anything but a string is no operator - refused by its type, never read as one: a check that
+            // read the type's name as the operator took an object of a class named Like for LIKE
             throw new QueryException(
                 message: 'Query failed',
                 debugMessage: sprintf(

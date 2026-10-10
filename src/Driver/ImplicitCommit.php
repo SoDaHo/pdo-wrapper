@@ -16,10 +16,10 @@ namespace Sodaho\PdoWrapper\Driver;
  *
  * Not on the list, although MariaDB commits for them too: the statements that steer transactions
  * themselves (BEGIN, START TRANSACTION, SET autocommit, XA) - raw transaction control is the
- * caller's (decided 2026-10-03, see the README). Not either: CREATE [OR REPLACE] TEMPORARY TABLE and
+ * caller's (see DatabaseInterface::query()). Not either: CREATE [OR REPLACE] TEMPORARY TABLE and
  * DROP TEMPORARY TABLE or SEQUENCE, which commit nothing - CREATE TEMPORARY SEQUENCE does commit:
- * MariaDB exempts only the temporary table, so the word after TEMPORARY decides (measured on 10.11,
- * 11.4 and 12.3; Daybreak review of the seventh candidate) -, SET ROLE and CHECKSUM TABLE, the ANALYZE that runs a
+ * MariaDB exempts only the temporary table, so the word after TEMPORARY decides (measured on MariaDB
+ * 10.11, 11.4 and 12.3) -, SET ROLE and CHECKSUM TABLE, the ANALYZE that runs a
  * statement and reports on it (ANALYZE SELECT, WITH, VALUES, a query in parentheses, INSERT,
  * UPDATE, DELETE, REPLACE, FORMAT=...), and LOAD DATA [LOCAL] INFILE and LOAD XML - the START
  * TRANSACTION page of the documentation names LOAD DATA among the statements that commit, the
@@ -38,14 +38,13 @@ namespace Sodaho\PdoWrapper\Driver;
  * after the FOR of SET STATEMENT -, the statement is not judged and counts as one that commits
  * (UNJUDGED): fail-closed. Such comments are what mysqldump writes, no application builds its
  * statements with them; which of them MariaDB runs depends on its version and on how its lexer
- * nests comments, and rebuilding that grammar here was attack surface without a use (decided
- * 2026-10-10, after the reviews of three candidates in a row turned on its readings). One
+ * nests comments, and rebuilding that grammar here would be attack surface without a use. One
  * after that point cannot change the leading keywords and is left alone (`SELECT 1 /*!50700 , 2 *\/`,
  * `SELECT /*!40001 SQL_NO_CACHE *\/ ...`). The same holds for a byte the library does not read -
  * one from 0x80 on, or a control character other than tab, line feed, vertical tab, form feed and
  * carriage return: what MariaDB makes of it depends on the connection's charset (under latin1 0xA0
  * separates words like a space, so that CREATE<0xA0>TABLE, <0xA0>CREATE TABLE and a `--` comment
- * opened by 0xA0 commit; measured on 10.11, 11.4 and 12.3, Astra review of the eighth candidate),
+ * opened by 0xA0 commit; measured on MariaDB 10.11, 11.4 and 12.3),
  * and this class keeps no charset tables. Only the statement up to the first such byte is read:
  * where the leading keywords are decided only after it - the byte in a word, between words, in a
  * comment or a string, after `--` -, the statement is not judged either (UNJUDGED_BYTES). One after

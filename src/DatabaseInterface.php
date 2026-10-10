@@ -12,12 +12,46 @@ use PDOStatement;
  * What a driver of this library does - the whole API: statements and their hooks, the query
  * builder and the CRUD methods, transactions with their three outcomes (committed, rolled_back,
  * lost), named locks, reconnect() and the schema. Driver\AbstractDriver implements it; type against
- * this interface. Invariants: a statement that would run outside the transaction the caller
- * believes to be in (after the server ended it, in autocommit) is refused rather than sent - unless
- * the caller begins the next one itself: beginTransaction() and transaction() tell an end PDO
- * reports 'lost' and begin anew (after a deadlock or a 1020 they refuse), so a helper asks
- * currentTransaction() !== null || inTransaction() before it opens one (README, Transactions);
- * only 'rolled_back' means that nothing of a transaction is committed.
+ * this interface. The method docs here are the contract of the methods; the hooks' contract - events,
+ * payloads, failing listeners, the outcomes, transaction control inside a listener - is
+ * Traits\HasHooks.
+ *
+ * Invariants: a statement that would run outside the transaction the caller believes to be in
+ * (after the server ended it, in autocommit) is refused rather than sent - unless the caller begins
+ * the next one itself: beginTransaction() and transaction() tell an end PDO reports 'lost' and begin
+ * anew (after a deadlock or a 1020 they refuse), so a helper asks currentTransaction() !== null ||
+ * inTransaction() before it opens one (README, Transactions); only 'rolled_back' means that nothing
+ * of a transaction is committed.
+ *
+ * Limits:
+ * - Not seen: statements that failed on raw PDO (getPdo()), and rows that fail while a result is
+ *   fetched.
+ * - After a deadlock, end the transaction through this library (rollback()): a transaction begun on
+ *   raw PDO after a raw rollback would have its statements and its commit refused for the old
+ *   deadlock until rollback() is called.
+ * - With autocommit switched off (PDO::ATTR_AUTOCOMMIT, SET autocommit = 0) a statement after a
+ *   transaction's end opens the next transaction instead of being committed on its own: the
+ *   refusals hold all the same, the rollback undoes that statement too, and the question right after
+ *   a failed statement opens no transaction (measured on MariaDB 10.11). What a statement on raw PDO
+ *   opens after the end is not told apart from the transaction that ended: for one this library
+ *   began the rollback still tells 'lost'; for one begun on raw PDO the rollback is told
+ *   'rolled_back' although a failing DDL statement committed what came before it, and a swallowed
+ *   failure that ended it (a lock wait timeout under innodb_rollback_on_timeout) is not told apart
+ *   from a statement-only failure once a later statement opened the next transaction: that commit
+ *   goes through.
+ * - Every call into PDO may run foreign code: an error handler for a PDO warning
+ *   (PDO::ERRMODE_WARNING). With a handler that throws, a failed statement or lastInsertId() still
+ *   arrives as QueryException; a failing BEGIN, COMMIT or ROLLBACK arrives as the handler's exception
+ *   (not as TransactionException or CommitFailedException, and without an outcome). When such a
+ *   handler ends the transaction through this library while a COMMIT, a ROLLBACK or the driver's
+ *   question is under way, that call tells the end and the interrupted one tells none: transaction()
+ *   and updateMultiple() look again whether the transaction is still theirs, and a failed commit of
+ *   theirs leaves with outcome 'lost'. What such a handler begins and ends itself stays its own. For
+ *   a transaction begun on raw PDO the ends are told apart only up to the first transaction begun
+ *   since: when it vanished with its failed COMMIT and the handler runs more than one transaction of
+ *   its own, its 'lost' is not told; after a failed COMMIT of such a transaction on a session that
+ *   may chain, ended and begun again on raw PDO, the rollback() of the new one is 'lost' as well
+ *   (fail-closed).
  */
 interface DatabaseInterface
 {
@@ -36,7 +70,7 @@ interface DatabaseInterface
      * LOCK TABLES, an account statement - see Driver\ImplicitCommit) is refused before it is sent:
      * the transaction stays open. Statements that steer transactions themselves (BEGIN, COMMIT,
      * ROLLBACK, SET autocommit, XA) are not refused and not seen - the transaction's outcome is
-     * then not to be relied on (see the README, Transactions).
+     * then not to be relied on (README, Transactions).
      *
      * @throws Exception\ImplicitCommitException When the statement would commit the open transaction implicitly (inside a transaction begun through this library; nothing is sent, the transaction stays open)
      * @throws Exception\QueryException When the statement fails (also when PDO reports that without an exception), when a parameter is not null, a scalar or a Stringable object, is a float INF or NAN, or is a Query\RawExpression (the statement is not sent), when the server has thrown the open transaction away (after a deadlock or a 1020 - see MariaDbDriver - nothing is sent until that transaction is ended: by rollback(), by a refused commit() that tells 'lost', and for a transaction begun on raw PDO also once PDO reports none), when the transaction begun through this library is gone or may be - the driver, asked right after an earlier failure, found it gone or could not find out, or PDO reports no transaction any more (raw PDO ended it): nothing is sent until rollback() tells its end -, or when a 'query' listener threw a PDOException ('Query hook failed': the statement did run) or a 'query.before' listener did (the statement was not sent)
@@ -162,25 +196,27 @@ interface DatabaseInterface
     /**
      * Begin a transaction.
      *
-     * After a throwing 'transaction.begin' listener a rollback of the new transaction is attempted
-     * directly (best effort, without 'transaction.rollback' listeners; if it fails, the transaction
-     * may still be open) and the listener's exception is re-thrown - unless the transaction was
-     * ended meanwhile (a reconnect(dropTransaction: true) of the listener). A listener that ended the transaction it was
-     * told about without throwing (reconnect(dropTransaction: true), raw PDO) makes the call fail as well, and no
-     * further listener runs: the caller would go on outside of the transaction it asked for (an
-     * end behind this library's back is told as 'lost' first). A transaction begun through this
-     * library that PDO no longer reports (ended by the server or on raw PDO) is told as
-     * 'transaction.end' 'lost' first - except after a MariaDB deadlock or a 1020: then
-     * beginTransaction() refuses, and rollback() tells that end. Called from inside a listener of
-     * this library other than a transaction.end listener (query.before, query, error - in the middle
-     * of the caller's statement -, transaction.begin, transaction.commit, transaction.rollback - in
-     * the middle of the caller's transaction), it refuses and begins nothing, and so do commit() and
-     * rollback(). A transaction.end listener (the transaction has ended) may run one of its own,
-     * with its own number and end; a query.before, query or error listener entered while no
-     * transaction was open may run one through transaction() or updateMultiple(), which end it
-     * inside the listener; any other listener that needs a transaction uses a connection of its own.
-     * transaction.end listeners that each begin one whose end runs them again are
-     * stopped after 32 levels with a LogicException.
+     * A transaction begun through this library that PDO no longer reports (ended by the server or
+     * on raw PDO) is told as 'transaction.end' 'lost' first; so is one an end listener of that 'lost'
+     * begins and loses the same way. A third in a row is not told: the call throws and begins
+     * nothing. After a MariaDB deadlock or a 1020 beginTransaction() refuses instead, and rollback()
+     * tells that end.
+     *
+     * After a throwing 'transaction.begin' listener the new transaction is rolled back and its end
+     * told (Traits\HasHooks; if the rollback fails, the transaction may still be open), and the
+     * listener's exception is re-thrown. A listener that ended the transaction it was told about
+     * without throwing (reconnect(dropTransaction: true), raw PDO, a DDL statement on raw PDO) makes
+     * the call fail as well, and no further listener runs: the caller would go on outside of the
+     * transaction it asked for (an end behind this library's back is told as 'lost' first). After a
+     * listener's statement failed, the driver asks the server before it trusts PDO's report (on
+     * MariaDB a failing DDL statement commits the transaction): gone, the end is 'lost' - also when
+     * the listener let the failure escape; not to be found out, the begin fails, a ROLLBACK cleans up
+     * and the end is 'lost' (should that ROLLBACK fail too, the transaction may still be open). A
+     * deadlock or a 1020 of a listener's statement fails the begin as well, also when the listener
+     * swallowed it: the end is 'rolled_back', and no rollback listener runs.
+     *
+     * Called from inside a listener other than a transaction.end listener it refuses and begins
+     * nothing, and so do commit() and rollback() (the rule: Traits\HasHooks).
      *
      * @throws Exception\ListenerTransactionException When called from inside a listener of this library other than a transaction.end listener (nothing is begun)
      * @throws \LogicException When 32 transaction.end listeners run one inside the other (nothing is begun)
@@ -211,8 +247,8 @@ interface DatabaseInterface
      * more: nothing could end it afterwards), and null otherwise: after a commit() you call
      * yourself the transaction is yours to end, and nothing writes into the exception later
      * (transaction() and updateMultiple() do write the outcome into the failure of the commit
-     * they run, see transaction()). With PDO::ERRMODE_WARNING and an error handler that throws, a failing COMMIT
-     * leaves as the handler's exception instead (see Traits\HasHooks).
+     * they run, see transaction()). With PDO::ERRMODE_WARNING and an error handler that throws, a
+     * failing COMMIT leaves as the handler's exception instead (see the limits above).
      *
      * The commit is refused (CommitFailedException, no COMMIT sent) when a statement failed inside
      * the transaction in a way that ended it on the server: a deadlock or a 1020 on MariaDB, a lock
@@ -222,9 +258,15 @@ interface DatabaseInterface
      * COMMIT with success. While PDO still reports the transaction, nothing fires and
      * it stays refused until rollback(); when PDO reports none any more (a statement on raw PDO,
      * or the question to the server before the commit, told it), nothing is left to roll back
-     * and the refusal tells 'transaction.end' 'lost'. When the connection is in a transaction
-     * right after the COMMIT (completion_type=CHAIN, not supported), the commit
-     * listeners are skipped and a CommitHookException reports it. A COMMIT that failed - also with
+     * and the refusal tells 'transaction.end' 'lost'. A transaction begun on raw PDO whose commit
+     * through this library fails and takes it away is told as 'lost' as well (its successful commit
+     * tells 'committed'), except while a 'lost' told for a transaction that may still be open is
+     * pending. When the connection is in a transaction right after the COMMIT (completion_type=CHAIN,
+     * not supported), every commit listener is skipped and listed and a CommitHookException reports
+     * it: first failure a TransactionException 'Connection is in a new transaction' ('Connection
+     * state unknown' when PDO's state cannot be read then, fail-closed), $connectionInTransaction
+     * true, 'transaction.end' 'committed'; the end listeners then run inside the chained transaction,
+     * and what they write there is not committed. A COMMIT that failed - also with
      * what a PDO class or an error handler threw besides a PDOException, which passes unchanged -
      * may have taken effect on a session that may chain transactions (on MariaDB a completion_type
      * other than NO_CHAIN: the driver sets NO_CHAIN when it connects, a SET SESSION afterwards
@@ -262,10 +304,17 @@ interface DatabaseInterface
      * currentTransaction() !== null || inTransaction() before it).
      * Not confirmed either after a commit() of this transaction that failed on a session that may
      * chain transactions (see commit()): the ROLLBACK is sent to clean up, no rollback listener
-     * runs, and 'transaction.end' reports 'lost' with the failed commit as error.
-     * When the connection is in a transaction right
-     * after the ROLLBACK (completion_type=CHAIN, not supported), that is reported as
-     * TransactionException after the listeners ran, unless a rollback listener threw.
+     * runs, and 'transaction.end' reports 'lost' with the failed commit as error. In a transaction
+     * begun on raw PDO the question comes only before the ROLLBACK and only while PDO reports the
+     * transaction (once a later statement told PDO that it is gone, rollback() fails); there a failed
+     * statement with an implicit commit followed by a deadlock is still told as 'rolled_back'.
+     * When the connection is in a transaction right after the ROLLBACK (completion_type=CHAIN, not
+     * supported), that is reported as TransactionException after the listeners ran ('Connection
+     * state unknown' when PDO's state cannot be read then, fail-closed). Where another exception
+     * reaches the caller instead - a rollback listener's, or on the automatic rollback the one that
+     * ended the transaction - the 'error' hook is told about the chained transaction. The rollback,
+     * end and error listeners then run inside the chained transaction: what they write there is not
+     * committed.
      *
      * @throws Exception\ListenerTransactionException When called from inside a listener of this library other than a transaction.end listener (nothing is sent)
      * @throws Exception\TransactionException On failure, when the connection is in a new, chained transaction afterwards, or when a transaction.end listener failed after a confirmed rollback and no rollback listener did (the first failure; all of them reach the 'error' hook)
@@ -277,12 +326,10 @@ interface DatabaseInterface
      * Execute a callback within a transaction.
      * Auto-commits on success, auto-rollback on exception.
      *
-     * From inside a listener it runs where a transaction of its own is the listener's alone: in a
-     * transaction.end listener, and in a query.before, query or error listener entered while no
-     * transaction was open (the transaction begins and ends inside the listener); anywhere else it
-     * refuses and begins nothing (Exception\ListenerTransactionException, see Traits\HasHooks).
-     * The callback runs inside the listener all the same: its own commit() or rollback() is refused
-     * where the listener's would be.
+     * From inside a listener it runs only where the rule of Traits\HasHooks allows it - its
+     * transaction then begins and ends inside the listener -, and refuses and begins nothing
+     * elsewhere (Exception\ListenerTransactionException). The callback runs inside the listener all
+     * the same: its own commit() or rollback() is refused where the listener's would be.
      *
      * What can go wrong:
      * - the transaction could not be started (BEGIN failed, a transaction.begin listener threw - a
@@ -323,9 +370,10 @@ interface DatabaseInterface
      *   an error handler inside a PDO call did (a listener inside the transaction cannot: refused
      *   there): this method ends only the transaction it began. Whatever is open afterwards - begun
      *   by the callback through this library or on raw PDO, by an end listener through this library,
-     *   or by any listener on raw PDO - is neither
-     *   committed nor rolled back here. A callback that returns gets a CommitFailedException with
-     *   outcome 'lost' and no COMMIT is sent; one that throws gets its exception re-thrown;
+     *   or by any listener on raw PDO - is neither committed nor rolled back here. A callback that
+     *   returns gets a CommitFailedException with outcome 'lost' and no COMMIT is sent; one that
+     *   throws gets its exception re-thrown. A transaction ended and begun again on raw PDO alone is
+     *   not told apart from the first;
      * - the callback calls transaction() or beginTransaction() again: there are no nested
      *   transactions (no savepoints) - the inner call throws a TransactionException 'Failed to begin
      *   transaction' ("There is already an active transaction") before its callback runs; left to
@@ -350,33 +398,10 @@ interface DatabaseInterface
     public function transaction(Closure $callback): mixed;
 
     /**
-     * Register a hook callback for an event.
-     *
-     * Events: 'query.before' (array{sql: string, params: array}, before every statement - a listener
-     * that throws stops it), 'query', 'error', 'transaction.begin' (array{transaction: int, depth: int}),
-     * 'transaction.commit' and 'transaction.rollback' (array{transaction: ?int, depth: ?int}),
-     * 'transaction.end' (array{outcome: 'committed'|'rolled_back'|'lost', error: ?Throwable,
-     * transaction: ?int, depth: ?int}, once per transaction this library ends - exactly one for
-     * every told begin -, after the commit or rollback listeners; see Traits\HasHooks).
-     * Any other name is refused (see @throws): a listener for it would never run. The 'query.before', 'query' and 'error'
-     * payloads carry the SQL and the parameters as passed, secrets included - unless the option redactParameters is on,
-     * then every value is '[redacted]': redact before logging otherwise (README, "Parameters are secrets", names every
-     * channel that carries them). 'error'
-     * carries sql, params, error (the message), code (the code of the reported exception), sqlState
-     * and driverCode (what the database said, read by the rule of DatabaseException::$sqlState and
-     * $driverCode: null where no database failure stands behind the reported error).
-     *
-     * A throwing hook stops the remaining hooks of its event (for 'transaction.begin' a rollback
-     * of the new transaction is attempted first, best effort), except for 'transaction.commit' and
-     * 'transaction.end': those listeners are independent and all of them run; after a commit their
-     * failures arrive together in a CommitHookException (commit listeners' first, then the
-     * committed transaction's end listeners'), after a manual
-     * rollback() as TransactionException (unless a rollback listener threw: that exception wins and
-     * the end failures reach only the 'error' hook), and after the automatic rollback and on a 'lost'
-     * reported there only via the 'error' hook. Dependent steps belong in one listener.
-     * Only if a transaction left open by a commit listener cannot be rolled back, the connection
-     * state cannot be read, or the session chained a new transaction to the COMMIT (then all of
-     * them) are the remaining commit listeners skipped (listed as failures).
+     * Register a hook callback for an event. The events, their payloads - the SQL and the
+     * parameters as passed, secrets included, unless the option redactParameters is on (README,
+     * Security, names every channel that carries them) - and what a throwing listener does:
+     * Traits\HasHooks. Any other name is refused (see @throws): a listener for it would never run.
      *
      * @param string $event Event name: 'query.before', 'query', 'error', 'transaction.begin', 'transaction.commit', 'transaction.rollback' or 'transaction.end' (a driver may know more)
      * @param callable $callback Callback receiving event data array
@@ -625,12 +650,12 @@ interface DatabaseInterface
      *
      * The key column must be a plain column name, also for a batch without rows. Every row is
      * checked before the first is sent - each row an array, the key column in each row, every key a
-     * plain column name, every key value (not null, also in a row with nothing to set), every value
-     * one that can be bound; no SQL is written for it -: a refused row leaves nothing written, also inside a transaction of
-     * the caller, and no hook fires for it. The statements send what the check read: a value the
-     * caller holds a reference to and changes while the batch runs (from a listener) reaches no
-     * UPDATE. Without an open transaction, the rows are updated in an
-     * own transaction with the same outcomes as transaction(). Open counts one begun through the
+     * plain column name, every key value (not null, also in a row with nothing to set, which then
+     * sends nothing), every value one that can be bound; no SQL is written for it -: a refused row
+     * leaves nothing written, also inside a transaction of the caller, and no hook fires for it. The
+     * statements send what the check read: a value the caller holds a reference to and changes while
+     * the batch runs (from a listener) reaches no UPDATE. Without an open transaction, the rows are
+     * updated in an own transaction with the same outcomes as transaction(). Open counts one begun through the
      * library that ended behind its back (a DDL statement or raw PDO ended it): the batch is then
      * refused like any other statement there, and no transaction of its own takes the old one's
      * place. A state PDO cannot tell is refused before anything is sent. Where it would begin its

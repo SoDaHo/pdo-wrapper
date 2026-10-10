@@ -31,8 +31,7 @@ use Sodaho\PdoWrapper\Exception\QueryException;
  * (measured); a table's name is looked up as the server looks up tables.
  *
  * A table's name is bound in the statements: a value like any other - #[\SensitiveParameter] in every
- * frame, and no debug message names it (with redactParameters or without; Daybreak review of the
- * seventh candidate).
+ * frame, and no debug message names it (with redactParameters or without).
  *
  * It is no snapshot: a table another connection changes at that moment can show either state, or
  * a mix - the table found, its rows from after the change (none after a DROP: columns() throws,

@@ -76,7 +76,7 @@ final class JsonExpression extends RawExpression
     /**
      * The expression as a select() entry named $alias: `<the expression> AS `alias``. Letters of
      * any script count, as for the builder's aliases (u; an alias that is no valid UTF-8 is refused):
-     * without it `zähler` was refused (Daybreak review of the eighth candidate, also in 3.1.2).
+     * `zähler` is one.
      *
      * @throws QueryException When the alias is not a name of letters, digits and underscores
      */

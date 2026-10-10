@@ -85,7 +85,7 @@ class MariaDbDriver extends AbstractDriver
     public function __construct(#[\SensitiveParameter] array $config)
     {
         // A key that is none of these is refused before anything else: a misspelt one would be ignored
-        // without a word - 'redactParamters' => true connected without the redaction it asked for
+        // without a word - 'redactParamters' => true would connect without the redaction it asks for
         $unknown = array_diff(array_map(strval(...), array_keys($config)), self::CONFIG_KEYS);
         if ($unknown !== []) {
             throw new ConnectionException(
