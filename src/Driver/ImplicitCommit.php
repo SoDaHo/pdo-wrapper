@@ -16,8 +16,10 @@ namespace Sodaho\PdoWrapper\Driver;
  *
  * Not on the list, although MariaDB commits for them too: the statements that steer transactions
  * themselves (BEGIN, START TRANSACTION, SET autocommit, XA) - raw transaction control is the
- * caller's (decided 2026-10-03, see the README). Not either: CREATE TEMPORARY TABLE and DROP
- * TEMPORARY TABLE, which commit nothing, SET ROLE and CHECKSUM TABLE, the ANALYZE that runs a
+ * caller's (decided 2026-10-03, see the README). Not either: CREATE [OR REPLACE] TEMPORARY TABLE and
+ * DROP TEMPORARY TABLE or SEQUENCE, which commit nothing - CREATE TEMPORARY SEQUENCE does commit:
+ * MariaDB exempts only the temporary table, so the word after TEMPORARY decides (measured on 10.11,
+ * 11.4 and 12.3; Daybreak review of the seventh candidate) -, SET ROLE and CHECKSUM TABLE, the ANALYZE that runs a
  * statement and reports on it (ANALYZE SELECT, WITH, VALUES, a query in parentheses, INSERT,
  * UPDATE, DELETE, REPLACE, FORMAT=...), and LOAD DATA [LOCAL] INFILE and LOAD XML - the START
  * TRANSACTION page of the documentation names LOAD DATA among the statements that commit, the
@@ -100,7 +102,8 @@ final class ImplicitCommit
         // Each arm reads only the keywords its answer depends on: SELECT is decided by its first word
         $kind = match (true) {
             in_array($first, self::ALWAYS, true) => $first,
-            // CREATE [OR REPLACE] TEMPORARY TABLE and DROP TEMPORARY TABLE commit nothing; every other CREATE and DROP does
+            // CREATE [OR REPLACE] TEMPORARY TABLE and DROP TEMPORARY TABLE or SEQUENCE commit nothing; every other
+            // CREATE and DROP does - CREATE TEMPORARY SEQUENCE among them
             $first === 'CREATE' => self::createsATemporaryTable($tokens, $read) ? null : 'CREATE',
             $first === 'DROP' => self::word($tokens, 1, $read) === 'TEMPORARY' ? null : 'DROP',
             // ANALYZE [LOCAL | NO_WRITE_TO_BINLOG] TABLE[S] maintains a table and commits; every other ANALYZE
@@ -134,16 +137,18 @@ final class ImplicitCommit
     }
 
     /**
-     * Whether a CREATE creates a temporary table: CREATE TEMPORARY, CREATE OR REPLACE TEMPORARY.
+     * Whether a CREATE creates a temporary table: CREATE TEMPORARY TABLE, CREATE OR REPLACE
+     * TEMPORARY TABLE - decided by the object word after TEMPORARY, not by TEMPORARY alone: MariaDB
+     * exempts only the temporary table from the implicit commit, CREATE TEMPORARY SEQUENCE commits
+     * (stmt_causes_implicit_commit() in sql_parse.cc, the same on 10.11, 11.4 and 12.3; measured).
      *
      * @param list<string> $tokens
      */
     private static function createsATemporaryTable(array $tokens, int &$read): bool
     {
-        $second = self::word($tokens, 1, $read);
+        $temporary = self::word($tokens, 1, $read) === 'OR' && self::word($tokens, 2, $read) === 'REPLACE' ? 3 : 1;
 
-        return $second === 'TEMPORARY'
-            || ($second === 'OR' && self::word($tokens, 2, $read) === 'REPLACE' && self::word($tokens, 3, $read) === 'TEMPORARY');
+        return self::word($tokens, $temporary, $read) === 'TEMPORARY' && self::word($tokens, $temporary + 1, $read) === 'TABLE';
     }
 
     /**

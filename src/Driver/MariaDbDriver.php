@@ -321,7 +321,7 @@ class MariaDbDriver extends AbstractDriver
      * MariaDB's statements with an implicit commit, read from their leading keywords (see
      * ImplicitCommit): DDL, LOCK/UNLOCK TABLES, the table maintenance and account statements -
      * not the statements that steer transactions themselves (BEGIN, START TRANSACTION, SET
-     * autocommit, XA), and not CREATE/DROP TEMPORARY TABLE.
+     * autocommit, XA), and not CREATE/DROP TEMPORARY TABLE (a CREATE TEMPORARY SEQUENCE is one).
      */
     protected function implicitCommitOf(string $sql): ?string
     {

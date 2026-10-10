@@ -28,6 +28,14 @@ class ImplicitCommitStatementsTest extends TestCase
             'lower case' => ['create table t (id int)', 'CREATE'],
             'create index' => ['CREATE INDEX i ON t (a)', 'CREATE'],
             'create or replace' => ['CREATE OR REPLACE TABLE t (id INT)', 'CREATE'],
+            // MariaDB exempts only the temporary table: a temporary sequence commits (measured on 10.11, 11.4 and 12.3)
+            'create temporary sequence' => ['CREATE TEMPORARY SEQUENCE s', 'CREATE'],
+            'create or replace temporary sequence' => ['CREATE OR REPLACE TEMPORARY SEQUENCE s', 'CREATE'],
+            'create temporary sequence, lower case' => ['create temporary sequence s', 'CREATE'],
+            'create temporary, a comment before the object' => ['CREATE TEMPORARY /* scratch */ SEQUENCE s', 'CREATE'],
+            'create temporary, no object word' => ['CREATE TEMPORARY', 'CREATE'],
+            'create temporary, the object word quoted' => ['CREATE TEMPORARY `TABLE` t (id INT)', 'CREATE'],
+            'set statement for create temporary sequence' => ['SET STATEMENT a = 1 FOR CREATE TEMPORARY SEQUENCE s', 'SET STATEMENT ... FOR CREATE'],
             'create table as select' => ['CREATE TABLE t2 AS SELECT * FROM t', 'CREATE'],
             'create view with definer' => ['CREATE DEFINER = CURRENT_USER VIEW v AS SELECT 1', 'CREATE'],
             'drop table' => ['DROP TABLE t', 'DROP'],
@@ -108,6 +116,9 @@ class ImplicitCommitStatementsTest extends TestCase
             'unversioned temporary of MariaDB' => ['CREATE /*M! TEMPORARY */ TABLE t (id INT)', ImplicitCommit::UNJUDGED],
             'versioned drop temporary' => ['DROP /*!50700 TEMPORARY */ TABLE t', ImplicitCommit::UNJUDGED],
             'versioned or replace temporary' => ['CREATE OR REPLACE /*!50700 TEMPORARY */ TABLE t (id INT)', ImplicitCommit::UNJUDGED],
+            'versioned sequence after temporary' => ['CREATE TEMPORARY /*M!100100 SEQUENCE */ s', ImplicitCommit::UNJUDGED],
+            'versioned table after temporary' => ['CREATE TEMPORARY /*!50700 TABLE */ t (id INT)', ImplicitCommit::UNJUDGED],
+            'versioned sequence after or replace temporary' => ['CREATE OR REPLACE TEMPORARY /*!50700 SEQUENCE */ s', ImplicitCommit::UNJUDGED],
             'versioned comment between create and or' => ['CREATE /*!50700 OR */ REPLACE TABLE t (id INT)', ImplicitCommit::UNJUDGED],
             'versioned analyze table' => ['ANALYZE /*M!100100 TABLE */ t', ImplicitCommit::UNJUDGED],
             'versioned analyze local table' => ['ANALYZE LOCAL /*!50700 TABLE */ t', ImplicitCommit::UNJUDGED],
@@ -157,6 +168,8 @@ class ImplicitCommitStatementsTest extends TestCase
             'set role' => ['SET ROLE r', null],
             'checksum table' => ['CHECKSUM TABLE t', null],
             'drop temporary table' => ['DROP TEMPORARY TABLE t', null],
+            // unlike its CREATE: MariaDB skips the commit for every temporary DROP (measured on 10.11, 11.4 and 12.3)
+            'drop temporary sequence' => ['DROP TEMPORARY SEQUENCE s', null],
             'analyze select' => ['ANALYZE SELECT 1', null],
             'analyze format' => ['ANALYZE FORMAT=JSON SELECT 1', null],
             // measured on 10.11 and 12.3: @@in_transaction stays 1, the row before is gone after a ROLLBACK
