@@ -51,16 +51,16 @@ class CommitFailedException extends TransactionException
     /**
      * Says what became of the transaction. Called by the driver when it ends the transaction
      * (see above), before the 'transaction.end' listeners run - and only once: what was told
-     * stays told. Application code has no reason to call it; a test that needs an exception with
-     * an outcome may.
-     *
-     * @internal
+     * stays told. Private: the driver reaches it through a closure bound to this class, and no
+     * listener or application code that is handed the exception can write an outcome into it (a
+     * test that needs an exception with an outcome binds a closure the same way).
      *
      * @param 'rolled_back'|'lost' $outcome
      *
      * @throws LogicException When an outcome has been told already
      */
-    public function settle(string $outcome): void
+    // @phpstan-ignore method.unused (called through a closure bound to this class: AbstractDriver::settle())
+    private function settle(string $outcome): void
     {
         if ($this->outcome !== null) {
             throw new LogicException('The outcome of this failed commit has already been told');

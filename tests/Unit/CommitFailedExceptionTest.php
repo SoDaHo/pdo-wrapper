@@ -7,8 +7,11 @@ namespace Sodaho\PdoWrapper\Tests\Unit;
 use Error;
 use LogicException;
 use PHPUnit\Framework\TestCase;
+use ReflectionMethod;
 use Sodaho\PdoWrapper\DatabaseInterface;
 use Sodaho\PdoWrapper\Exception\CommitFailedException;
+use Sodaho\PdoWrapper\Tests\Support\Outcome;
+use Sodaho\PdoWrapper\Tests\Support\Untyped;
 
 /**
  * CommitFailedException::$outcome is told once, by the driver: everyone may read it, nobody
@@ -21,16 +24,31 @@ class CommitFailedExceptionTest extends TestCase
         $e = new CommitFailedException('Failed to commit transaction');
         $this->assertNull($e->outcome);
 
-        $e->settle(DatabaseInterface::TRANSACTION_ROLLED_BACK);
+        Outcome::settle($e, DatabaseInterface::TRANSACTION_ROLLED_BACK);
         $this->assertSame('rolled_back', $e->outcome);
 
         try {
-            $e->settle(DatabaseInterface::TRANSACTION_LOST);
+            Outcome::settle($e, DatabaseInterface::TRANSACTION_LOST);
             $this->fail('Expected LogicException');
         } catch (LogicException $second) {
             $this->assertSame('The outcome of this failed commit has already been told', $second->getMessage());
         }
         $this->assertSame('rolled_back', $e->outcome, 'what was told stays told');
+    }
+
+    /**
+     * settle() is private: a listener handed the exception cannot write an outcome into it.
+     */
+    public function testTheOutcomeCannotBeToldFromOutside(): void
+    {
+        $this->assertTrue(new ReflectionMethod(CommitFailedException::class, 'settle')->isPrivate());
+        $e = new CommitFailedException('Failed to commit transaction');
+        try {
+            Untyped::call([$e, 'settle'], DatabaseInterface::TRANSACTION_LOST);
+            $this->fail('Expected Error');
+        } catch (Error) {
+            $this->assertNull($e->outcome);
+        }
     }
 
     public function testTheOutcomeCannotBeAssignedFromOutside(): void

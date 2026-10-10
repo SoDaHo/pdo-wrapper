@@ -1538,7 +1538,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
         // The driver's question may have told PDO that it is gone.
         if ($owed && $this->reportsNoTransaction()) {
             if ($ours && $failure instanceof CommitFailedException) {
-                $failure->settle(self::TRANSACTION_LOST); // what the end listeners are told below
+                self::settle($failure, self::TRANSACTION_LOST); // what the end listeners are told below
             }
             $this->endLostTransaction($failure, mayStillBeOpen: false);
         }
@@ -1598,6 +1598,22 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
     private function unclearCommitAtHand(): ?Throwable
     {
         return $this->unclearCommit !== null && !$this->endedSince($this->unclearCommit[1], $this->unclearCommit[2]) ? $this->unclearCommit[0] : null;
+    }
+
+    /**
+     * Write the outcome into a failed commit's exception (CommitFailedException::settle(), once).
+     * settle() is private, so that a listener handed the exception cannot write into it: the
+     * driver calls it through a closure bound to that class's scope - which also reaches it on a
+     * subclass of it.
+     *
+     * @param 'rolled_back'|'lost' $outcome
+     */
+    private static function settle(CommitFailedException $failure, string $outcome): void
+    {
+        $settle = Closure::bind(static function (CommitFailedException $failure) use ($outcome): void {
+            $failure->settle($outcome);
+        }, null, CommitFailedException::class);
+        $settle($failure);
     }
 
     /**
@@ -1977,7 +1993,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
         if ($this->settlingCommit !== null && $cause === $this->settlingCommit) {
             // What the end listeners are told below: the transaction whose commit is settled here is
             // the one transaction() began, and that one owes its end
-            $this->settlingCommit->settle(self::TRANSACTION_ROLLED_BACK);
+            self::settle($this->settlingCommit, self::TRANSACTION_ROLLED_BACK);
             $this->settlingCommit = null; // written once: a listener that throws this exception again inside a transaction of its own cannot have it rewritten
         }
         $pending = null;
@@ -2182,7 +2198,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
                 message: 'Failed to commit transaction',
                 debugMessage: 'Not committed: the transaction this call began has already been ended through this driver (a commit() or rollback() inside the callback or a listener), and its end was told then. A transaction that is open now was begun afterwards and is left to whoever began it.'
             );
-            $refusal->settle(self::TRANSACTION_LOST); // no rollback of this call's work is confirmed here
+            self::settle($refusal, self::TRANSACTION_LOST); // no rollback of this call's work is confirmed here
 
             throw $refusal;
         }
@@ -2214,7 +2230,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
                 // No end was told with it: the transaction was ended through this driver while the
                 // COMMIT or the ROLLBACK after it was under way (an error handler that rolled back,
                 // or ran a transaction of its own). Nothing confirms what became of the commit.
-                $failed->settle(self::TRANSACTION_LOST);
+                self::settle($failed, self::TRANSACTION_LOST);
             }
             throw $e;
         }
@@ -2289,7 +2305,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
         }
         $this->transactionGone = null; // about this transaction alone: kept, it would only hold the failed statement
         if ($this->settlingCommit !== null && $cause === $this->settlingCommit) {
-            $this->settlingCommit->settle(self::TRANSACTION_LOST); // what the end listeners are told below
+            self::settle($this->settlingCommit, self::TRANSACTION_LOST); // what the end listeners are told below
             $this->settlingCommit = null; // written once, as in rollback()
         }
         $this->reportTransactionEndFailures(

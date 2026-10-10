@@ -9,6 +9,7 @@ use Sodaho\PdoWrapper\DatabaseInterface;
 use Sodaho\PdoWrapper\Exception\CommitFailedException;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Exception\TransactionException;
+use Sodaho\PdoWrapper\Tests\Support\Outcome;
 use Throwable;
 
 /**
@@ -411,7 +412,7 @@ class ChainedCommitScenariosTest extends TransactionEndTestCase
             $this->ends = [];
             $foreign = new CommitFailedException(message: 'thrown by the PDO class (scenario)');
             if ($outcome !== null) {
-                $foreign->settle($outcome);
+                Outcome::settle($foreign, $outcome);
             }
             $this->driver->beginTransaction();
             $this->pdo->throwAfterCommit = $foreign;
