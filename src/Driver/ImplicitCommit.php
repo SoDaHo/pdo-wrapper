@@ -23,7 +23,8 @@ namespace Sodaho\PdoWrapper\Driver;
  * TRANSACTION page of the documentation names LOAD DATA among the statements that commit, the
  * list of those statements does not; on InnoDB nothing is committed (all measured on 10.11 and
  * 12.3: @@in_transaction stays 1, the rows loaded and the row inserted before them are gone after
- * the ROLLBACK). What a statement
+ * the ROLLBACK; pinned by tests for the LOCAL forms, LOAD DATA INFILE from the server's own disk
+ * measured by hand). What a statement
  * runs inside - a stored procedure (CALL), a prepared statement (EXECUTE), a compound statement
  * (BEGIN NOT ATOMIC) - is not seen.
  *
