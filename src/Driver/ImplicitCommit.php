@@ -8,8 +8,8 @@ namespace Sodaho\PdoWrapper\Driver;
  * Which SQL statements commit the open transaction implicitly on MariaDB, read from their leading
  * keywords - the list of the MariaDB documentation ("SQL statements that cause an implicit commit"),
  * completed by measurement on 10.11 and 12.3: DDL (ALTER, CREATE, DROP, RENAME, TRUNCATE), LOCK and
- * UNLOCK TABLES, BACKUP STAGE and BACKUP LOCK, the table maintenance statements (ANALYZE, CHECK,
- * OPTIMIZE, REPAIR TABLE), the account statements (CREATE/DROP/RENAME USER and ROLE, GRANT, REVOKE,
+ * UNLOCK TABLES, BACKUP STAGE and BACKUP LOCK, the table maintenance statements (ANALYZE
+ * [LOCAL | NO_WRITE_TO_BINLOG] TABLE or TABLES, CHECK, OPTIMIZE, REPAIR TABLE), the account statements (CREATE/DROP/RENAME USER and ROLE, GRANT, REVOKE,
  * SET PASSWORD, SET DEFAULT ROLE), INSTALL and UNINSTALL PLUGIN/SONAME, CACHE INDEX, LOAD INDEX
  * INTO CACHE, FLUSH, RESET, SHUTDOWN and the replication statements (CHANGE MASTER, START/STOP
  * SLAVE). MariaDB commits before such a statement runs, also when it then fails.
@@ -17,7 +17,10 @@ namespace Sodaho\PdoWrapper\Driver;
  * Not on the list, although MariaDB commits for them too: the statements that steer transactions
  * themselves (BEGIN, START TRANSACTION, SET autocommit, XA) - raw transaction control is the
  * caller's (decided 2026-10-03, see the README). Not either: CREATE TEMPORARY TABLE and DROP
- * TEMPORARY TABLE, which commit nothing, SET ROLE and CHECKSUM TABLE (measured). What a statement
+ * TEMPORARY TABLE, which commit nothing, SET ROLE and CHECKSUM TABLE, the ANALYZE that runs a
+ * statement and reports on it (ANALYZE SELECT, WITH, VALUES, a query in parentheses, INSERT,
+ * UPDATE, DELETE, REPLACE, FORMAT=...; measured on 10.11 and 12.3: @@in_transaction stays 1, the
+ * row inserted before is gone after the ROLLBACK). What a statement
  * runs inside - a stored procedure (CALL), a prepared statement (EXECUTE), a compound statement
  * (BEGIN NOT ATOMIC) - is not seen.
  *
@@ -103,8 +106,10 @@ final class ImplicitCommit
             // CREATE TEMPORARY TABLE and DROP TEMPORARY TABLE commit nothing; every other CREATE and DROP does
             $first === 'CREATE' => $second === 'TEMPORARY' || ($second === 'OR' && $third === 'REPLACE' && $fourth === 'TEMPORARY') ? null : 'CREATE',
             $first === 'DROP' => $second === 'TEMPORARY' ? null : 'DROP',
-            // ANALYZE TABLE does; ANALYZE SELECT and the other ANALYZE forms that run a statement do not
-            $first === 'ANALYZE' => in_array($second, ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'REPLACE', 'FORMAT'], true) ? null : 'ANALYZE',
+            // ANALYZE [LOCAL | NO_WRITE_TO_BINLOG] TABLE[S] maintains a table and commits; every other ANALYZE
+            // runs a statement and reports on it (SELECT, WITH, VALUES, a query in parentheses, ...): nothing
+            $first === 'ANALYZE' => in_array($second, ['TABLE', 'TABLES'], true)
+                || (in_array($second, ['LOCAL', 'NO_WRITE_TO_BINLOG'], true) && in_array($third, ['TABLE', 'TABLES'], true)) ? 'ANALYZE' : null,
             $first === 'LOAD' => $second === 'INDEX' ? 'LOAD INDEX' : null,
             ($first === 'START' || $first === 'STOP') && in_array($second, ['SLAVE', 'REPLICA', 'ALL'], true) => $first . ' ' . $second,
             $first === 'SET' && $second === 'PASSWORD' => 'SET PASSWORD',
