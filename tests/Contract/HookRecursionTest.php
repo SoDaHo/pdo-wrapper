@@ -58,6 +58,11 @@ class HookRecursionTest extends ContractTestCase
         $this->assertSame([2], $audited);
     }
 
+    /**
+     * A listener of $event that runs a statement for every statement is stopped at the limit: a
+     * LogicException after 32 levels, one run of the listener per level - and once it is removed,
+     * the nesting is counted down again and a statement runs.
+     */
     private function assertStoppedFor(string $event): void
     {
         $runs = 0;
