@@ -65,13 +65,22 @@ class IncrementTest extends ContractTestCase
     public function testTheColumnCannotBeSetInTheExtraValuesToo(): void
     {
         foreach (['increment', 'decrement'] as $method) {
-            foreach (['attempts', 'ATTEMPTS', 'counters.attempts', 'Counters.Attempts'] as $key) {
+            foreach (['attempts', 'ATTEMPTS'] as $key) {
                 try {
                     $this->db->table('counters')->where('id', 1)->{$method}('attempts', 1, ['note' => 'x', $key => 9]);
                     $this->fail("Expected QueryException: {$method} with {$key}");
                 } catch (QueryException $e) {
                     $this->assertSame('Update failed', $e->getMessage());
                     $this->assertSame(sprintf('%s() changes "attempts" itself; it cannot be set in $extra as well (as "%s")', $method, $key), $e->getDebugMessage());
+                }
+            }
+            // a qualified name is no key of the columns to set at all
+            foreach (['counters.attempts', 'Counters.Attempts'] as $key) {
+                try {
+                    $this->db->table('counters')->where('id', 1)->{$method}('attempts', 1, ['note' => 'x', $key => 9]);
+                    $this->fail("Expected QueryException: {$method} with {$key}");
+                } catch (QueryException $e) {
+                    $this->assertStringStartsWith(sprintf('%s() with $extra needs the plain names of columns as keys, got "%s"', $method, $key), (string) $e->getDebugMessage());
                 }
             }
         }

@@ -3372,11 +3372,16 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
     }
 
     /**
-     * A key of a column => value array as the column name it must be. PHP turns the keys of a list
-     * and a numeric string key ('42') into integers whatever the declared type says; an integer
-     * reaching quoteIdentifier() would be a TypeError instead of a QueryException.
+     * A key of a column => value array as the column name it must be: the plain name of one column
+     * of the table the method works on. PHP turns the keys of a list and a numeric string key
+     * ('42') into integers whatever the declared type says; an integer reaching quoteIdentifier()
+     * would be a TypeError instead of a QueryException. A dot would be taken apart by the quoting -
+     * "users.role" and "db.users.role" name the column "role" just as well, a second spelling of a
+     * key a deny-list would not catch (mass assignment) -: refused. That MariaDB compares column
+     * names without case ("ROLE" is "role") no library can change: only a whitelist of the
+     * accepted keys is exact (README, Security).
      *
-     * @throws QueryException When the key is an integer
+     * @throws QueryException When the key is an integer or holds a dot
      */
     private static function columnKey(int|string $key, string $what): string
     {
@@ -3384,6 +3389,12 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
             throw new QueryException(
                 message: 'Query failed',
                 debugMessage: sprintf('%s need column names as keys, got the numeric key %d (a list, or a column named by digits alone). Pass column => value pairs.', $what, $key)
+            );
+        }
+        if (str_contains($key, '.')) {
+            throw new QueryException(
+                message: 'Query failed',
+                debugMessage: sprintf('%s need the plain names of columns as keys, got "%s": a qualified name (table.column) would be taken apart at its dot and name the column after it. Pass the column\'s own name.', $what, $key)
             );
         }
 

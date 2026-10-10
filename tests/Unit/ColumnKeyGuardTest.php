@@ -12,7 +12,8 @@ use Sodaho\PdoWrapper\Query\QueryBuilder;
 use Sodaho\PdoWrapper\Tests\Support\Untyped;
 
 /**
- * Column => value arrays whose keys are integers - a list, a column named by digits alone - and a
+ * Column => value arrays whose keys are integers - a list, a column named by digits alone - or
+ * qualified names (table.column: a second spelling of a column a deny-list would miss), and a
  * having() column that is an expression: a QueryException before anything is sent, never a
  * TypeError from the quoting and never the server's "unknown column". No database needed: every
  * case throws before the statement exists.
@@ -46,6 +47,45 @@ class ColumnKeyGuardTest extends TestCase
         yield 'delete()' => [static fn (AbstractDriver $db): mixed => Untyped::call($db->delete(...), 't', [5 => 1]), 'The WHERE conditions need column names as keys, got the numeric key 5'];
         yield 'findOne()' => [static fn (AbstractDriver $db): mixed => Untyped::call($db->findOne(...), 't', [0 => 1]), 'The WHERE conditions need column names as keys, got the numeric key 0'];
         yield 'upsert() update' => [static fn (AbstractDriver $db): mixed => Untyped::call($db->upsert(...), 't', ['id' => 1], ['x']), 'The columns to set need column names as keys, got the numeric key 0'];
+    }
+
+    /**
+     * A key with a dot would be taken apart by the quoting and name the column after it: "users.role"
+     * and "db.users.role" set "role" just as "role" does. Refused in every method that takes column
+     * => value pairs to write or to match.
+     *
+     * @return iterable<string, array{\Closure(AbstractDriver): mixed, non-empty-string}>
+     */
+    public static function qualifiedKeys(): iterable
+    {
+        yield 'insert()' => [static fn (AbstractDriver $db): mixed => $db->insert('users', ['users.role' => 'admin']), 'The columns to insert need the plain names of columns as keys, got "users.role"'];
+        yield 'update() data' => [static fn (AbstractDriver $db): mixed => $db->update('users', ['app.users.role' => 'admin'], ['id' => 1]), 'The columns to set need the plain names of columns as keys, got "app.users.role"'];
+        yield 'update() where' => [static fn (AbstractDriver $db): mixed => $db->update('users', ['name' => 'x'], ['users.id' => 1]), 'The WHERE conditions need the plain names of columns as keys, got "users.id"'];
+        yield 'delete()' => [static fn (AbstractDriver $db): mixed => $db->delete('users', ['users.id' => 1]), 'The WHERE conditions need the plain names'];
+        yield 'findOne()' => [static fn (AbstractDriver $db): mixed => $db->findOne('users', ['users.id' => 1]), 'The WHERE conditions need the plain names'];
+        yield 'findAll()' => [static fn (AbstractDriver $db): mixed => $db->findAll('users', ['users.id' => 1]), 'The WHERE conditions need the plain names'];
+        yield 'upsert() row' => [static fn (AbstractDriver $db): mixed => $db->upsert('users', ['users.id' => 1], ['name' => 'x']), 'The columns to insert need the plain names'];
+        yield 'upsert() update' => [static fn (AbstractDriver $db): mixed => $db->upsert('users', ['id' => 1], ['users.role' => 'admin']), 'The columns to set need the plain names'];
+        yield 'insertWhen()' => [static fn (AbstractDriver $db): mixed => $db->insertWhen('users', ['users.role' => 'admin'], '1 = 1'), 'The columns to insert need the plain names'];
+        yield 'insertIgnore()' => [static fn (AbstractDriver $db): mixed => $db->insertIgnore('users', ['users.role' => 'admin']), 'The columns to insert need the plain names'];
+        yield 'builder update()' => [static fn (AbstractDriver $db): mixed => $db->table('users')->where('id', 1)->update(['users.role' => 'admin']), 'update() needs the plain names of columns as keys, got "users.role"'];
+        yield 'builder increment() $extra' => [static fn (AbstractDriver $db): mixed => $db->table('users')->where('id', 1)->increment('n', 1, ['users.role' => 'admin']), 'increment() with $extra needs the plain names of columns as keys, got "users.role"'];
+    }
+
+    /**
+     * @param \Closure(AbstractDriver): mixed $call
+     * @param non-empty-string $message
+     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('qualifiedKeys')]
+    public function testAQualifiedKeyIsAQueryException(\Closure $call, string $message): void
+    {
+        try {
+            $call($this->db());
+            $this->fail('Expected QueryException');
+        } catch (QueryException $e) {
+            $this->assertSame('Query failed', $e->getMessage());
+            $this->assertStringStartsWith($message, (string) $e->getDebugMessage());
+        }
     }
 
     /**

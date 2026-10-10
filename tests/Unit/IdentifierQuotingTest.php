@@ -161,20 +161,23 @@ class IdentifierQuotingTest extends TestCase
         $this->assertSame('DELETE FROM `t``x` WHERE `c``d` = ?', $sql);
     }
 
-    public function testADottedCrudNameIsQuotedPartByPart(): void
+    public function testADottedCrudTableIsQuotedPartByPart(): void
     {
-        [$sql] = $this->sent(static fn (AbstractDriver $db): ?array => $db->findOne('secrets.secret_data', ['s`x.c`y' => 1]));
+        [$sql] = $this->sent(static fn (AbstractDriver $db): ?array => $db->findOne('secrets.secret_data', ['s`x' => 1]));
 
-        $this->assertSame('SELECT * FROM `secrets`.`secret_data` WHERE `s``x`.`c``y` = ? LIMIT 1', $sql);
+        $this->assertSame('SELECT * FROM `secrets`.`secret_data` WHERE `s``x` = ? LIMIT 1', $sql);
     }
 
     /**
-     * A CRUD key is one name, never an alias or a wildcard: "a as b" is the column of that name.
+     * A CRUD key is one name, never an alias or a wildcard: "a as b" is the column of that name,
+     * "*" the column named "*". In the builder's update() as well.
      */
     public function testACrudKeyIsNeverAnAliasOrAWildcard(): void
     {
-        [$sql] = $this->sent(static fn (AbstractDriver $db): int => $db->update('t', ['a as b' => 1], ['t.*' => 2]));
+        [$sql] = $this->sent(static fn (AbstractDriver $db): int => $db->update('t', ['a as b' => 1], ['*' => 2]));
+        $this->assertSame('UPDATE `t` SET `a as b` = ? WHERE `*` = ?', $sql);
 
-        $this->assertSame('UPDATE `t` SET `a as b` = ? WHERE `t`.`*` = ?', $sql);
+        [$sql] = $this->sent(static fn (AbstractDriver $db): int => $db->table('t')->where('id', 1)->update(['a as b' => 1]));
+        $this->assertSame('UPDATE `t` SET `a as b` = ? WHERE `id` = ?', $sql);
     }
 }

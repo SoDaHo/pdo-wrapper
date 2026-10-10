@@ -1036,6 +1036,18 @@ $db->table('users')->orderBy($column)->get();
 
 This applies to `select()`, `where*()`, `orderBy()`, `groupBy()`, and `join()`, and to table names. The same goes for a sort direction from request input: `orderBy()` throws on anything but `ASC`/`DESC`, so map the input to one of the two first.
 
+**The keys of column => value arrays** - `insert()`, `update()` (data and conditions), `delete()`, `findOne()`, `findAll()`, `upsert()`, `upsertReturning()`, `insertWhen()`, `insertIgnore()`, `updateMultiple()` and the builder's `update()` and `increment()`/`decrement()` extras - are column names as well: an array taken from the request decides which columns are written (mass assignment). Filter it through a whitelist of the keys you accept; a deny-list does not hold. The library takes a key as the plain name of one column and refuses a qualified one (`users.role`, `app.users.role` - a `QueryException`, nothing sent), but MariaDB compares column names without case: `ROLE` and `Role` set the column `role` just as `role` does, and no library can change that.
+
+```php
+// ✅ the whitelist decides which columns a request may write
+$data = array_intersect_key($request->post(), array_flip(['name', 'email']));
+$db->update('users', $data, ['id' => $me]);
+
+// ❌ a deny-list misses 'ROLE', 'Role', ...
+$data = $request->post();
+unset($data['role']);
+```
+
 ### LIKE Patterns with User Input
 
 Use `Database::escapeLike()` to prevent LIKE wildcards (`%`, `_`) in user input from being interpreted as wildcards:

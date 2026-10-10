@@ -1277,7 +1277,7 @@ class QueryBuilder
     private function step(string $column, string $sign, int|float $by, array $extra): int
     {
         $method = $sign === '+' ? 'increment' : 'decrement';
-        $this->guardAgainstNumericKeys($extra, $method . '() with $extra', 'Pass column => value pairs.');
+        $this->guardTheColumnsToSet($extra, $method . '() with $extra');
         // MariaDB takes "Attempts" and "t.attempts" for the column "attempts": a second assignment
         // to it would silently replace the step
         foreach (array_keys($extra) as $key) {
@@ -1360,16 +1360,17 @@ class QueryBuilder
                 debugMessage: 'Cannot update with empty data'
             );
         }
-        $this->guardAgainstNumericKeys($data, 'update()', 'Pass column => value pairs.');
+        $this->guardTheColumnsToSet($data, 'update()');
 
         [$whereSql, $whereParams] = $this->buildWhere();
 
         $setClauses = [];
         $params = [];
 
-        // The assignments in the order of $data; a raw value's own bindings stand where it stands
+        // The assignments in the order of $data; a raw value's own bindings stand where it stands. A key
+        // is the name of one column, as in the CRUD methods: no alias ("a as b" is that column)
         foreach ($data as $column => $value) {
-            $setClauses[] = $this->quoteIdentifier($column) . ' = ' . Sql::value($value, $params);
+            $setClauses[] = Sql::name((string) $column) . ' = ' . Sql::value($value, $params);
         }
 
         $params = array_merge($params, $whereParams);
@@ -1807,6 +1808,28 @@ class QueryBuilder
     private function quoteReference(string $identifier): string
     {
         return Sql::name($identifier, wildcard: true);
+    }
+
+    /**
+     * The keys of the columns to set (update(), the $extra of increment()/decrement()): the plain
+     * name of one column each, as in the CRUD methods - no integer key, no dot (a qualified name
+     * would be taken apart and name the column after it, a second spelling a deny-list misses).
+     *
+     * @param array<array-key, mixed> $pairs
+     *
+     * @throws QueryException When a key is an integer or holds a dot
+     */
+    private function guardTheColumnsToSet(array $pairs, string $what): void
+    {
+        $this->guardAgainstNumericKeys($pairs, $what, 'Pass column => value pairs.');
+        foreach (array_keys($pairs) as $key) {
+            if (str_contains((string) $key, '.')) {
+                throw new QueryException(
+                    message: 'Query failed',
+                    debugMessage: sprintf('%s needs the plain names of columns as keys, got "%s": a qualified name (table.column) would be taken apart at its dot and name the column after it. Pass the column\'s own name.', $what, $key)
+                );
+            }
+        }
     }
 
     /**
