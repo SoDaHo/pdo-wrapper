@@ -167,7 +167,8 @@ abstract class AbstractDriver implements DatabaseInterface
      * not yet their 'transaction.end' - every told begin gets exactly one end. The depth of the
      * next one is this count plus one: 1 as a rule - only foreign code inside a PDO call (an error
      * handler for a PDO warning) can begin a transaction while another one's end is still owed
-     * (listeners cannot: refused inside a listener).
+     * (listeners cannot: a transaction.end listener runs once that end is told, a statement listener
+     * may begin one only outside of a transaction).
      */
     private int $unendedBegins = 0;
 
@@ -1065,40 +1066,56 @@ abstract class AbstractDriver implements DatabaseInterface
      * raw PDO (best effort, no 'transaction.rollback' hooks; if it fails, the transaction may still be
      * open), its 'transaction.end' is told ('rolled_back', or 'lost' when the rollback failed) and the
      * hook's exception reaches the caller, a PDOException as TransactionException - unless the
-     * transaction was ended meanwhile (a reconnect() of the hook, an error handler inside a PDO
+     * transaction was ended meanwhile (a reconnect(dropTransaction: true) of the hook, an error handler inside a PDO
      * call): what is open then is not this call's. A BEGIN that fails in PDO tells nothing: there
      * was no transaction. A hook that ends the transaction it was told about without throwing -
-     * reconnect(), raw PDO, an implicit commit by a DDL statement on raw PDO - makes the call fail
+     * reconnect(dropTransaction: true), raw PDO, an implicit commit by a DDL statement on raw PDO - makes the call fail
      * as well, and no further hook runs: the caller would go on outside of the transaction it
      * asked for; an end behind the driver's back is told as 'lost' before the call fails. A hook
      * cannot begin, commit or roll back through this driver (ListenerTransactionException).
      *
-     * A transaction begun through this driver that PDO no longer reports is told as 'lost' first.
-     * Called from inside a listener of this driver, it refuses and begins nothing.
+     * A transaction begun through this driver that PDO no longer reports is told as 'lost' first;
+     * so is one an end listener of that 'lost' begins and loses the same way. A third in a row is
+     * not told here: the call throws and begins nothing. Called from inside a listener that may
+     * not steer a transaction (see refuseInsideAListener()), it refuses and begins nothing.
      *
-     * @throws ListenerTransactionException When called from inside a listener of this driver (nothing is begun)
-     * @throws TransactionException On failure, including PDO::beginTransaction() returning false (non-exception error mode), and when a transaction.begin listener ended the transaction
+     * @throws ListenerTransactionException When called from inside a transaction.begin, transaction.commit or transaction.rollback listener of this driver, or a statement listener entered inside a transaction (nothing is begun)
+     * @throws LogicException When MAX_HOOK_DEPTH transaction.end listeners run one inside the other (nothing is begun)
+     * @throws TransactionException On failure, including PDO::beginTransaction() returning false (non-exception error mode), when a transaction.begin listener ended the transaction, and when transaction.end listeners keep leaving behind a transaction that ended outside this driver
      * @throws Throwable What a transaction.begin listener throws (a PDOException arrives as TransactionException)
      */
     final public function beginTransaction(): void
     {
         $this->refuseInsideAListener('beginTransaction()');
+        $this->refuseEndListenerRecursion();
 
-        // A transaction this library began is dead on the server and has not been ended here: a new one
-        // would bury it (its end would never be told) and let the caller's remaining work run in a fresh one
-        if ($this->suspectFailure !== null && $this->transactionBegun && $this->deadTransactionPending()) {
-            throw new TransactionException(
-                message: 'Failed to begin transaction',
-                previous: $this->suspectFailure,
-                debugMessage: 'The transaction this library began was rolled back by the server when a statement failed (the previous exception) and has not been ended yet. Call rollback() first.'
-            );
-        }
+        // Asked again after an end was told below: its end listeners may have begun a transaction
+        // through this driver that owes its end the same way, and the one begun here must not bury it
+        for ($endsTold = 0; ; $endsTold++) {
+            // A transaction this library began is dead on the server and has not been ended here: a new one
+            // would bury it (its end would never be told) and let the caller's remaining work run in a fresh one
+            if ($this->suspectFailure !== null && $this->transactionBegun && $this->deadTransactionPending()) {
+                throw new TransactionException(
+                    message: 'Failed to begin transaction',
+                    previous: $this->suspectFailure,
+                    debugMessage: 'The transaction this library began was rolled back by the server when a statement failed (the previous exception) and has not been ended yet. Call rollback() first.'
+                );
+            }
 
-        // A transaction this library began still owes its end, and PDO no longer reports it: it was ended
-        // behind this library's back (a lock wait timeout that ended it, raw PDO). Its end is told now, as
-        // 'lost', before the next transaction takes its place. Its end listeners cannot begin one through
-        // this driver (refused inside a listener); one they begin on raw PDO makes the BEGIN below fail.
-        if ($this->transactionBegun && $this->reportsNoTransaction()) {
+            // A transaction this library began still owes its end, and PDO no longer reports it: it was ended
+            // behind this library's back (a lock wait timeout that ended it, raw PDO). Its end is told now, as
+            // 'lost', before the next transaction takes its place.
+            if (!$this->transactionBegun || !$this->reportsNoTransaction()) {
+                break;
+            }
+            if ($endsTold === 2) {
+                // End listeners that answer every such end with another transaction of that kind: no loop.
+                // The latest one keeps its mark, the next beginTransaction() tells its end.
+                throw new TransactionException(
+                    message: 'Failed to begin transaction',
+                    debugMessage: 'Not begun: the transaction.end listeners keep leaving behind a transaction that ended outside this library (twice in a row while this one was to begin).'
+                );
+            }
             $this->endLostTransaction(
                 new TransactionException(
                     message: 'Transaction ended outside this library',
@@ -1144,7 +1161,7 @@ abstract class AbstractDriver implements DatabaseInterface
             // write outside of any transaction, or into one somebody began afterwards
             $payload = ['transaction' => $number, 'depth' => $depth]; // a variable, as trigger() passes one: a listener may take it by reference
             foreach ($this->hooks['transaction.begin'] ?? [] as $listener) {
-                $this->asListener(static function () use ($listener, &$payload): void {
+                $this->asListener('transaction.begin', static function () use ($listener, &$payload): void {
                     $listener($payload);
                 });
                 $this->failIfNoLongerOpen($number);
@@ -1167,23 +1184,75 @@ abstract class AbstractDriver implements DatabaseInterface
     }
 
     /**
-     * Transaction control from inside a listener of this driver is refused before anything is done:
-     * the listener runs in the middle of the caller's operation, on the caller's connection - a
-     * commit() would commit what the caller is still building, a rollback() undo it, a transaction
-     * begun there run inside the caller's statement. A listener that needs a transaction uses a
-     * connection of its own.
+     * Transaction control from inside a listener of this driver that runs in the middle of a
+     * transaction is refused before anything is done: a 'transaction.begin', 'transaction.commit' or
+     * 'transaction.rollback' listener always, a 'query.before', 'query' or 'error' listener entered
+     * while a transaction was open - it runs on the caller's connection, in the caller's
+     * transaction: a commit() would commit what the caller is still building, a rollback() undo it,
+     * a transaction begun there run inside the caller's statement. Any such listener among the
+     * running ones refuses, also for a listener running inside it. A 'transaction.end' listener runs
+     * once the transaction has ended, and so does a statement listener outside of a transaction:
+     * there a transaction is one of its own, with its own number and its own end.
      *
-     * @throws ListenerTransactionException When a listener of this driver is running
+     * @throws ListenerTransactionException When called from inside such a listener of this driver
      */
     private function refuseInsideAListener(string $method): void
     {
-        if ($this->listenerRunning()) {
-            throw new ListenerTransactionException(
-                debugMessage: sprintf(
-                    '%s was called from inside a listener of this driver (query.before, query, error or transaction.*): it would steer the transaction of the operation the listener is told about. Nothing was done. Use a connection of its own for a transaction in a listener.',
-                    $method
-                )
-            );
+        foreach ($this->listenerFrames() as [$event, $openAtEntry]) {
+            $steersTheCallers = match ($event) {
+                'transaction.begin', 'transaction.commit', 'transaction.rollback' => true,
+                'query.before', 'query', 'error' => $openAtEntry,
+                default => false,
+            };
+            if ($steersTheCallers) {
+                throw new ListenerTransactionException(
+                    debugMessage: sprintf(
+                        '%s was called from inside a %s listener of this driver%s: it would steer the transaction the listener runs in. Nothing was done. A transaction.end listener, or a statement listener outside of a transaction, may run a transaction of its own; otherwise use a connection of its own.',
+                        $method,
+                        $event,
+                        $openAtEntry ? ' entered inside a transaction' : ''
+                    )
+                );
+            }
+        }
+    }
+
+    /**
+     * transaction.end listeners that each run a transaction, whose end runs them again, would not
+     * stop: beyond MAX_HOOK_DEPTH of them inside each other, beginTransaction() throws instead - as
+     * the statement listeners are stopped (triggerFromQuery()).
+     *
+     * @throws LogicException When MAX_HOOK_DEPTH transaction.end listeners run one inside the other already
+     */
+    private function refuseEndListenerRecursion(): void
+    {
+        $ends = count(array_filter($this->listenerFrames(), static fn (array $frame): bool => $frame[0] === 'transaction.end'));
+        if ($ends >= self::MAX_HOOK_DEPTH) {
+            throw new LogicException(sprintf(
+                'Hook recursion: %d transaction.end listeners run one inside the other - one of them begins a transaction for every end it is told about. Guard the listener against the ends of its own transactions.',
+                self::MAX_HOOK_DEPTH
+            ));
+        }
+    }
+
+    /**
+     * For the frames of HasHooks: whether a transaction is open as a statement listener is entered -
+     * one begun through this driver, or one PDO reports (begun on raw PDO); a state that cannot be
+     * read counts as open, fail-closed. Not asked for the transaction.* events: their refusal does
+     * not depend on it.
+     */
+    private function transactionOpenAtListener(string $event): bool
+    {
+        if (!in_array($event, ['query.before', 'query', 'error'], true)) {
+            return false;
+        }
+        if ($this->transactionBegun) {
+            return true;
+        }
+        try {
+            return $this->pdo->inTransaction();
+        } catch (Throwable) {
+            return true;
         }
     }
 
@@ -1272,7 +1341,7 @@ abstract class AbstractDriver implements DatabaseInterface
 
     /**
      * After a throwing 'transaction.begin' listener: undo the transaction that was just begun -
-     * unless it was ended meanwhile (a reconnect() of the listener, an error handler inside a PDO
+     * unless it was ended meanwhile (a reconnect(dropTransaction: true) of the listener, an error handler inside a PDO
      * call): its end has been told, and what is open then was begun afterwards and is not this
      * call's to roll back. Ended behind
      * the driver's back before the listener threw (PDO reports no transaction: an implicit commit
@@ -1297,7 +1366,7 @@ abstract class AbstractDriver implements DatabaseInterface
             return;
         }
         if (!$known) {
-            // Not known whether it still exists (a listener cannot have committed it: refused inside a listener)
+            // Not known whether it still exists (a begin listener cannot have committed it: refused there)
             $this->cleanUpUnconfirmed($cause);
 
             return;
@@ -1380,12 +1449,13 @@ abstract class AbstractDriver implements DatabaseInterface
      *
      * Triggers 'transaction.commit' listeners after a successful commit. They cannot undo
      * the commit, so every listener runs and their failures are reported together - unless
-     * a transaction left open by a listener (begun on raw PDO: a listener cannot begin one through
-     * this driver) cannot be rolled back (or the connection state cannot be read): the remaining
+     * a transaction left open by a listener (begun on raw PDO: a commit listener cannot begin one
+     * through this driver) cannot be rolled back (or the connection state cannot be read): the remaining
      * listeners are then skipped and reported as failures. Then 'transaction.end' fires with
      * outcome 'committed' (also after skipped listeners; not when a 'lost' was already reported
      * for this transaction); the end listeners' failures follow the commit listeners' in the same
-     * exception, in that order. Called from inside a listener of this driver, it refuses and sends
+     * exception, in that order. Called from inside a listener that may not steer a transaction (see
+     * beginTransaction()), it refuses and sends
      * nothing (ListenerTransactionException). A failed commit fires no
      * 'transaction.end': the transaction is still the caller's to end (one exception: a failed or
      * refused commit of a transaction PDO no longer reports, see below).
@@ -1407,7 +1477,7 @@ abstract class AbstractDriver implements DatabaseInterface
      * unchanged - may have taken effect on a session that chains transactions, and PDO then
      * reports the next one: see noteACommitThatMayHaveTakenEffect().
      *
-     * @throws ListenerTransactionException When called from inside a listener of this driver (nothing is sent)
+     * @throws ListenerTransactionException When called from inside a transaction.begin, transaction.commit or transaction.rollback listener, or a statement listener (query.before, query, error) entered inside a transaction (nothing is sent)
      * @throws CommitFailedException When the commit itself failed (it may or may not have taken effect), or was refused because the server had already ended the transaction (nothing of that transaction is committed)
      * @throws CommitHookException When committed, but a transaction.commit or transaction.end listener failed, the connection state after a commit listener could not be verified, or the connection is in a new, chained transaction
      */
@@ -1635,10 +1705,10 @@ abstract class AbstractDriver implements DatabaseInterface
     /**
      * Run every 'transaction.end' listener with the outcome and collect their failures in listener
      * order; nothing here throws. The mark of the ended transaction is cleared by the caller before
-     * any listener runs. $at names the transaction (transactionAtHand(), read by the caller before
-     * the state changed): one begun through this driver no longer owes its end from here on -
-     * before any listener runs (a listener cannot begin one through this driver; a transaction an
-     * error handler begins later is told the depth it has).
+     * any listener runs, so a transaction a listener begins keeps its own mark. $at names the
+     * transaction (transactionAtHand(), read by the caller before the state changed): one begun
+     * through this driver no longer owes its end from here on - before any listener runs, so that
+     * one it begins is told the depth it has (1: it is not nested in the one that ended).
      *
      * @param array{?int, ?int} $at
      *
@@ -1653,7 +1723,7 @@ abstract class AbstractDriver implements DatabaseInterface
 
         foreach ($this->hooks['transaction.end'] ?? [] as $listener) {
             try {
-                $this->asListener(static function () use ($listener, $outcome, $error, $at): void {
+                $this->asListener('transaction.end', static function () use ($listener, $outcome, $error, $at): void {
                     $listener(['outcome' => $outcome, 'error' => $error, 'transaction' => $at[0], 'depth' => $at[1]]);
                 });
             } catch (Throwable $e) {
@@ -1745,7 +1815,7 @@ abstract class AbstractDriver implements DatabaseInterface
             }
 
             try {
-                $this->asListener(static function () use ($listener, $at): void {
+                $this->asListener('transaction.commit', static function () use ($listener, $at): void {
                     $listener(['transaction' => $at[0], 'depth' => $at[1]]);
                 });
             } catch (Throwable $e) {
@@ -1855,7 +1925,7 @@ abstract class AbstractDriver implements DatabaseInterface
      * 'error' hook when a rollback listener threw - and so is a state that cannot be read at that
      * moment ('Connection state unknown'), fail-closed.
      *
-     * @throws ListenerTransactionException When called from inside a listener of this driver (nothing is sent)
+     * @throws ListenerTransactionException When called from inside a transaction.begin, transaction.commit or transaction.rollback listener, or a statement listener (query.before, query, error) entered inside a transaction (nothing is sent)
      * @throws TransactionException On failure, when the connection is in a new, chained transaction afterwards, or when a transaction.end listener failed and no rollback listener did (the first failure; all of them reach the 'error' hook)
      * @throws Throwable Re-throws a rollback listener's exception
      */
@@ -2076,7 +2146,7 @@ abstract class AbstractDriver implements DatabaseInterface
      * Auto-commits on success, auto-rollback on exception. What can go wrong:
      * - the transaction could not be started (BEGIN failed, a transaction.begin listener threw - a
      *   ListenerTransactionException among others, when it tried to steer the transaction -, or such
-     *   a listener ended the transaction it was told about without throwing: reconnect(), raw PDO):
+     *   a listener ended the transaction it was told about without throwing: reconnect(dropTransaction: true), raw PDO):
      *   the callback did not run; after a throwing listener a rollback is attempted (best effort);
      *   the exception is re-thrown, a PDOException from the listener as TransactionException;
      * - the callback threw: rollback attempted, the callback's exception is re-thrown
@@ -2109,9 +2179,10 @@ abstract class AbstractDriver implements DatabaseInterface
      *   In both commit cases the exception's $outcome is the outcome transaction.end reported:
      *   only 'rolled_back' says that nothing is committed;
      * - the callback ended the transaction itself through this driver (commit() or rollback()), or
-     *   an error handler inside a PDO call did (a listener cannot: refused inside a listener): this
-     *   method ends only the transaction it began. Whatever is open afterwards - begun by the
-     *   callback through this driver or on raw PDO, or by a listener on raw PDO - is neither
+     *   an error handler inside a PDO call did (a listener inside the transaction cannot: refused
+     *   there): this method ends only the transaction it began. Whatever is open afterwards - begun
+     *   by the callback through this driver or on raw PDO, by an end listener through this driver,
+     *   or by any listener on raw PDO - is neither
      *   committed nor rolled back here. A callback that returns gets a CommitFailedException with
      *   outcome 'lost' and no COMMIT is sent; one that throws gets its exception re-thrown;
      * - the callback calls transaction() or beginTransaction() again: there are no nested
@@ -3301,7 +3372,7 @@ abstract class AbstractDriver implements DatabaseInterface
      * @param string $keyColumn Column to match rows (default: 'id')
      *
      * @throws QueryException When a row is missing the key column
-     * @throws TransactionException When the own transaction's commit failed, or the own transaction was ended while the batch ran - a listener's reconnect(), an error handler inside a PDO call (a CommitFailedException with outcome 'lost'; what is open then is left alone) -, and when called from inside a listener of this driver (ListenerTransactionException, nothing is sent)
+     * @throws TransactionException When the own transaction's commit failed, or the own transaction was ended while the batch ran - a listener's reconnect(), an error handler inside a PDO call (a CommitFailedException with outcome 'lost'; what is open then is left alone) -, and when called from inside a listener that may not steer a transaction (ListenerTransactionException, nothing is sent; see beginTransaction())
      * @throws CommitHookException When committed, but a transaction.commit or transaction.end listener failed or the connection state after a commit listener could not be verified
      *
      * @return int Total number of affected rows

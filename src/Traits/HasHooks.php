@@ -15,8 +15,9 @@ use Sodaho\PdoWrapper\Exception\DatabaseException;
  * ['transaction' => ?int, 'depth' => ?int], 'transaction.end' with ['outcome', 'error',
  * 'transaction', 'depth']. The number counts the transactions begun through the driver, from 1,
  * for as long as the driver lives; the depth is 1 for one begun while no other owed its end (more
- * only for one an error handler begins inside a PDO call while another one's end is owed:
- * listeners cannot begin one through the driver). A transaction begun on raw PDO carries null for
+ * only for one an error handler begins inside a PDO call while another one's end is owed: a
+ * transaction.end listener begins one once that end is told, a statement listener only outside of
+ * a transaction, and the other listeners cannot begin one through the driver). A transaction begun on raw PDO carries null for
  * both. Every told begin is followed by exactly one end with the same number - also after a
  * throwing begin listener ('rolled_back' after the raw rollback, or 'lost' when it failed; no
  * rollback listener runs). A BEGIN that fails in PDO tells nothing. The
@@ -30,8 +31,8 @@ use Sodaho\PdoWrapper\Exception\DatabaseException;
  * exceptions in those hooks bubble up to the caller (a PDOException from a 'transaction.begin' or
  * 'transaction.rollback' hook arrives as TransactionException) and the first failing hook stops the
  * remaining ones (after a failing 'transaction.begin' hook a rollback of the new transaction is
- * attempted, best effort, see AbstractDriver - unless the hook ended it itself; a transaction it
- * began afterwards is left open, with its end owed). 'transaction.commit' and 'transaction.end' listeners
+ * attempted, best effort, see AbstractDriver - unless the transaction was ended meanwhile, by a
+ * reconnect(dropTransaction: true) of the hook or an error handler inside a PDO call). 'transaction.commit' and 'transaction.end' listeners
  * run after the fact, so all of them run and their failures are collected: a commit listener's in a
  * CommitHookException - unless a transaction left open by a commit listener cannot be rolled back
  * (or the connection state cannot be read); the remaining commit listeners are then skipped and
@@ -99,14 +100,28 @@ use Sodaho\PdoWrapper\Exception\DatabaseException;
  *   and exception; a throwing 'error' listener is ignored there), so that the exception that ended
  *   the transaction reaches the caller unchanged.
  *
- * No transaction control inside listeners: beginTransaction(), commit() and rollback() - and with
- * them transaction() and updateMultiple() - throw a ListenerTransactionException when called from
- * inside a listener of the driver, of any event, and do nothing. A listener runs in the middle of
- * an operation of the caller, on the caller's connection: its commit() would commit what the
- * caller is still building, its rollback() undo it, a transaction it began run inside the caller's
- * statement. The exception is that listener's like any other (it stops a 'transaction.begin'
- * listener's begin, joins the CommitHookException of a commit listener, and so on). A listener that
- * needs a transaction uses a connection of its own. A transaction a listener begins on raw PDO
+ * No transaction control inside a listener that runs in the middle of a transaction:
+ * beginTransaction(), commit() and rollback() - and with them transaction() and updateMultiple() -
+ * throw a ListenerTransactionException when called from inside a 'transaction.begin',
+ * 'transaction.commit' or 'transaction.rollback' listener of the driver, or a 'query.before',
+ * 'query' or 'error' listener entered while a transaction was open (one begun through the driver,
+ * or one PDO reports; an unreadable state counts as open) - also from any listener running inside
+ * such a one -, and do nothing. Such a listener runs on the caller's connection, in the caller's
+ * transaction: its commit() would commit what the caller is still building, its rollback() undo
+ * it, a transaction it began run inside the caller's statement. The exception is that listener's
+ * like any other: it stops a 'transaction.begin' listener's begin, joins the CommitHookException
+ * of a commit listener, passes through query() in place of the statement's result or exception
+ * from a statement listener (an 'error' listener's refusal replaces the failed statement's
+ * exception), and is dropped with any other exception of a rollback listener on the automatic
+ * rollback. Such a listener that needs a transaction uses a connection of its own.
+ * A 'transaction.end' listener runs once the transaction has ended, and a statement listener
+ * entered outside of a transaction runs before or after the caller's statement: both may run a
+ * transaction of their own through the driver - with its own number, depth 1 and its own end,
+ * inside the listener (the remaining end listeners of the first transaction run after it) - and a
+ * failure there reaches the caller as that listener's failure (an end listener's only through the
+ * 'error' hook on the automatic rollback and on a 'lost' told there). transaction.end listeners
+ * that each begin a transaction whose end runs them again are stopped after 32 levels:
+ * beginTransaction() throws a LogicException. A transaction a listener begins on raw PDO
  * (getPdo()) is not told begun and gets no end: inside a 'transaction.commit' listener it is rolled
  * back raw before the next listener runs, without 'transaction.rollback' hooks, and listed as a
  * LogicException in the CommitHookException (when that rollback fails, does not end it, or the
@@ -117,13 +132,14 @@ use Sodaho\PdoWrapper\Exception\DatabaseException;
  * transaction() and updateMultiple() end only the transaction they began. Once that one has been
  * ended through this library inside the callback - a commit() or rollback() of the callback, or of
  * an error handler inside a PDO call -, whatever is open afterwards was begun later (by the
- * callback, through this library or on raw PDO; by a listener on raw PDO) and is neither committed
+ * callback, through this library or on raw PDO; by an end listener through this library; by any
+ * listener on raw PDO) and is neither committed
  * nor rolled back in its name: a
  * callback that returns gets a CommitFailedException with outcome 'lost' and no COMMIT is sent,
  * one that throws gets its exception back, and the open transaction is left to whoever began it.
  * A transaction ended and begun again on raw PDO alone is not told apart from the first.
  * A 'transaction.begin' listener that ends the transaction it was told about without throwing - a
- * reconnect() that discards it, raw PDO, a DDL statement on raw PDO - makes beginTransaction()
+ * reconnect(dropTransaction: true) that discards it, raw PDO, a DDL statement on raw PDO - makes beginTransaction()
  * throw a TransactionException, and no further begin listener runs: they and
  * the caller - and with it the callback of transaction() and the batch of updateMultiple() -
  * would go on outside of the transaction that was asked for, or inside one somebody began
@@ -273,7 +289,7 @@ use Sodaho\PdoWrapper\Exception\DatabaseException;
  * a parameter that must not be bound (an array, a resource, an object without __toString(), a
  * RawExpression; the statement is not sent). insert() reads the new id before
  * the 'query' listeners run, so a listener may insert on the same connection (inside the caller's
- * transaction, when there is one: a listener cannot steer transactions, see above).
+ * transaction, when there is one: a listener cannot steer that transaction, see above).
  *
  * 'query.before': fires at the start of every query() - before the library's own checks, also for
  * a statement it then refuses -, with 'sql' and 'params' (the parameters as values: references
@@ -283,7 +299,7 @@ use Sodaho\PdoWrapper\Exception\DatabaseException;
  * reaches the caller unchanged (a PDOException as QueryException 'Query hook failed'). For a test
  * that makes a statement fail before it runs. What a listener does counts for the statement: after
  * its reconnect() it runs on the new connection, as after the same call in the callback (its
- * commit() or rollback() is refused, see above). A listener that runs a statement
+ * commit() or rollback() inside a transaction is refused, see above). A listener that runs a statement
  * of its own fires 'query.before' again: guard against the recursion. A listener that never stops
  * - one statement for every statement, in 'query.before', 'query' or 'error' - is stopped after 32
  * levels of these listeners inside each other: the statement throws a LogicException, which
@@ -298,8 +314,13 @@ trait HasHooks
     /** @var array<string, array<callable>> */
     private array $hooks = [];
 
-    /** How many listeners of this object are running right now, one inside the other (see asListener()) */
-    private int $listenersRunning = 0;
+    /**
+     * The listeners of this object running right now, one inside the other, outermost first (see
+     * asListener()): each with its event and whether a transaction was open when it was entered.
+     *
+     * @var list<array{string, bool}>
+     */
+    private array $listenerFrames = [];
 
     /**
      * Register a callback for an event.
@@ -377,34 +398,48 @@ trait HasHooks
     {
         foreach ($this->hooks[$event] ?? [] as $callback) {
             // by reference into the closure: what a listener changes in $data reaches the next one
-            $this->asListener(static function () use ($callback, &$data): void {
+            $this->asListener($event, static function () use ($callback, &$data): void {
                 $callback($data);
             });
         }
     }
 
     /**
-     * Run one listener's call, counted while it runs: listenerRunning() tells the driver that it is
-     * inside a listener - where it refuses to begin, commit or roll back a transaction. Every
-     * listener of this object is run through here.
+     * Run one listener's call, kept as a frame while it runs: listenerFrames() tells the driver
+     * which listeners the call comes from - inside some it refuses to begin, commit or roll back a
+     * transaction. Whether a transaction was open is read when the listener is entered: what the
+     * listener begins itself is its own. Every listener of this object is run through here.
      *
      * @param Closure(): void $call
      */
-    private function asListener(Closure $call): void
+    private function asListener(string $event, Closure $call): void
     {
-        $this->listenersRunning++;
+        $this->listenerFrames[] = [$event, $this->transactionOpenAtListener($event)];
         try {
             $call();
         } finally {
-            $this->listenersRunning--;
+            array_pop($this->listenerFrames); // its own frame, the last one: the inner ones have gone already
         }
     }
 
     /**
-     * Whether a listener of this object is running right now (the call comes from inside one).
+     * The listeners of this object running right now, outermost first: event, and whether a
+     * transaction was open when the listener was entered.
+     *
+     * @return list<array{string, bool}>
      */
-    protected function listenerRunning(): bool
+    private function listenerFrames(): array
     {
-        return $this->listenersRunning > 0;
+        return $this->listenerFrames;
+    }
+
+    /**
+     * Whether a transaction is open as a listener of $event is entered. Nothing here knows of
+     * transactions: the driver that uses this trait answers for itself (a method of the class
+     * takes the place of this one).
+     */
+    private function transactionOpenAtListener(string $event): bool
+    {
+        return false;
     }
 }

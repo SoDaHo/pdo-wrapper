@@ -1552,7 +1552,7 @@ class TransactionEndScenariosTest extends TransactionEndTestCase
             });
             $this->fail('Expected ListenerTransactionException');
         } catch (ListenerTransactionException $e) {
-            $this->assertStringStartsWith('rollback() was called from inside a listener', (string) $e->getDebugMessage());
+            $this->assertStringStartsWith('rollback() was called from inside a transaction.begin listener', (string) $e->getDebugMessage());
             $this->assertSame([self::ROLLED_BACK], array_column($this->ends, 'outcome'));
             $this->assertSame($e, $this->ends[0]['error']);
         }
