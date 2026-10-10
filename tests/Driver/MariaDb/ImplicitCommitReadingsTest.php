@@ -12,8 +12,10 @@ use Sodaho\PdoWrapper\Tests\Contract\TransactionEnd\TransactionEndTestCase;
  * on, so `CREATE /*!50700 TEMPORARY *\/ TABLE` creates a table that is not temporary - it commits
  * implicitly, and is refused inside a transaction; so does `/*M!100100 CREATE *\/ /*!50700 TEMPORARY *\/
  * TABLE`, whose first comment MariaDB runs and whose second it ignores (each versioned comment is
- * read both ways on its own); SET DEFAULT ROLE commits as well (measured, not on the documented
- * list). Refused, they commit nothing: the row before them is rolled back.
+ * read both ways on its own); so does `/*!50700 /* nested *\/ SELECT *\/ CREATE TABLE`, whose MySQL
+ * comment MariaDB skips with the comment inside it, up to the second closer; SET DEFAULT ROLE
+ * commits as well (measured, not on the documented list). Refused, they commit nothing: the row
+ * before them is rolled back.
  */
 class ImplicitCommitReadingsTest extends TransactionEndTestCase
 {
@@ -62,6 +64,25 @@ class ImplicitCommitReadingsTest extends TransactionEndTestCase
     }
 
     /**
+     * MariaDB skips an ignored version comment with one level of comments inside it: the closer of
+     * the comment inside does not end it, and what follows the second closer runs. On raw PDO,
+     * inside a transaction, the statement is a CREATE TABLE of a base table - its implicit commit
+     * leaves the row written before it there for another connection, and no transaction open.
+     */
+    public function testTheServerSkipsAMysqlVersionCommentWithACommentInside(): void
+    {
+        $pdo = $this->db->getPdo();
+        $pdo->beginTransaction();
+        $pdo->exec('INSERT INTO ' . self::TABLE . " (id, name) VALUES (1, 'before')");
+        $pdo->exec('/*!50700 /* nested */ SELECT */ CREATE TABLE ' . self::DDL_TABLE . ' (id INT PRIMARY KEY)');
+
+        $this->assertSame(0, (int) $this->db->query('SELECT @@in_transaction')->fetchColumn(), 'committed implicitly');
+        $this->assertCount(1, $this->observer->query("SHOW FULL TABLES LIKE '" . self::DDL_TABLE . "'")->fetchAll(), 'a base table, seen from another connection');
+        $this->assertSame([1], array_column($this->observer->findAll(self::TABLE), 'id'), 'the row before it is committed');
+        $this->assertFalse($pdo->inTransaction(), 'PDO knows it as well');
+    }
+
+    /**
      * @return array<string, array{string, string}>
      */
     public static function statements(): array
@@ -69,6 +90,8 @@ class ImplicitCommitReadingsTest extends TransactionEndTestCase
         return [
             'a version comment around TEMPORARY' => ['CREATE /*!50700 TEMPORARY */ TABLE ' . self::DDL_TABLE . ' (id INT PRIMARY KEY)', 'CREATE'],
             'a MariaDB comment around CREATE, a MySQL one around TEMPORARY' => ['/*M!100100 CREATE */ /*!50700 TEMPORARY */ TABLE ' . self::DDL_TABLE . ' (id INT PRIMARY KEY)', 'CREATE'],
+            'a comment inside a MySQL comment the server skips' => ['/*!50700 /* nested */ SELECT */ CREATE TABLE ' . self::DDL_TABLE . ' (id INT PRIMARY KEY)', 'CREATE'],
+            'the same after a hash comment' => ["# lead\n/*!50700 /* nested */ SELECT */ CREATE TABLE " . self::DDL_TABLE . ' (id INT PRIMARY KEY)', 'CREATE'],
             'SET DEFAULT ROLE' => ['SET DEFAULT ROLE NONE', 'SET DEFAULT ROLE'],
         ];
     }

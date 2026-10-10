@@ -34,7 +34,9 @@ namespace Sodaho\PdoWrapper\Driver;
  * servers and not on others (MariaDB ignores the MySQL versions from 5.7 on and runs its own up to
  * the server's version): each is read both ways, with its content and without, independently of
  * the others - `/*M!100100 CREATE *\/ /*!50700 TEMPORARY *\/ TABLE` is a CREATE TABLE on MariaDB -,
- * and the statement commits implicitly when one of the readings does. A TEMPORARY inside such a
+ * and the statement commits implicitly when one of the readings does. Without its content it is
+ * skipped as MariaDB skips it: one level of comments inside it, up to the closer after them -
+ * `/*!50700 /* x *\/ SELECT *\/ CREATE TABLE` is a CREATE TABLE on MariaDB (skippedEnd()). A TEMPORARY inside such a
  * comment exempts nothing, then. Only a comment that comes before the point a reading was decided
  * at is read the other way as well: one after it cannot change that reading. A statement whose
  * versioned comments before that point allow more than MAX_READINGS readings is not judged further
@@ -196,7 +198,7 @@ final class ImplicitCommit
      * quoted string or name as one token, every other character as one. Whitespace and comments
      * separate tokens and leave none. An executable comment's opener and closer leave none either:
      * its content is read on - unless it has a version and $runs says it does not run, then the
-     * whole comment is dropped up to its first closer, as the server skips it. A comment or string
+     * whole comment is dropped, as far as the server skips it (skippedEnd()). A comment or string
      * that is never closed runs to the end.
      *
      * @param list<bool> $runs Whether each versioned comment runs, in the order they are met; one met beyond the list runs
@@ -218,14 +220,13 @@ final class ImplicitCommit
                 $end = strpos($sql, "\n", $at);
                 $at = $end === false ? $length : $end + 1;
             } elseif (preg_match('/\G\/\*(M?)!(\d*)/', $sql, $match, 0, $at) === 1) {
-                $close = strpos($sql, '*/', $at + strlen($match[0]));
                 $skipped = false;
                 if ($match[2] !== '') {
                     $skipped = !($runs[count($comments)] ?? true);
                     $comments[] = count($tokens);
                 }
                 if ($skipped) {
-                    $at = $close === false ? $length : $close + 2; // the server does not run it: a comment
+                    $at = self::skippedEnd($sql, $at + strlen($match[0])); // the server does not run it: a comment
                 } else {
                     $inExecutable = true;
                     $at += strlen($match[0]);
@@ -250,6 +251,37 @@ final class ImplicitCommit
         }
 
         return [$tokens, $comments];
+    }
+
+    /**
+     * Where a versioned comment the server does not run ends - the offset after its closer, or the
+     * end -, its content starting at $from. MariaDB skips such a comment with one level of comments
+     * inside it (consume_comment(1) in sql_lex.cc, the same in 10.11, 11.4 and 12.3): a `/*` that
+     * comes before the next closer - a versioned one too - opens a comment that ends at its own first
+     * closer, and the next closer outside of those ends the skipped one. One level only: inside such
+     * an inner comment a `/*` is text. Ended at its first closer instead, a skipped comment let
+     * `/*!50700 /* x *\/ SELECT *\/ CREATE TABLE` be read as a SELECT, while MariaDB skips up to the
+     * second closer and runs the CREATE TABLE.
+     */
+    private static function skippedEnd(string $sql, int $from): int
+    {
+        $at = $from;
+        while (true) {
+            $close = strpos($sql, '*/', $at);
+            if ($close === false) {
+                return strlen($sql);
+            }
+            $open = strpos($sql, '/*', $at);
+            if ($open === false || $close < $open) {
+                return $close + 2;
+            }
+            // A comment inside: up to its own first closer - searched from after its `/*`, so that `/*/` does not close it
+            $inner = strpos($sql, '*/', $open + 2);
+            if ($inner === false) {
+                return strlen($sql);
+            }
+            $at = $inner + 2;
+        }
     }
 
     /**

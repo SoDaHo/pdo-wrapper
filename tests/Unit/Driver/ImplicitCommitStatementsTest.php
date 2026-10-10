@@ -108,6 +108,20 @@ class ImplicitCommitStatementsTest extends TestCase
             'mixed versioned comments, drop' => ['/*M!100100 DROP */ /*!50700 TEMPORARY */ TABLE t', 'DROP'],
             'mixed versioned comments, the other way round' => ['/*!50700 DROP */ /*M!100100 TEMPORARY */ TABLE t', 'DROP'],
             'mixed versioned comments, set statement' => ['SET STATEMENT a = 1 /*M!100100 FOR DROP */ /*!50700 TEMPORARY */ TABLE t', 'SET STATEMENT ... FOR DROP'],
+            // a versioned comment the server skips is skipped with one level of comments inside it, as MariaDB's
+            // lexer skips it (consume_comment(1)): the closer of the comment inside does not end it
+            'a comment inside a skipped versioned comment' => ['/*!50700 /* nested */ SELECT */ CREATE TABLE t (id INT)', 'CREATE'],
+            'a comment inside a skipped versioned comment, a hash comment first' => ["# lead\n/*!50700 /* nested */ SELECT */ CREATE TABLE t (id INT)", 'CREATE'],
+            'a comment inside a skipped versioned comment, a dash comment first' => ["-- lead\n/*!50700 /* nested */ SELECT */ CREATE TABLE t (id INT)", 'CREATE'],
+            'a short comment inside a skipped versioned comment' => ['/*!50700 /*x*/ SELECT 1 */ CREATE TABLE t (id INT)', 'CREATE'],
+            'a comment inside a MariaDB comment beyond the version' => ['/*M!999999 /* x */ SELECT */ DROP TABLE t', 'DROP'],
+            'two comments inside a skipped versioned comment' => ['/*!50700 /* a */ SELECT /* b */ SELECT */ CREATE TABLE t (id INT)', 'CREATE'],
+            'a comment inside that opens with /*/' => ['/*!50700 /*/ SELECT */ SELECT */ CREATE TABLE t (id INT)', 'CREATE'],
+            'a versioned comment inside a skipped versioned comment' => ['/*!50700 /*!50700 SELECT */ SELECT */ DROP TABLE t', 'DROP'],
+            // one level only: inside the inner comment a /* is text, its first closer ends it
+            'two levels inside a skipped versioned comment' => ['/*!50700 /* a /* b */ SELECT */ CREATE TABLE t (id INT) */', 'CREATE'],
+            'a comment inside a skipped versioned comment, never closed' => ['/*!50700 /* x SELECT 1', null],
+            'a comment inside a versioned comment after the decision' => ['SELECT 1 /*!50700 /* x */ , 2 */', null],
             // a comment after the point a reading is decided at is not read the other way: any number of them
             'many versioned comments after the decision' => ['SELECT 1' . str_repeat(' /*!50700 , 2 */', 40), null],
             'many versioned comments after a temporary table' => ['CREATE TEMPORARY TABLE t (id INT' . str_repeat(' /*!50700 , c INT */', 40) . ')', null],
