@@ -830,8 +830,8 @@ class DriverHookScenariosTest extends TransactionEndTestCase
 
     /**
      * The end listeners of a rollback that confirmed nothing: one that throws is told to the
-     * 'error' hook and rollback() returns; one that begins a transaction (on raw PDO: through the
-     * driver it is refused in a listener) keeps it.
+     * 'error' hook and rollback() returns; one that begins a transaction on raw PDO (not told begun,
+     * so no end of its own) keeps it.
      */
     public function testEndListenersOfARollbackThatConfirmsNothing(): void
     {

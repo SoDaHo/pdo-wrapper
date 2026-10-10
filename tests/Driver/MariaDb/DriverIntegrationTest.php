@@ -342,7 +342,8 @@ class DriverIntegrationTest extends TestCase
 
     /**
      * Multi-statements are off by default: a second statement smuggled into one string is a syntax
-     * error, on raw PDO and with emulated prepares too. The option brings them back.
+     * error, on raw PDO and with emulated prepares too. The option cannot bring them back: switching
+     * it on is refused before anything is tried.
      */
     public function testMultiStatementsAreOffByDefault(): void
     {

@@ -355,8 +355,8 @@ class ReconnectTest extends ContractTestCase
 
     /**
      * In an end listener: the transaction that ended is over; the driver goes on on the new
-     * connection, and a statement the listener runs goes there (a transaction of its own would be
-     * refused: no transaction control inside a listener).
+     * connection, and a statement the listener runs goes there (an end listener may also run a
+     * transaction of its own through the driver - not tested here).
      */
     public function testReconnectInAnEndListener(): void
     {

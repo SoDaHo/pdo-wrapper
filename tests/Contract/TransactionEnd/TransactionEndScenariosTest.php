@@ -1703,7 +1703,7 @@ class TransactionEndScenariosTest extends TransactionEndTestCase
         $this->db->on('transaction.end', function (array $data) use (&$begun): void {
             if (!$begun && $data['outcome'] === self::ROLLED_BACK) {
                 $begun = true;
-                $this->pdo->beginTransaction(); // on raw PDO: through the driver it is refused in a listener
+                $this->pdo->beginTransaction(); // on raw PDO: not told begun, so it tells no end of its own (an end listener may begin one through the driver too)
                 $this->db->insert(self::TABLE, ['id' => 2, 'name' => 'listener']);
             }
         });
