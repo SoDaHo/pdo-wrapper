@@ -33,6 +33,9 @@ use Throwable;
  */
 class MariaDbDriver extends AbstractDriver
 {
+    /** The client's error for a statement sent while an unbuffered result is still open (CR_COMMANDS_OUT_OF_SYNC): nothing reached the server */
+    private const COMMANDS_OUT_OF_SYNC = 2014;
+
     /** True when the connection was opened with the driver's ATTR_FOUND_ROWS option: the server then counts matched rows, not changed ones */
     private bool $countsFoundRows = false;
 
@@ -157,9 +160,17 @@ class MariaDbDriver extends AbstractDriver
      * after which it was found gone, the lock wait timeout. transactionEndedBy() asks the server
      * again at commit; in a transaction begun on raw PDO it is the only question, and after a lock
      * wait timeout that ended it the refusal names the latest failure, which need not be that timeout.
+     * Not remembered at all: error 2014 (commands out of sync - a statement sent while an unbuffered
+     * result is still open). The client refuses it before anything reaches the server, so it cannot
+     * have ended the transaction, and a question would fail the same way and hold the transaction
+     * for gone: close the cursor and send the statement again.
      */
-    protected function failureToRemember(?PDOException $remembered, PDOException $failure): PDOException
+    protected function failureToRemember(?PDOException $remembered, PDOException $failure): ?PDOException
     {
+        if (($failure->errorInfo[1] ?? null) === self::COMMANDS_OUT_OF_SYNC) {
+            return $remembered;
+        }
+
         return $remembered !== null && self::endsTheTransaction($remembered) !== null ? $remembered : $failure;
     }
 
