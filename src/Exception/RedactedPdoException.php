@@ -7,7 +7,8 @@ namespace Sodaho\PdoWrapper\Exception;
 use PDOException;
 
 /**
- * Stands in for the PDOException of a failed statement - getPrevious() of the QueryException, the
+ * Stands in for the PDOException of a failed statement, and of a failed read after it (the answer
+ * of a named-lock statement, the id lastInsertId() reads) - getPrevious() of the QueryException, the
  * failure the driver remembers and hands on, the 'error' hook's 'error' - when the driver was
  * opened with redactParameters: the database's message quotes values (a duplicate entry, an
  * incorrect value), so it carries only the SQLSTATE and the driver code - as getCode() and in

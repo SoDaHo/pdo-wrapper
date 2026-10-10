@@ -17,6 +17,7 @@ use Sodaho\PdoWrapper\Exception\NamedLocksHeldException;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Exception\RedactedPdoException;
 use Sodaho\PdoWrapper\Exception\UniqueViolationException;
+use Sodaho\PdoWrapper\Tests\Support\StatementClassPdo;
 use Sodaho\PdoWrapper\Tests\Support\TestEnvironment;
 use Sodaho\PdoWrapper\Tests\Support\Untyped;
 use Throwable;
@@ -47,6 +48,9 @@ class RedactParametersTest extends TestCase
 
     protected function tearDown(): void
     {
+        RevealingInsertIdPdo::reset();
+        RevealingColumnStatement::$mode = 'throws';
+        RevealingColumnStatement::$quoted = '';
         ini_set('zend.exception_ignore_args', $this->ignoreArgs === false ? '1' : $this->ignoreArgs);
         Database::mariadb(TestEnvironment::mariadb())->getPdo()->exec('DROP TABLE IF EXISTS ' . self::TABLE);
     }
@@ -190,6 +194,56 @@ class RedactParametersTest extends TestCase
             }
         }
         $this->assertSame([1], array_column(Database::mariadb(TestEnvironment::mariadb())->findAll(self::TABLE), 'id'), 'nothing was written');
+    }
+
+    /**
+     * What is read after a statement ran - the answer of a named-lock statement, the id of an
+     * inserted row - can fail with a message that quotes a value (replayed: a statement class and a
+     * PDO class whose failures quote the secret). With the option that failure is replaced as well,
+     * thrown or reported through errorInfo() after a false, before it is remembered, chained or
+     * shown: no previous exception and no debug message carries it, the codes stay.
+     */
+    public function testWithTheOptionAFailedReadAfterTheStatementCarriesNoValue(): void
+    {
+        RevealingColumnStatement::$quoted = self::SECRET;
+        RevealingInsertIdPdo::$quoted = self::SECRET;
+        foreach (['throws', 'false'] as $mode) {
+            RevealingColumnStatement::$mode = $mode;
+            $db = Database::mariadb(TestEnvironment::mariadb() + StatementClassPdo::config(RevealingColumnStatement::class) + ['redactParameters' => true]);
+            $lock = $this->failWith(static fn (): bool => $db->namedLock('job'));
+            $this->assertSame('namedLock(): the statement ran, but its answer could not be read', $lock->getDebugMessage(), $mode);
+            $this->assertInstanceOf(RedactedPdoException::class, $lock->getPrevious(), "namedLock(), {$mode}");
+            $this->assertSame(['HY000', 2027], [$lock->sqlState, $lock->driverCode], "namedLock(), {$mode}: the codes stay");
+            $this->assertNoSecretIn($lock);
+            unset($db); // the lock it may have taken goes with its connection
+
+            RevealingInsertIdPdo::$mode = $mode;
+            $db = Database::mariadb(TestEnvironment::mariadb() + ['pdoClass' => RevealingInsertIdPdo::class, 'redactParameters' => true]);
+            $insert = $this->failWith(static fn (): int => $db->insert(self::TABLE, ['id' => 9, 'email' => 'x@example.test']));
+            $this->assertSame($mode === 'throws' ? 'Failed to get last insert ID' : 'Insert failed', $insert->getMessage());
+            $this->assertInstanceOf(RedactedPdoException::class, $insert->getPrevious(), "insert(), {$mode}");
+            $this->assertSame(['HY000', 2027], [$insert->sqlState, $insert->driverCode], "insert(), {$mode}: the codes stay");
+            $this->assertNoSecretIn($insert);
+            RevealingInsertIdPdo::$mode = null;
+            $db->delete(self::TABLE, ['id' => 9]);
+
+            // Inside a transaction the failure is remembered: it is the previous of the end told once
+            // the transaction is found ended behind the library's back
+            $errors = [];
+            $db->on('transaction.end', static function (array $data) use (&$errors): void {
+                $errors[] = $data['error'];
+            });
+            $db->beginTransaction();
+            RevealingInsertIdPdo::$mode = $mode;
+            $this->failWith(static fn (): int => $db->insert(self::TABLE, ['id' => 10, 'email' => 'y@example.test']));
+            RevealingInsertIdPdo::$mode = null;
+            $db->getPdo()->rollBack();
+            $db->rollback();
+            $this->assertCount(1, $errors, "{$mode}: lost");
+            $this->assertInstanceOf(Throwable::class, $errors[0]);
+            $this->assertInstanceOf(RedactedPdoException::class, $errors[0]->getPrevious(), "{$mode}: the remembered failure");
+            $this->assertNoSecretIn($errors[0]);
+        }
     }
 
     public function testTheOptionMustBeABoolean(): void

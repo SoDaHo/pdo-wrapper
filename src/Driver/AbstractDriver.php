@@ -1010,8 +1010,9 @@ abstract class AbstractDriver implements DatabaseInterface
         try {
             $id = $this->pdo->lastInsertId($name);
             if ($id === false) {
-                // Non-exception error mode: remembered all the same, like the thrown failure below
-                $this->noteStatementFailure($this->silentFailure('PDO::lastInsertId() returned false', $this->pdo->errorInfo()));
+                // Non-exception error mode: remembered all the same, like the thrown failure below - without
+                // the database's message under redactParameters, as every failure the driver remembers
+                $this->noteStatementFailure($this->withoutValues($this->silentFailure('PDO::lastInsertId() returned false', $this->pdo->errorInfo())));
             }
 
             return $id;
@@ -1021,6 +1022,8 @@ abstract class AbstractDriver implements DatabaseInterface
             if ($failure === null) {
                 throw $e;
             }
+            // Before it is remembered, chained and shown: under redactParameters the database's message goes
+            $failure = $this->withoutValues($failure);
             $this->noteStatementFailure($failure);
 
             throw new QueryException(
@@ -2917,7 +2920,7 @@ abstract class AbstractDriver implements DatabaseInterface
 
             throw new QueryException(
                 message: 'Query failed',
-                previous: $failure,
+                previous: $this->withoutValues($failure), // under redactParameters without the database's message
                 debugMessage: sprintf('%s(): the statement ran, but its answer could not be read', $method)
             );
         };
@@ -3042,7 +3045,7 @@ abstract class AbstractDriver implements DatabaseInterface
         $read = function () use (&$lastId, &$idFailure): void {
             $lastId = $this->lastInsertId();
             if ($lastId === false) {
-                $idFailure = $this->silentFailure('PDO::lastInsertId() returned false', $this->pdo->errorInfo());
+                $idFailure = $this->withoutValues($this->silentFailure('PDO::lastInsertId() returned false', $this->pdo->errorInfo()));
             }
         };
         $this->queryThen($sql, $params, $read);
