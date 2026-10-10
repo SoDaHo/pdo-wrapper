@@ -163,11 +163,13 @@ No `transaction.commit` listener runs in any of them. In the fourth row no ROLLB
 
 ### Reconnecting
 
-A connection that cannot be cleaned up any more - a COMMIT that failed, a transaction a listener left open on raw PDO, a state that cannot be read, a session that chains transactions - can be discarded: `reconnect()` continues on a new connection, opened with the settings the driver was created with (the same DSN, credentials, `options` and `pdoClass`), and with `completion_type` `NO_CHAIN` again.
+A connection that cannot be cleaned up any more - a transaction a listener left open on raw PDO, a state that cannot be read, a session that chains transactions - can be discarded: `reconnect()` continues on a new connection, opened with the settings the driver was created with (the same DSN, credentials, `options` and `pdoClass`), and with `completion_type` `NO_CHAIN` again.
 
 ```php
 $db->reconnect();
 ```
+
+After a failed manual `commit()` (its `$outcome` is `null`) the transaction is still open and yours to end: `rollback()`, or `reconnect(dropTransaction: true)` to give it up with the connection - a plain `reconnect()` refuses it like any open transaction (see below). After a failed commit of `transaction()` or `updateMultiple()` the transaction is ended already, and `reconnect()` needs no option.
 
 - The new connection is opened first. When that fails, a `ConnectionException` reaches the caller and nothing has changed: the old connection is still in place.
 - Otherwise a `ROLLBACK` is sent on the old connection when it reports a transaction (best effort: it frees the transaction's locks), and the driver continues on the new one. A transaction whose end was still owed ends as `lost`, with its number and a `TransactionException` ("Transaction discarded with its connection") as `error`; no `transaction.rollback` listener runs. `reconnect()` commits nothing of it - but what an implicit commit (a DDL statement) committed before is committed, which is why the end is `lost`. `inTransaction()` is `false` afterwards (unless an end listener of that `lost` began one on raw PDO, or an error handler inside a call into the old connection reconnected itself and began one on its new connection: those stay).

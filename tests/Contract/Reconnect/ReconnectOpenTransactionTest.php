@@ -6,6 +6,7 @@ namespace Sodaho\PdoWrapper\Tests\Contract\Reconnect;
 
 use RuntimeException;
 use Sodaho\PdoWrapper\DatabaseInterface;
+use Sodaho\PdoWrapper\Exception\CommitFailedException;
 use Sodaho\PdoWrapper\Exception\CommitHookException;
 use Sodaho\PdoWrapper\Exception\NamedLocksHeldException;
 use Sodaho\PdoWrapper\Exception\TransactionOpenException;
@@ -71,6 +72,37 @@ class ReconnectOpenTransactionTest extends ContractTestCase
         $this->db->commit();
         $this->assertSame(['committed'], $this->ends);
         $this->assertSame([1], array_column($this->observer->table(self::TABLE)->get(), 'id'));
+    }
+
+    /**
+     * A manual commit() that failed leaves the transaction open and the caller's to end (outcome
+     * null): reconnect() refuses it like any open transaction - rollback() first, or
+     * reconnect(dropTransaction: true), which gives it up as 'lost'.
+     */
+    public function testAFailedManualCommitIsAnOpenTransactionForReconnect(): void
+    {
+        $this->db->beginTransaction();
+        $this->db->insert(self::TABLE, ['id' => 1, 'name' => 'a']);
+        $this->scenario->failCommit = true;
+        try {
+            $this->db->commit();
+            $this->fail('Expected CommitFailedException');
+        } catch (CommitFailedException $e) {
+            $this->assertNull($e->outcome, 'the transaction is still the caller\'s to end');
+        }
+
+        try {
+            $this->db->reconnect();
+            $this->fail('Expected TransactionOpenException');
+        } catch (TransactionOpenException $e) {
+            $this->assertStringStartsWith('reconnect() would discard transaction 1', (string) $e->getDebugMessage());
+        }
+        $this->assertSame([], $this->ends);
+
+        $this->db->reconnect(dropTransaction: true);
+        $this->assertSame(['lost'], $this->ends);
+        $this->assertNull($this->db->currentTransaction());
+        $this->assertSame([], $this->observer->table(self::TABLE)->get(), 'nothing of it was committed');
     }
 
     public function testDropTransactionGivesItUpAsLost(): void

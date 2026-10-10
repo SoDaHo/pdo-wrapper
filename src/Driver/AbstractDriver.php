@@ -2485,8 +2485,11 @@ abstract class AbstractDriver implements DatabaseInterface
     /**
      * Discard the connection and continue on a new one, opened with the settings the driver was
      * created with (the same DSN, credentials, options and pdoClass). For a connection that cannot
-     * be cleaned up any more: a COMMIT that failed, a transaction a listener left open, a state that
-     * cannot be read, a session that chains transactions.
+     * be cleaned up any more: a transaction a listener left open, a state that cannot be read, a
+     * session that chains transactions. After a failed manual commit() the transaction is still
+     * open and the caller's: rollback(), or reconnect(dropTransaction: true) - a plain reconnect()
+     * refuses it (see below); after a failed commit of transaction() or updateMultiple() it is
+     * ended, and no option is needed.
      *
      * The new connection is opened first: when that fails, a ConnectionException reaches the caller
      * and nothing has changed - the old connection is still in place. Otherwise a ROLLBACK is sent
