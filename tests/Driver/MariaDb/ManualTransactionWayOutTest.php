@@ -72,15 +72,15 @@ class ManualTransactionWayOutTest extends TransactionEndTestCase
     }
 
     /**
-     * A failing DDL statement commits the transaction as well; the driver finds it gone right after
-     * the failure. inTransaction() alone would skip the rollback - the pattern asks
-     * currentTransaction() too.
+     * A failing DDL statement (on raw PDO) commits the transaction as well; the driver finds it gone
+     * right after the next failure it sees. inTransaction() alone would skip the rollback - the
+     * pattern asks currentTransaction() too.
      */
     public function testTheReadmePatternEndsATransactionAFailingDdlStatementCommitted(): void
     {
         $this->runTheReadmePattern(function (): void {
             $this->db->insert(self::TABLE, ['id' => 1, 'name' => 'before the DDL']);
-            $this->db->execute('CREATE TABLE ' . self::TABLE . ' (id INT PRIMARY KEY)'); // exists: fails, and commits
+            self::failAfterAnImplicitCommit($this->db);
         }, null);
 
         $this->assertSame([self::LOST], array_column($this->ends, 'outcome'));

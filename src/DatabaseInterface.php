@@ -21,7 +21,14 @@ interface DatabaseInterface
      * @param string $sql SQL query with placeholders
      * @param array<int|string, mixed> $params Parameters to bind
      *
-     * @throws Exception\QueryException When the statement fails (also when PDO reports that without an exception), when a parameter is not null, a scalar or a Stringable object, is a float INF or NAN, or is a Query\RawExpression (the statement is not sent), when the server has thrown the open transaction away (after a deadlock or a 1020 - see MariaDbDriver - nothing is sent until that transaction is ended: by rollback(), by a refused commit() that tells 'lost', and for a transaction begun on raw PDO also once PDO reports none), or when a 'query' listener threw a PDOException ('Query hook failed': the statement did run) or a 'query.before' listener did (the statement was not sent)
+     * Inside a transaction begun through this library, a statement that commits implicitly (DDL,
+     * LOCK TABLES, an account statement - see Driver\ImplicitCommit) is refused before it is sent:
+     * the transaction stays open. Statements that steer transactions themselves (BEGIN, COMMIT,
+     * ROLLBACK, SET autocommit, XA) are not refused and not seen - the transaction's outcome is
+     * then not to be relied on (see the README, Transactions).
+     *
+     * @throws Exception\ImplicitCommitException When the statement would commit the open transaction implicitly (inside a transaction begun through this library; nothing is sent, the transaction stays open)
+     * @throws Exception\QueryException When the statement fails (also when PDO reports that without an exception), when a parameter is not null, a scalar or a Stringable object, is a float INF or NAN, or is a Query\RawExpression (the statement is not sent), when the server has thrown the open transaction away (after a deadlock or a 1020 - see MariaDbDriver - nothing is sent until that transaction is ended: by rollback(), by a refused commit() that tells 'lost', and for a transaction begun on raw PDO also once PDO reports none), when the transaction begun through this library is gone or may be - the driver, asked right after an earlier failure, found it gone or could not find out, or PDO reports no transaction any more (raw PDO ended it): nothing is sent until rollback() tells its end -, or when a 'query' listener threw a PDOException ('Query hook failed': the statement did run) or a 'query.before' listener did (the statement was not sent)
      */
     public function query(string $sql, array $params = []): PDOStatement;
 

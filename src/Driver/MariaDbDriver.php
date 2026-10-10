@@ -205,6 +205,17 @@ class MariaDbDriver extends AbstractDriver
     }
 
     /**
+     * MariaDB's statements with an implicit commit, read from their leading keywords (see
+     * ImplicitCommit): DDL, LOCK/UNLOCK TABLES, the table maintenance and account statements -
+     * not the statements that steer transactions themselves (BEGIN, START TRANSACTION, SET
+     * autocommit, XA), and not CREATE/DROP TEMPORARY TABLE.
+     */
+    protected function implicitCommitOf(string $sql): ?string
+    {
+        return ImplicitCommit::of($sql);
+    }
+
+    /**
      * The server's answer to a failed statement carries no transaction status, so PDO keeps
      * reporting a transaction the server has ended: rolled back (a lock wait timeout under
      * innodb_rollback_on_timeout), or committed - a statement with an implicit commit commits the

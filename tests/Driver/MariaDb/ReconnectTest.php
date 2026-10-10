@@ -93,7 +93,13 @@ class ReconnectTest extends ContractTestCase
             });
             $failDdl = static function () use ($db): void {
                 try {
-                    $db->execute('CREATE TABLE ' . self::TABLE . ' (id INT PRIMARY KEY)'); // exists: fails, and commits
+                    // on raw PDO: the library refuses a DDL statement inside its transaction
+                    $db->getPdo()->exec('CREATE TABLE ' . self::TABLE . ' (id INT PRIMARY KEY)');
+                } catch (PDOException) {
+                    // the table exists: failed, and committed the transaction
+                }
+                try {
+                    $db->execute('SELECT 1 FROM reconnect_missing'); // fails: the driver asks, and finds the transaction gone
                 } catch (QueryException) {
                     // swallowed: the commit finds out
                 }

@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 namespace Sodaho\PdoWrapper\Tests\Contract\TransactionEnd;
 
+use PDOException;
 use Sodaho\PdoWrapper\DatabaseInterface;
 use Sodaho\PdoWrapper\Exception\CommitFailedException;
+use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Tests\Contract\ContractTestCase;
 use Sodaho\PdoWrapper\Tests\Support\ScenarioPdo;
 use Throwable;
@@ -100,6 +102,45 @@ abstract class TransactionEndTestCase extends ContractTestCase
     }
 
     // ---- helpers -----------------------------------------------------------------------------------
+
+    /**
+     * A DDL statement that goes through, sent on raw PDO where the library does not see it - through
+     * the library it is refused inside a transaction (ImplicitCommitException): it commits the open
+     * transaction implicitly, and PDO then reports none. Prepared rather than exec(): the scenario
+     * flags of exec() leave it alone.
+     */
+    protected static function commitImplicitlyOnRawPdo(DatabaseInterface $db, string $table = 'end_scenarios_ddl'): void
+    {
+        self::rawStatement($db, 'CREATE TABLE ' . $table . ' (id INT PRIMARY KEY)');
+    }
+
+    /**
+     * What a failing DDL statement did before the library refused it inside its transactions: the
+     * open transaction is committed implicitly by a DDL statement that fails on raw PDO (the table
+     * exists) - PDO goes on reporting the transaction -, then a statement through the library fails
+     * (an unknown table, 1146): the failure after which the driver, asking right away, finds the
+     * transaction gone. The library's QueryException leaves this method.
+     *
+     * @throws QueryException Always: the statement through the library fails
+     */
+    protected static function failAfterAnImplicitCommit(DatabaseInterface $db): void
+    {
+        try {
+            self::rawStatement($db, 'CREATE TABLE ' . self::TABLE . ' (id INT PRIMARY KEY)');
+        } catch (PDOException) {
+            // the table exists: failed, and committed the transaction
+        }
+        $db->execute('SELECT 1 FROM end_scenarios_missing');
+    }
+
+    /** A statement prepared and run on raw PDO: no hook sees it, no scenario flag of exec() touches it */
+    private static function rawStatement(DatabaseInterface $db, string $sql): void
+    {
+        $statement = $db->getPdo()->prepare($sql);
+        if ($statement === false || !$statement->execute()) {
+            throw new PDOException('raw statement failed: ' . $sql);
+        }
+    }
 
     /** @return array<int, array<string, mixed>> */
     protected function rows(): array

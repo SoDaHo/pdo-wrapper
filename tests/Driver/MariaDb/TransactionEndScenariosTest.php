@@ -15,7 +15,9 @@ use Sodaho\PdoWrapper\Tests\Support\ReadsPdoErrorInfo;
 /**
  * The transaction-end scenarios that only MariaDB has: the implicit commit of a DDL statement (also
  * of a failing one), the driver's question to the server after a failed statement, lock wait
- * timeouts and chained transactions.
+ * timeouts and chained transactions. Inside a transaction the library began a DDL statement
+ * through the library is refused before it is sent (ImplicitCommitTest): there the scenarios send
+ * it on raw PDO, where the library does not see it.
  */
 class TransactionEndScenariosTest extends TransactionEndTestCase
 {
@@ -34,7 +36,7 @@ class TransactionEndScenariosTest extends TransactionEndTestCase
         try {
             $this->db->transaction(static function (DatabaseInterface $db): void {
                 $db->insert(self::TABLE, ['id' => 1, 'name' => 'before the DDL']);
-                $db->execute('CREATE TABLE end_scenarios_ddl (id INT PRIMARY KEY)'); // implicit COMMIT
+                self::commitImplicitlyOnRawPdo($db); // implicit COMMIT, on raw PDO
             });
             $this->fail('Expected TransactionException');
         } catch (TransactionException $e) {
@@ -60,7 +62,7 @@ class TransactionEndScenariosTest extends TransactionEndTestCase
         $this->db->execute('DROP TABLE IF EXISTS end_scenarios_ddl');
         $db = $this->db;
         $this->db->on('transaction.begin', static function () use ($db): void {
-            $db->execute('CREATE TABLE end_scenarios_ddl (id INT PRIMARY KEY)'); // implicit COMMIT
+            self::commitImplicitlyOnRawPdo($db); // implicit COMMIT, on raw PDO
         });
         $this->events = [];
         $this->ends = [];
@@ -96,7 +98,7 @@ class TransactionEndScenariosTest extends TransactionEndTestCase
         $db = $this->db;
         $this->db->on('transaction.begin', static function () use ($db): void {
             $db->insert(self::TABLE, ['id' => 1, 'name' => 'written by the listener']);
-            $db->execute('CREATE TABLE ' . self::TABLE . ' (id INT PRIMARY KEY)'); // exists: fails, and commits
+            self::failAfterAnImplicitCommit($db); // commits implicitly, then a statement fails
         });
         $this->events = [];
         $this->ends = [];
@@ -122,7 +124,7 @@ class TransactionEndScenariosTest extends TransactionEndTestCase
         $this->db->on('transaction.begin', static function () use ($db): void {
             $db->insert(self::TABLE, ['id' => 1, 'name' => 'written by the listener']);
             try {
-                $db->execute('CREATE TABLE ' . self::TABLE . ' (id INT PRIMARY KEY)'); // exists: fails, and commits
+                self::failAfterAnImplicitCommit($db); // commits implicitly, then a statement fails
             } catch (QueryException) {
                 // swallowed
             }
@@ -136,7 +138,7 @@ class TransactionEndScenariosTest extends TransactionEndTestCase
         } catch (TransactionException $e) {
             $this->assertNotInstanceOf(CommitFailedException::class, $e);
             $this->assertStringStartsWith('A transaction.begin listener ended the transaction that was just begun outside this driver', $e->getDebugMessage() ?? '');
-            $this->assertSame(1050, $this->errorInfoBehind($e, 1), 'the cause is the failed statement: table already exists');
+            $this->assertSame(1146, $this->errorInfoBehind($e, 1), 'the cause is the failed statement after the implicit commit: no such table');
             $this->assertNull($e->sqlState, 'what is committed is not certain: no codes to act on');
             $this->assertSame([['outcome' => DatabaseInterface::TRANSACTION_LOST, 'error' => $e]], $this->ends);
         }
@@ -312,7 +314,7 @@ class TransactionEndScenariosTest extends TransactionEndTestCase
         try {
             $this->db->transaction(static function (DatabaseInterface $db): void {
                 $db->insert(self::TABLE, ['id' => 1, 'name' => 'before the DDL']);
-                $db->execute('CREATE TABLE ' . self::TABLE . ' (id INT PRIMARY KEY)'); // exists: fails, and commits
+                self::failAfterAnImplicitCommit($db); // commits implicitly, then a statement fails
             });
             $this->fail('Expected QueryException');
         } catch (QueryException $e) {
@@ -334,7 +336,7 @@ class TransactionEndScenariosTest extends TransactionEndTestCase
         $this->db->beginTransaction();
         $this->db->insert(self::TABLE, ['id' => 1, 'name' => 'before the DDL']);
         try {
-            $this->db->execute('CREATE TABLE ' . self::TABLE . ' (id INT PRIMARY KEY)');
+            self::failAfterAnImplicitCommit($this->db);
             $this->fail('Expected QueryException');
         } catch (QueryException $e) {
             $failure = $e->getPrevious();
@@ -424,8 +426,8 @@ class TransactionEndScenariosTest extends TransactionEndTestCase
         try {
             $this->db->transaction(function (DatabaseInterface $db): void {
                 $db->insert(self::TABLE, ['id' => 1, 'name' => 'before the DDL']);
-                $this->pdo->failExec = true;
-                $db->execute('CREATE TABLE ' . self::TABLE . ' (id INT PRIMARY KEY)');
+                $this->pdo->failExec = true; // the question after the failure fails
+                self::failAfterAnImplicitCommit($db);
             });
             $this->fail('Expected QueryException');
         } catch (QueryException $e) {
@@ -629,7 +631,7 @@ class TransactionEndScenariosTest extends TransactionEndTestCase
         try {
             $this->db->transaction(static function (AbstractDriver $db): void {
                 $db->insert(self::TABLE, ['id' => 2, 'name' => 'before the DDL']);
-                $db->execute('CREATE TABLE end_scenarios_ddl (id INT PRIMARY KEY)'); // implicit COMMIT
+                self::commitImplicitlyOnRawPdo($db); // implicit COMMIT, on raw PDO
                 $db->updateMultiple(self::TABLE, [['id' => 1, 'name' => 'in its own transaction']]);
             });
             $this->fail('Expected CommitFailedException: the outer commit finds no transaction');

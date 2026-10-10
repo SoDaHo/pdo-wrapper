@@ -15,7 +15,9 @@ use Sodaho\PdoWrapper\Tests\Support\ReadsPdoErrorInfo;
  * statement committed it implicitly, failing or not: after it nothing more is sent (it would run
  * in autocommit and be committed on its own), and its end is 'lost', never 'rolled_back'. After a
  * failed statement the driver asks the server right away; what it finds is held until the
- * transaction is ended here.
+ * transaction is ended here. Through the library a DDL statement is refused inside its transaction
+ * (ImplicitCommitTest): here it is sent on raw PDO, and a statement through the library fails after
+ * it - what the driver sees.
  */
 class TransactionGoneTest extends TransactionEndTestCase
 {
@@ -34,7 +36,7 @@ class TransactionGoneTest extends TransactionEndTestCase
             $this->db->transaction(function (DatabaseInterface $db) use (&$failure, &$refused): void {
                 $db->insert(self::TABLE, ['id' => 1, 'name' => 'before the DDL']);
                 try {
-                    $db->execute('CREATE TABLE ' . self::TABLE . ' (id INT PRIMARY KEY)'); // exists: fails, and commits
+                    self::failAfterAnImplicitCommit($db); // commits implicitly, then a statement fails
                 } catch (QueryException $e) {
                     $failure = $e->getPrevious();
                 }
@@ -56,7 +58,7 @@ class TransactionGoneTest extends TransactionEndTestCase
         $this->assertNotNull($refused);
         $this->assertSame($failure, $refused->getPrevious(), 'the failure after which the transaction was found gone');
         $this->assertStringStartsWith('Not sent: the server ended the transaction this library began', (string) $refused->getDebugMessage());
-        $this->assertSame(1050, $this->errorInfoBehind($refused, 1));
+        $this->assertSame(1146, $this->errorInfoBehind($refused, 1), 'the statement that failed after the implicit commit');
         $this->assertSame(['end'], $this->events, 'no commit and no rollback listener');
         $this->assertVisible([1], 'the row before the DDL statement is committed, the one after it was never sent');
     }
@@ -70,7 +72,7 @@ class TransactionGoneTest extends TransactionEndTestCase
         $this->db->beginTransaction();
         $this->db->insert(self::TABLE, ['id' => 1, 'name' => 'before the DDL']);
         try {
-            $this->db->execute('CREATE TABLE ' . self::TABLE . ' (id INT PRIMARY KEY)');
+            self::failAfterAnImplicitCommit($this->db);
             $this->fail('Expected QueryException');
         } catch (QueryException) {
             // swallowed
@@ -111,7 +113,7 @@ class TransactionGoneTest extends TransactionEndTestCase
         try {
             $this->db->transaction(function (DatabaseInterface $db) use (&$refused): void {
                 $db->insert(self::TABLE, ['id' => 1, 'name' => 'before the DDL']);
-                $db->execute('CREATE TABLE end_scenarios_ddl (id INT PRIMARY KEY)'); // implicit COMMIT
+                self::commitImplicitlyOnRawPdo($db); // implicit COMMIT, on raw PDO
                 foreach ([
                     static fn (): int => $db->insert(self::TABLE, ['id' => 2, 'name' => 'after the DDL']),
                     static fn (): ?array => $db->table(self::TABLE)->where('id', 1)->lockForUpdate()->first(),
@@ -152,7 +154,7 @@ class TransactionGoneTest extends TransactionEndTestCase
         $this->db->beginTransaction();
         $this->db->insert(self::TABLE, ['id' => 1, 'name' => 'before the DDL']);
         try {
-            $this->db->execute('CREATE TABLE ' . self::TABLE . ' (id INT PRIMARY KEY)');
+            self::failAfterAnImplicitCommit($this->db);
             $this->fail('Expected QueryException');
         } catch (QueryException $e) {
             $failure = $e->getPrevious();
@@ -187,7 +189,7 @@ class TransactionGoneTest extends TransactionEndTestCase
         $this->db->beginTransaction();
         $this->db->insert(self::TABLE, ['id' => 1, 'name' => 'before the DDL']);
         try {
-            $this->db->execute('CREATE TABLE ' . self::TABLE . ' (id INT PRIMARY KEY)');
+            self::failAfterAnImplicitCommit($this->db);
             $this->fail('Expected QueryException');
         } catch (QueryException $e) {
             $failure = $e->getPrevious();

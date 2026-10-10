@@ -15,6 +15,7 @@ use Sodaho\PdoWrapper\Exception\Codes;
 use Sodaho\PdoWrapper\Exception\CommitFailedException;
 use Sodaho\PdoWrapper\Exception\CommitHookException;
 use Sodaho\PdoWrapper\Exception\ConnectionException;
+use Sodaho\PdoWrapper\Exception\ImplicitCommitException;
 use Sodaho\PdoWrapper\Exception\NamedLockReentryException;
 use Sodaho\PdoWrapper\Exception\NamedLocksHeldException;
 use Sodaho\PdoWrapper\Exception\QueryException;
@@ -292,11 +293,16 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      * driver, while PDO reports no transaction any more (a DDL statement committed it implicitly,
      * raw PDO ended it), and after any other failure inside it once the driver, asked right after
      * that failure, found the transaction gone or could not find out (see $transactionGone): what
-     * would be sent then would run in autocommit and be committed on its own.
+     * would be sent then would run in autocommit and be committed on its own. Inside a transaction
+     * begun through this driver, a statement that commits implicitly (implicitCommitOf(): DDL on
+     * MariaDB) is refused as well, with an ImplicitCommitException: the transaction stays open and
+     * intact. SQL that steers transactions itself (BEGIN, COMMIT, ROLLBACK, SET autocommit, XA) is
+     * neither refused nor seen.
      *
      * @param string $sql SQL query with placeholders
      * @param array<int|string, mixed> $params Parameters to bind
      *
+     * @throws ImplicitCommitException When the statement would commit the open transaction begun through this driver implicitly (nothing is sent)
      * @throws QueryException On query failure (a UniqueViolationException for a duplicate key), on a parameter that cannot be bound, or when a 'query.before' or 'query' hook threw a PDOException
      * @throws Throwable What a 'query.before', 'query' or 'error' hook throws otherwise, and what an error handler throws that is not about a PDO failure: both pass unchanged
      *
@@ -366,6 +372,21 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
                     message: 'Query failed',
                     previous: $gone[0] ?? null,
                     debugMessage: sprintf('Not sent: %s This statement would run outside of it, in autocommit. %s | SQL: %s', $why, $wayOut, $sql)
+                );
+            }
+
+            // A statement that commits implicitly (DDL on MariaDB) would end this transaction before it runs,
+            // also when it then fails, and what follows would run in autocommit: refused, the transaction stays
+            $implicitCommit = $this->implicitCommitOf($sql);
+            if ($implicitCommit !== null) {
+                throw new ImplicitCommitException(
+                    debugMessage: sprintf(
+                        'Not sent: %s commits the open transaction implicitly - before it runs, also when it then fails -, and what the transaction does afterwards would run in autocommit. '
+                        . 'The transaction is still open. Run the statement outside of transactions. | SQL: %s',
+                        $implicitCommit,
+                        $sql
+                    ),
+                    statement: $implicitCommit
                 );
             }
         }
@@ -719,6 +740,17 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
     protected function transactionIsOver(PDOException $failure): bool
     {
         return false;
+    }
+
+    /**
+     * The leading keywords of a statement that commits the open transaction implicitly ("CREATE"),
+     * or null for one that does not: query() refuses such a statement inside a transaction this
+     * library began, before it is sent. None by default; MariaDbDriver names MariaDB's (see
+     * ImplicitCommit). A driver of its own names its database's statements here.
+     */
+    protected function implicitCommitOf(string $sql): ?string
+    {
+        return null;
     }
 
     /**
