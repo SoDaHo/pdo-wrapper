@@ -15,7 +15,8 @@ use Throwable;
  * connection that is gone, releaseNamedLock() cannot reach the server any more). A
  * ConnectionException like reconnect()'s other failures; catch this class to tell "locks held"
  * apart without reading the message. $lockNames and the debug message carry the names, which may
- * identify a person ("login:<user id>"): log their number, not the names.
+ * identify a person ("login:<user id>"): log their number, not the names (with redactParameters the
+ * debug message does not name them; $lockNames does).
  */
 class NamedLocksHeldException extends ConnectionException
 {

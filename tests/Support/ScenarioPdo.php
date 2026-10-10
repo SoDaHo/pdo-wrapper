@@ -11,9 +11,10 @@ use Throwable;
 
 /**
  * A real connection whose commit(), rollBack() and inTransaction() can be made to fail or lie on
- * demand, so that the same scenarios run against SQLite, MySQL/MariaDB and PostgreSQL. These are
- * simulations of what a driver reports; the real engine behaviour (deadlock, lost connection,
- * COMMIT rejected by the server) is measured in the driver integration tests.
+ * demand, so that the contract scenarios run against the bound driver - currently MariaDB alone;
+ * reusable by future bindings. These are simulations of what a driver reports; the real engine
+ * behaviour (deadlock, lost connection, COMMIT rejected by the server) is measured in the driver
+ * integration tests.
  */
 final class ScenarioPdo extends PDO
 {
