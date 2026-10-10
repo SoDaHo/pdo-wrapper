@@ -52,9 +52,9 @@ class RollbackOnTimeoutTest extends TransactionEndTestCase
     }
 
     /**
-     * A manual transaction with a named lock, the README pattern around it: the timeout reaches the
-     * catch, inTransaction() is false already (the driver asked right after it), currentTransaction()
-     * still names the transaction. rollback() tells 'lost', the lock release in finally goes through
+     * A manual transaction with a named lock, the transaction core of the README pattern around it:
+     * the timeout reaches the catch, inTransaction() is false already (the driver asked right after
+     * it), currentTransaction() still names the transaction. rollback() tells 'lost', the lock release in finally goes through
      * and the connection works again.
      */
     public function testTheReadmePatternEndsAManualTransactionTheTimeoutEnded(): void

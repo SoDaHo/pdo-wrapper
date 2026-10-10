@@ -115,8 +115,9 @@ upsertReturning(string $table, array $row, array $update, array $columns = ['*']
 
 A named lock belongs to the connection, not to a transaction: COMMIT and ROLLBACK do not release it. The name is
 prefixed with the configured database and `:` (`app:login:7`, up to 192 bytes with the prefix); with a `:` in the
-database name the lock methods throw. Taking a lock this connection holds throws `NamedLockReentryException`. The
-constants `TRANSACTION_COMMITTED`, `TRANSACTION_ROLLED_BACK` and `TRANSACTION_LOST` name the outcomes.
+database name the lock methods throw. An empty name, a name with a NUL byte and a negative timeout throw a
+`QueryException`; taking a lock this connection holds throws `NamedLockReentryException`. The constants
+`TRANSACTION_COMMITTED`, `TRANSACTION_ROLLED_BACK` and `TRANSACTION_LOST` name the outcomes.
 
 ### Drivers
 
@@ -138,54 +139,56 @@ the builder; `$column` of the where methods may be an expression without binding
 `Database::raw('LOWER(email)')`).
 
 ```php
+// Clauses
+select(string|array $columns = '*'): self       // 'id, name', ['id', 'u.name as n'], Database::raw('COUNT(*)')
+distinct(): self                                // SELECT DISTINCT
 where(string|RawExpression|array $column, mixed $operatorOrValue = null, mixed $value = null): self
+whereRaw(string $sql, array $bindings = []): self                      // trusted SQL in parentheses, AND-joined
+whereIn(string|RawExpression $column, array $values): self             // [] renders 1 = 0; null in it throws
+whereNotIn(string|RawExpression $column, array $values): self          // [] throws
+whereBetween(string|RawExpression $column, array $values): self        // two values, no null
+whereNotBetween(string|RawExpression $column, array $values): self     // as whereBetween()
+whereNull(string|RawExpression $column): self                          // IS NULL
+whereNotNull(string|RawExpression $column): self                       // IS NOT NULL
+whereLike(string|RawExpression $column, string $pattern): self         // LIKE ? ESCAPE ?, backslash as escape
+whereNotLike(string|RawExpression $column, string $pattern): self      // NOT LIKE ? ESCAPE ?
+join(string $table, string $first, string $operator, string $second): self        // INNER JOIN
+leftJoin(string $table, string $first, string $operator, string $second): self    // LEFT JOIN
+rightJoin(string $table, string $first, string $operator, string $second): self   // RIGHT JOIN
+orderBy(string|RawExpression $column, string $direction = 'ASC'): self  // ASC or DESC; a string is a column name
+limit(int $limit): self                                                 // negative throws
+offset(int $offset): self                                               // negative throws
+groupBy(string|RawExpression|array $columns): self                      // a string is split at commas into names
+having(string|RawExpression $column, string $operator, mixed $value): self   // a string names a column or the
+                                                                             // text of a selected expression
+lockForUpdate(): self                           // FOR UPDATE; a read outside a transaction throws
+sharedLock(): self                              // LOCK IN SHARE MODE; the same
+// Execution
+get(): array                                    // the rows
+first(): ?array                                 // the first row or null
+exists(): bool                                  // SELECT 1 ... LIMIT 1, keeping offset() and a lock
+count(string $column = '*'): int                // with distinct() distinct rows, with groupBy() the groups
+sum(string $column): float|string|null          // as MariaDB delivers it: integer and DECIMAL sums as string
+avg(string $column): float|string|null          // as sum()
+min(string $column): mixed                      // in the column's type; null without a value
+max(string $column): mixed                      // as min()
+insert(array $data): int                        // as the driver's insert()
+insertWhen(array $data, string $condition, array $bindings = [], array $update = []): int
+insertWhenReturning(array $data, string $condition, array $bindings = [], array $update = [],
+    array $columns = ['*']): ?array
+insertIgnore(array $data): int                                          // as the driver's
+upsert(array $row, array $update): int                                  // as the driver's
+upsertReturning(array $row, array $update, array $columns = ['*']): array   // as the driver's
+update(array $data): int                        // needs a where; limit() needs orderBy() and the other way round
+delete(): int                                   // as update()
+increment(string $column, int|float $by = 1, array $extra = []): int   // col = col + CAST(? AS ...)
+decrement(string $column, int|float $by = 1, array $extra = []): int   // as increment(), subtracting
+toSql(): array                                  // [sql, params] without executing
 ```
 
 `where('id', 5)`, `where('age', '>', 18)`, `where(['active' => 1])`, `where('nick', 'IS', $nick)`. With two arguments
 the second is the value, with three the operator: `=`, `!=`, `<>`, `<`, `>`, `<=`, `>=`, `LIKE`, `NOT LIKE`, `IS`,
 `IS NOT` (null-safe, `<=>`). Another operator, or one that is no string, throws; a `null` value needs `IS`/`IS NOT`.
-
-| Signature | Description |
-|---|---|
-| `select(string\|array $columns = '*')` | `'id, name'`, `['id', 'u.name as n']`, `Database::raw()` without bindings. |
-| `distinct()` | `SELECT DISTINCT`. |
-| `whereRaw(string $sql, array $bindings = [])` | Trusted SQL in parentheses, AND-joined; `$bindings` fill its `?`. |
-| `whereIn($column, array $values)` | An empty list renders `1 = 0`; `null` in the list throws. |
-| `whereNotIn($column, array $values)` | An empty list throws. |
-| `whereBetween($column, array $values)` | Two values, no `null`. |
-| `whereNotBetween($column, array $values)` | As `whereBetween()`. |
-| `whereNull($column)`, `whereNotNull($column)` | `IS NULL`, `IS NOT NULL`. |
-| `whereLike($column, string $pattern)` | `LIKE ? ESCAPE ?`, backslash as escape. |
-| `whereNotLike($column, string $pattern)` | `NOT LIKE ? ESCAPE ?`. |
-| `join(string $table, string $first, string $operator, string $second)` | `INNER JOIN`. |
-| `leftJoin(...)`, `rightJoin(...)` | The arguments of `join()`. |
-| `orderBy($column, string $direction = 'ASC')` | ASC or DESC, else throws; a string is a column name. |
-| `limit(int $limit)`, `offset(int $offset)` | A negative value throws. |
-| `groupBy(string\|RawExpression\|array $columns)` | A string is split at commas into names. |
-| `having($column, string $operator, mixed $value)` | A string names a column or a selected expression's text. |
-| `lockForUpdate()`, `sharedLock()` | `FOR UPDATE`, `LOCK IN SHARE MODE`; a read outside a transaction throws. |
-| `get(): array` | The rows. |
-| `first(): ?array` | The first row or `null`. |
-| `exists(): bool` | `SELECT 1 ... LIMIT 1`, keeping `offset()` and a lock. |
-| `count(string $column = '*'): int` | With `distinct()` distinct rows, with `groupBy()` the number of groups. |
-| `sum(string $column): float\|string\|null` | As MariaDB delivers it: integer and DECIMAL sums as string. |
-| `avg(string $column): float\|string\|null` | As `sum()`. |
-| `min(string $column): mixed`, `max(string $column): mixed` | In the column's type; `null` without a value. |
-| `insert(array $data): int` | As the driver's `insert()`. |
-| `insertIgnore(array $data): int` | As the driver's. |
-| `upsert(array $row, array $update): int` | As the driver's. |
-| `upsertReturning(array $row, array $update, array $columns = ['*']): array` | As the driver's. |
-| `update(array $data): int` | Needs a where; `limit()` needs `orderBy()` and the other way round. |
-| `delete(): int` | As `update()`. |
-| `increment(string $column, int\|float $by = 1, array $extra = []): int` | `col = col + CAST(? AS ...)`. |
-| `decrement(string $column, int\|float $by = 1, array $extra = []): int` | As `increment()`, subtracting. |
-| `toSql(): array` | `[sql, params]` without executing. |
-
-```php
-insertWhen(array $data, string $condition, array $bindings = [], array $update = []): int
-insertWhenReturning(array $data, string $condition, array $bindings = [], array $update = [],
-    array $columns = ['*']): ?array
-```
 
 - The insert methods throw when a where, join, `groupBy()`, `having()`, `orderBy()`, `limit()`, `offset()`,
   `distinct()` or a lock is set on the builder; `select()` is ignored.
@@ -233,18 +236,20 @@ Keys of `Database::mariadb()`, `connect()`, the `fromEnv()` overrides and `Maria
 | `database` | string | required | not empty | empty, `;` or NUL, no string |
 | `username` | string | required | not empty | empty, no string |
 | `password` | ?string | `null` | `''` is a password | no string |
-| `port` | int\|string | `3306` | 1 to 65535, as int or digits | other values |
-| `charset` | string | `utf8mb4` | a charset name | `;` or NUL, no string |
-| `options` | array | `[]` | `PDO::ATTR_* => value`; replace the defaults | see below |
-| `pdoClass` | string | `PDO` | an instantiable class that is or extends `PDO` | other values |
+| `port` | int\|string\|null | `3306` | 1 to 65535, as int or digits | other values |
+| `charset` | ?string | `utf8mb4` | a charset name | `;` or NUL, no string |
+| `options` | ?array | `[]` | `PDO::ATTR_* => value`; replace the defaults | see below |
+| `pdoClass` | ?string | `PDO` | an instantiable class that is or extends `PDO` | other values |
 | `redactParameters` | bool | `false` | `true`, `false` | other values, `null` included |
 | `driver` | string | none | `mariadb` (`connect()`, `fromEnv()`) | other names; the key in `mariadb()` |
 
-- An unknown key throws a `ConnectionException` that names it in `getDebugMessage()`.
+- An unknown key throws a `ConnectionException` that names it in `getDebugMessage()`. `null` for `port`, `charset`,
+  `options`, `pdoClass` and `password` means the default.
 - Defaults of `options`: `ATTR_ERRMODE` exception, `ATTR_DEFAULT_FETCH_MODE` assoc, `ATTR_EMULATE_PREPARES` false,
   `ATTR_STRINGIFY_FETCHES` false, `Pdo\Mysql::ATTR_MULTI_STATEMENTS` false.
-- Refused `options`: `ATTR_STRINGIFY_FETCHES` or `ATTR_MULTI_STATEMENTS` switched on, `ATTR_STATEMENT_CLASS` with
-  whatever value, keys that are no integers.
+- Refused `options`: `ATTR_STRINGIFY_FETCHES` or `Pdo\Mysql::ATTR_MULTI_STATEMENTS` with a value other than `false` or
+  the integer `0` (`'0'`, `null` and `0.0` are refused), `ATTR_STATEMENT_CLASS` with whatever value, keys that are no
+  integers.
 - Refused when the connection opens (`ConnectionException::$refusal`): a client that is not mysqlnd (`NotMysqlnd`),
   a server that is not MariaDB (`NotMariaDb`), MariaDB before 10.11 (`MariaDbTooOld`), `ATTR_ORACLE_NULLS` other than
   `NULL_NATURAL` (`NullMode`). Then the driver sets `completion_type` to `NO_CHAIN`, and throws if that fails.
@@ -271,10 +276,14 @@ Keys of `Database::mariadb()`, `connect()`, the `fromEnv()` overrides and `Maria
 - A throwing `query.before`, `query`, `error`, `transaction.begin` or `transaction.rollback` listener stops the
   listeners after it, and its exception reaches the caller (a `PDOException` from `query.before` or `query` as
   `QueryException` "Query hook failed", from `transaction.begin` or `transaction.rollback` as `TransactionException`).
+  Not so on the automatic rollback of `transaction()`/`updateMultiple()`: a rollback listener's exception is dropped
+  and the exception that ended the transaction reaches the caller.
 - A failing `transaction.commit` or `transaction.end` listener does not stop the next one; after a commit their
-  failures arrive together in a `CommitHookException`.
+  failures arrive together in a `CommitHookException`. The remaining commit listeners are skipped, and listed as
+  failures, when a commit listener left a raw transaction open that cannot be rolled back, the state cannot be read,
+  or the session chained a new transaction to the COMMIT.
 - `error` also gets end listener failures of the automatic rollback, with the extra keys `hook`, `outcome` and
-  `exception`.
+  `exception`; an `error` listener that throws there is ignored.
 - Statement listeners 32 levels deep, and `transaction.end` listeners that keep beginning transactions after 32
   levels, end in a `LogicException`.
 - Listener rule: a `transaction.end` listener may steer transactions; a `query.before`, `query` or `error` listener may
@@ -302,7 +311,7 @@ Namespace `Sodaho\PdoWrapper\Exception`. `getMessage()` names no SQL and no boun
 | `CommitFailedException` | The commit failed or was refused | `$outcome` (?string) |
 | `ListenerTransactionException` | Transaction control refused inside a listener | |
 | `CommitHookException` | Committed; a listener failed, or the state unclear | `$failures`, `$connectionInTransaction` |
-| `RedactedPdoException` | Replaces PDO's exception under `redactParameters` | SQLSTATE as `getCode()` |
+| `RedactedPdoException` | `redactParameters`: replaces a statement's or listener's error | SQLSTATE as `getCode()` |
 
 - Hierarchy: `ConnectionException`, `QueryException`, `TransactionException` and `CommitHookException` extend
   `DatabaseException`; `NamedLocksHeldException` and `TransactionOpenException` extend `ConnectionException`;
@@ -321,12 +330,17 @@ Namespace `Sodaho\PdoWrapper\Exception`. `getMessage()` names no SQL and no boun
 | `transaction.end` outcome | Meaning | `CommitFailedException::$outcome` |
 |---|---|---|
 | `committed` | `PDO::commit()` went through; listener failures come as `CommitHookException` | |
-| `rolled_back` | The library's ROLLBACK went through: nothing of the transaction is committed | `rolled_back` |
+| `rolled_back` | The library's ROLLBACK went through: nothing of it is committed (see below) | `rolled_back` |
 | `lost` | No confirmed rollback (ROLLBACK failed, transaction gone, state unknown): data may be committed | `lost` |
 
-- `transaction.end` fires once for each transaction the library ends. A failed manual `commit()` or `rollback()`
-  fires nothing and leaves the transaction to the caller. Full contract: `DatabaseInterface::commit()`,
-  `rollback()`, `transaction()` and `Traits\HasHooks`.
+- `transaction.end` fires once for each transaction the library ends. A manual `commit()` or `rollback()` that fails
+  before the end fires nothing and leaves the transaction to the caller - except a commit after which PDO reports no
+  transaction: it tells `lost` at once. A `rollback()` whose ROLLBACK went through may still throw for a listener's
+  failure, after the events. Full contract: `DatabaseInterface::commit()`, `rollback()`, `transaction()` and
+  `Traits\HasHooks`.
+- `rolled_back` holds for transactions steered through the library: SQL that steers transactions itself, sent through
+  `query()` (`START TRANSACTION` commits the open one and opens the next), is not seen, and the outcome is then not to
+  be relied on.
 - `transaction()` returns the callback's value. After a failed commit there it rolls back where PDO still reports the
   transaction, and `$outcome` is the outcome told; a failed manual `commit()` leaves it `null` unless it told `lost`.
 - No nesting: `beginTransaction()` inside an open transaction throws a `TransactionException`.
@@ -335,9 +349,11 @@ Namespace `Sodaho\PdoWrapper\Exception`. `getMessage()` names no SQL and no boun
   refused `commit()` that tells `lost`). After another failure inside a library transaction the driver asks the
   server; found gone, or not to be found out, its end is `lost`, and nothing more is sent until it is ended.
 - Inside a library transaction a statement that commits implicitly (DDL, LOCK/UNLOCK TABLES, account and maintenance
-  statements; see `Driver\ImplicitCommit`) throws `ImplicitCommitException` before it is sent; so does a statement
-  with an executable comment, a byte from 0x80 on or a control character before its leading keywords. `BEGIN`,
-  `COMMIT`, `ROLLBACK`, `SET autocommit` and `XA` sent through `query()` are not refused and not tracked.
+  statements; see `Driver\ImplicitCommit`) throws `ImplicitCommitException` before it is sent. Unjudged and refused
+  as well: an executable comment (`/*!...*/`, `/*M!...*/`), a byte from 0x80 on or a control character other than
+  tab, LF, VT, FF and CR, standing anywhere before the leading keywords are decided (also between them). `BEGIN`,
+  `COMMIT`, `ROLLBACK`, `SET autocommit` and `XA` sent through `query()` are not refused and not tracked; what `CALL`,
+  `EXECUTE` or `BEGIN NOT ATOMIC` run inside is not looked into.
 - `reconnect()` opens the new connection first (a failure changes nothing), sends a ROLLBACK on the old one when it
   reports a transaction, then swaps; an owed end is told as `lost`. It throws `TransactionOpenException` while a
   library transaction is open (unless `$dropTransaction`), `NamedLocksHeldException` while named locks are held
@@ -369,7 +385,8 @@ try {
 - Channels that carry bound values: the `query.before`, `query` and `error` payloads, `getDebugMessage()`, the
   previous exception (MariaDB's message quotes values, e.g. a duplicate entry), `$lockName`, `$lockNames`. With
   `redactParameters` payload values are `'[redacted]'`, debug messages name no value, and a `RedactedPdoException`
-  with the codes replaces PDO's exception; `$lockName` and `$lockNames` keep the names.
+  with the codes replaces the `PDOException` of a failed statement, a failed read after it and a listener;
+  `$lockName` and `$lockNames` keep the names, a failed connect keeps PDO's exception.
 - Parameters that take values are marked `#[\SensitiveParameter]`. The `PDOException` of a failed connect holds the
   DSN, the username and the options in its trace while `zend.exception_ignore_args` is off.
 - Multi-statements are off and cannot be switched on. `escapeLike()` escapes user input for LIKE; the builder binds

@@ -15,9 +15,9 @@ use Throwable;
  * A manual transaction (beginTransaction()) that the server ended behind the library's back - a DDL
  * statement committed it implicitly, raw PDO ended it: PDO reports no transaction any more, while
  * the library still holds it (currentTransaction() is its number) and refuses every statement. The
- * README's pattern - roll back when currentTransaction() or inTransaction() says so, release the
- * named lock in finally - is the way out: rollback() tells the end as 'lost', and the connection
- * works again.
+ * transaction core of the README pattern - roll back when currentTransaction() or inTransaction()
+ * says so -, with the named lock released in finally, is the way out: rollback() tells the end as
+ * 'lost', and the connection works again.
  */
 class ManualTransactionWayOutTest extends TransactionEndTestCase
 {
@@ -89,9 +89,9 @@ class ManualTransactionWayOutTest extends TransactionEndTestCase
     }
 
     /**
-     * The README pattern around a manual transaction with a named lock: the work, then commit();
-     * on any failure a rollback when the library or PDO still reports a transaction; the lock
-     * released in finally.
+     * The transaction core of the README pattern around a manual transaction with a named lock: the
+     * work, then commit(); on any failure a rollback when the library or PDO still reports a
+     * transaction; here the lock is released in finally as well.
      *
      * @param \Closure(): void $work
      */

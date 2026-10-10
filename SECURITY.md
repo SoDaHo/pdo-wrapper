@@ -26,11 +26,11 @@ Not a vulnerability of the library:
 - Bound values in logs: the `query.before`, `query` and `error` payloads, `getDebugMessage()`, the previous
   exception and `(string) $e` carry them as passed. `redactParameters` keeps them out of the payloads, the debug
   messages and the previous exceptions; value parameters are `#[\SensitiveParameter]` in traces (README, Security).
-- PDO `options` that replace the defaults (emulated prepares, a runtime `SET NAMES`). `ATTR_MULTI_STATEMENTS` and
-  `ATTR_STATEMENT_CLASS` are refused.
-- Transport: the library sets no TLS option; across a network the application does not control, set
-  `Pdo\Mysql::ATTR_SSL_CA` and `ATTR_SSL_VERIFY_SERVER_CERT` in `options`.
-- Charsets: name quoting assumes an ASCII-safe charset (`utf8mb4`, the default); `big5`, `cp932`, `gbk`, `gb18030`
-  and `sjis` are not supported.
+- PDO `options` that replace the defaults (emulated prepares, a runtime `SET NAMES`). `ATTR_MULTI_STATEMENTS`
+  other than `false` or `0` and `ATTR_STATEMENT_CLASS` are refused.
+- Transport: the library sets no TLS option and checks none; whether the connection is encrypted is up to pdo_mysql,
+  MariaDB and the `options` the application passes (`Pdo\Mysql::ATTR_SSL_CA`, `ATTR_SSL_VERIFY_SERVER_CERT`).
+- Charsets: name quoting assumes an ASCII-safe charset (`utf8mb4`, the default). `big5`, `cp932`, `gbk`, `gb18030` and
+  `sjis` are outside the support - the library does not refuse them.
 - Names from request input: quoting keeps a name from becoming SQL; which column a request may read, filter or sort
   by needs a whitelist in the application.

@@ -21,7 +21,8 @@ use PDOStatement;
  * the next one itself: beginTransaction() and transaction() tell an end PDO reports 'lost' and begin
  * anew (after a deadlock or a 1020 they refuse), so a helper asks currentTransaction() !== null ||
  * inTransaction() before it opens one (README, Transactions); only 'rolled_back' means that nothing
- * of a transaction is committed.
+ * of a transaction is committed - for a transaction no SQL sent through query() steered itself (see
+ * query(): START TRANSACTION there commits the open one, and the next one's rollback is 'rolled_back').
  *
  * Limits:
  * - Not seen: statements that failed on raw PDO (getPdo()), and rows that fail while a result is

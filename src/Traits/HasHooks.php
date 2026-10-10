@@ -44,15 +44,22 @@ use Sodaho\PdoWrapper\Exception\DatabaseException;
  *   PDOException from 'query.before' or 'query' as QueryException 'Query hook failed' (from
  *   'query.before' the statement was not sent, neither 'query' nor 'error' fires; from 'query' it
  *   ran, and 'error' does not fire), from 'transaction.begin' or 'transaction.rollback' as
- *   TransactionException. An 'error' listener's exception replaces the failed statement's.
+ *   TransactionException. An 'error' listener's exception replaces the failed statement's. Two
+ *   exceptions: on the automatic rollback of transaction()/updateMultiple() a rollback listener's
+ *   exception is dropped, and the exception that ended the transaction reaches the caller; and an
+ *   'error' listener that throws while the library reports a failure the caller does not get as the
+ *   thrown one (below) is ignored.
  * - After a throwing 'transaction.begin' listener the new transaction is rolled back on raw PDO
  *   (best effort, no 'transaction.rollback' listener) and its end is told: 'rolled_back', or 'lost'
  *   when that rollback failed or the listener had ended the transaction behind the library's back;
  *   error is the exception the caller gets. Not when the transaction was ended meanwhile (a
  *   reconnect(dropTransaction: true) of the listener): that call told its end.
  * - 'transaction.commit' and 'transaction.end' listeners run after the fact, independent of each
- *   other: all of them run. After a commit their failures arrive together in a CommitHookException
- *   (the commit listeners' first). After a manual rollback() an end listener's failure arrives as
+ *   other: a failing one does not stop the next. The remaining commit listeners are skipped - and
+ *   listed as failures - when a transaction a commit listener left open (on raw PDO) cannot be
+ *   rolled back, the connection state cannot be read, or the session chained a new transaction to
+ *   the COMMIT (then every commit listener). After a commit their failures arrive together in a
+ *   CommitHookException (the commit listeners' first). After a manual rollback() an end listener's failure arrives as
  *   TransactionException (the first; all reach the 'error' hook), unless a rollback listener threw:
  *   that exception wins. On the automatic rollback of transaction()/updateMultiple() and on a 'lost'
  *   they reach only the 'error' hook - sql '', params [], error, code, sqlState, driverCode, then
