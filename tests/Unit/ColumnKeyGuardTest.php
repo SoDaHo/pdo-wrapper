@@ -103,13 +103,40 @@ class ColumnKeyGuardTest extends TestCase
         }
     }
 
-    public function testAnAggregateAsAHavingStringIsAQueryException(): void
+    /**
+     * A having() string with an expression in it names no column - unless a select() entry carries
+     * that name: refused when the query is built, not when having() is called (the select() may come
+     * after it).
+     */
+    public function testAnAggregateAsAHavingStringIsAQueryExceptionWithoutASelectOfThatName(): void
     {
+        $query = $this->table()->groupBy('status')->having('COUNT(*)', '>', 1);
         try {
-            $this->table()->groupBy('status')->having('COUNT(*)', '>', 1);
+            $query->toSql();
             $this->fail('Expected QueryException');
         } catch (QueryException $e) {
-            $this->assertStringStartsWith('having() takes a column or an alias as a string, and "COUNT(*)" is an expression', (string) $e->getDebugMessage());
+            $this->assertStringStartsWith('having() takes a column or an alias as a string, and "COUNT(*)" is an expression no select() entry is named after', (string) $e->getDebugMessage());
+        }
+    }
+
+    /**
+     * select(raw('COUNT(*)')) names its output column "COUNT(*)": having('COUNT(*)') refers to it, as
+     * MariaDB resolves the quoted name (it did before 3.1.2). Compared without case; an aliased raw
+     * entry is named by its alias.
+     */
+    public function testAHavingStringNamesASelectedExpression(): void
+    {
+        [$sql] = $this->table()->groupBy('status')->having('COUNT(*)', '>', 1)->select(['status', Database::raw('COUNT(*)')])->toSql();
+        $this->assertSame('SELECT `status`, COUNT(*) FROM `t` GROUP BY `status` HAVING `COUNT(*)` > ?', $sql);
+
+        [$sql] = $this->table()->select(['status', Database::raw('count(*)')])->groupBy('status')->having('COUNT(*)', '>', 1)->toSql();
+        $this->assertStringEndsWith('HAVING `COUNT(*)` > ?', $sql);
+
+        try {
+            $this->table()->select(['status', Database::raw('COUNT(*) AS n')])->groupBy('status')->having('COUNT(*)', '>', 1)->toSql();
+            $this->fail('Expected QueryException: the entry is named n');
+        } catch (QueryException) {
+            // refused
         }
     }
 

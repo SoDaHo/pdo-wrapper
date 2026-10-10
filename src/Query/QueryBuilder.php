@@ -671,23 +671,16 @@ class QueryBuilder
      * @param string $operator Comparison operator
      * @param mixed $value Value to compare (null only with IS / IS NOT, the null-safe comparison)
      *
-     * @throws QueryException When the operator is not allowed, the value is null with an operator other than IS / IS NOT, a raw expression used as the column carries bindings (as the value it may), or the column is a string with an expression in it ("COUNT(*)": use Database::raw())
+     * A string is a name, quoted: "COUNT(*)" is the output column a select() entry
+     * Database::raw('COUNT(*)') carries (MariaDB names an unaliased expression after its text) -
+     * without such an entry the query throws when it is built (see buildHaving()).
+     *
+     * @throws QueryException When the operator is not allowed, the value is null with an operator other than IS / IS NOT, or a raw expression used as the column carries bindings (as the value it may)
      */
     public function having(string|RawExpression $column, string $operator, #[\SensitiveParameter] mixed $value): self
     {
         $operator = $this->validateOperator($operator);
         $this->guardAgainstBoundRaw('having', [$column]);
-        // A string is a name, quoted: "COUNT(*)" would reach the server as the column `COUNT(*)`
-        if (is_string($column) && str_contains($column, '(')) {
-            throw new QueryException(
-                message: 'Query failed',
-                debugMessage: sprintf(
-                    'having() takes a column or an alias as a string, and "%s" is an expression: it would be quoted as the name of a column. Pass it as Database::raw(\'%s\'), or select it with an alias and name that.',
-                    $column,
-                    $column
-                )
-            );
-        }
 
         // "= NULL", "> NULL", "LIKE NULL" are never true: the condition would silently drop every group
         if ($value === null && $operator !== 'IS' && $operator !== 'IS NOT') {
@@ -788,6 +781,23 @@ class QueryBuilder
         [$sql, $params] = $query->toSql();
 
         return $this->db->query($sql, $params)->fetch(PDO::FETCH_ASSOC) !== false;
+    }
+
+    /**
+     * Whether a select() entry is named so: an expression selected without an alias carries its text
+     * as its name (MariaDB names the output column after it), an aliased entry its alias - compared
+     * without case, as MariaDB compares column names.
+     */
+    private function selectsTheName(string $name): bool
+    {
+        foreach ($this->columns as $entry) {
+            $alias = $this->aliasKey($entry);
+            if ($alias !== null ? $alias === $this->quotedNameKey($name) : ($entry instanceof RawExpression && strcasecmp(trim((string) $entry), trim($name)) === 0)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -1762,7 +1772,19 @@ class QueryBuilder
         $params = [];
 
         foreach ($this->having as $h) {
-            // RawExpression bypasses quoting (for aggregates)
+            // RawExpression bypasses quoting (for aggregates). A string is a name; one with an expression in it
+            // ("COUNT(*)") names an output column only where a select() entry carries that name: otherwise it
+            // would reach the server as an unknown column
+            if (is_string($h['column']) && str_contains($h['column'], '(') && !$this->selectsTheName($h['column'])) {
+                throw new QueryException(
+                    message: 'Query failed',
+                    debugMessage: sprintf(
+                        'having() takes a column or an alias as a string, and "%s" is an expression no select() entry is named after: it would be quoted as the name of a column. Select Database::raw(\'%s\'), pass it as Database::raw(), or select it with an alias and name that.',
+                        $h['column'],
+                        $h['column']
+                    )
+                );
+            }
             $column = $h['column'] instanceof RawExpression
                 ? (string) $h['column']
                 : $this->quoteIdentifier($h['column']);
