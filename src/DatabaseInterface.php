@@ -197,7 +197,9 @@ interface DatabaseInterface
      * same exception, in that order. A failed commit fires no 'transaction.end' (one exception: a
      * failed or refused commit of a transaction PDO no longer reports, see below).
      *
-     * Every TransactionException the commit itself throws is an Exception\CommitFailedException;
+     * Every TransactionException the commit itself throws is an Exception\CommitFailedException -
+     * but for the refusal inside a listener that runs in a transaction, an
+     * Exception\ListenerTransactionException, where nothing is tried;
      * its $outcome is 'lost' when the commit told the end itself (PDO reported no transaction any
      * more: nothing could end it afterwards), and null otherwise: after a commit() you call
      * yourself the transaction is yours to end, and nothing writes into the exception later
@@ -225,8 +227,8 @@ interface DatabaseInterface
      * at once, as every failed commit after which PDO reports none; where the answer was lost on the
      * way, the rollback fails as on every lost connection. See Traits\HasHooks.
      *
-     * @throws Exception\ListenerTransactionException When called from inside a listener of this library (nothing is sent)
-     * @throws Exception\CommitFailedException When the commit itself failed (it may or may not have taken effect), or was refused because the server had already ended the transaction (nothing of that transaction is committed; statements run on raw PDO after its end are). A TransactionException
+     * @throws Exception\ListenerTransactionException When called from inside a listener that runs in the middle of a transaction (see beginTransaction(); nothing is sent)
+     * @throws Exception\CommitFailedException When the commit itself failed (it may or may not have taken effect), or was refused because the server had already ended the transaction - rolled back, or committed implicitly by a DDL statement on raw PDO: no promise either way; only $outcome 'rolled_back' says that nothing is committed. A TransactionException
      * @throws Exception\CommitHookException When committed, but a transaction.commit or transaction.end listener failed, the connection state after a commit listener could not be verified, or the connection is in a new, chained transaction
      */
     public function commit(): void;
@@ -343,8 +345,9 @@ interface DatabaseInterface
      * transaction: ?int, depth: ?int}, once per transaction this library ends - exactly one for
      * every told begin -, after the commit or rollback listeners; see Traits\HasHooks).
      * Any other name is refused (see @throws): a listener for it would never run. The 'query.before', 'query' and 'error'
-     * payloads carry the SQL and the parameters as passed, secrets included: redact before logging (README, "Parameters
-     * are secrets", names every channel that carries them). 'error'
+     * payloads carry the SQL and the parameters as passed, secrets included - unless the option redactParameters is on,
+     * then every value is '[redacted]': redact before logging otherwise (README, "Parameters are secrets", names every
+     * channel that carries them). 'error'
      * carries sql, params, error (the message), code (the code of the reported exception), sqlState
      * and driverCode (what the database said, read by the rule of DatabaseException::$sqlState and
      * $driverCode: null where no database failure stands behind the reported error).
@@ -352,8 +355,8 @@ interface DatabaseInterface
      * A throwing hook stops the remaining hooks of its event (for 'transaction.begin' a rollback
      * of the new transaction is attempted first, best effort), except for 'transaction.commit' and
      * 'transaction.end': those listeners are independent and all of them run; after a commit their
-     * failures arrive together in a CommitHookException (commit listeners' first, then the ends of
-     * transactions commit listeners left open, then the committed transaction's end), after a manual
+     * failures arrive together in a CommitHookException (commit listeners' first, then the
+     * committed transaction's end listeners'), after a manual
      * rollback() as TransactionException (unless a rollback listener threw: that exception wins and
      * the end failures reach only the 'error' hook), and after the automatic rollback and on a 'lost'
      * reported there only via the 'error' hook. Dependent steps belong in one listener.

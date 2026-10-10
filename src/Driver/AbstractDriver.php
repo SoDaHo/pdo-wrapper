@@ -1478,7 +1478,7 @@ abstract class AbstractDriver implements DatabaseInterface
      * reports the next one: see noteACommitThatMayHaveTakenEffect().
      *
      * @throws ListenerTransactionException When called from inside a transaction.begin, transaction.commit or transaction.rollback listener, or a statement listener (query.before, query, error) entered inside a transaction (nothing is sent)
-     * @throws CommitFailedException When the commit itself failed (it may or may not have taken effect), or was refused because the server had already ended the transaction (nothing of that transaction is committed)
+     * @throws CommitFailedException When the commit itself failed (it may or may not have taken effect), or was refused because the server had already ended the transaction - rolled back, or committed implicitly by a DDL statement on raw PDO: no promise either way; only $outcome 'rolled_back' says that nothing is committed
      * @throws CommitHookException When committed, but a transaction.commit or transaction.end listener failed, the connection state after a commit listener could not be verified, or the connection is in a new, chained transaction
      */
     final public function commit(): void
@@ -2236,7 +2236,8 @@ abstract class AbstractDriver implements DatabaseInterface
     /**
      * Whether the transaction with that number is still the one at hand: it still owes its end,
      * and none was begun through this driver since. False once it was ended through this driver -
-     * a commit() or rollback() of the callback or of a listener, or an end told as 'lost': a
+     * a commit() or rollback() of the callback (or of an error handler inside a PDO call: the
+     * listeners inside the transaction cannot), or an end told as 'lost': a
      * transaction that is open then was begun afterwards (by an end listener, by the callback;
      * through this driver or on raw PDO) and is not the one transaction() or updateMultiple()
      * began. They leave it to whoever began it. What is ended and begun again on raw PDO alone is
@@ -2251,8 +2252,8 @@ abstract class AbstractDriver implements DatabaseInterface
      * Commit a transaction this driver began, rolling back only if the commit itself failed. That
      * commit's CommitFailedException leaves with an outcome: the one the end listeners were told
      * with it as error - the transaction is this call's, so it still owes its end, and whatever
-     * becomes of the rollback, an end is told -, or 'lost' when the callback or a listener had
-     * ended the transaction before (nothing is sent then). This is the only place that lets
+     * becomes of the rollback, an end is told -, or 'lost' when the callback (or an error handler
+     * inside a PDO call) had ended the transaction before (nothing is sent then). This is the only place that lets
      * rollback() and endLostTransaction() write an outcome: what a callback or a listener throws
      * - a commit() of its own that failed, an exception of another connection or of an earlier
      * transaction - is never written to.
@@ -2266,7 +2267,7 @@ abstract class AbstractDriver implements DatabaseInterface
             // Nothing is sent: a COMMIT would commit somebody else's transaction, or fail for want of one
             $refusal = new CommitFailedException(
                 message: 'Failed to commit transaction',
-                debugMessage: 'Not committed: the transaction this call began has already been ended through this driver (a commit() or rollback() inside the callback or a listener), and its end was told then. A transaction that is open now was begun afterwards and is left to whoever began it.'
+                debugMessage: 'Not committed: the transaction this call began has already been ended through this driver (a commit() or rollback() inside the callback, or of an error handler inside a PDO call), and its end was told then. A transaction that is open now was begun afterwards and is left to whoever began it.'
             );
             self::settle($refusal, self::TRANSACTION_LOST); // no rollback of this call's work is confirmed here
 

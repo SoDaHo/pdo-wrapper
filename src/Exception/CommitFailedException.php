@@ -22,7 +22,7 @@ use LogicException;
  * - commit() itself, when the failed commit left no transaction behind and it therefore told
  *   the end right there: 'lost'.
  * Every other commit() a caller issues - directly, inside a transaction() callback, inside a
- * listener - leaves null: the transaction is the caller's to end, and whoever ends it afterwards
+ * transaction.end listener (the listeners that run inside a transaction cannot commit) - leaves null: the transaction is the caller's to end, and whoever ends it afterwards
  * (the caller's rollback(), or transaction() when the exception leaves its callback) does not
  * write into the exception. An exception thrown again later, or handed on from another
  * connection, is never written to either.

@@ -734,6 +734,7 @@ class QueryBuilder
      * Execute the query and get the first result.
      *
      * @throws QueryException On query failure
+     * @throws LockOutsideTransactionException When a row lock is requested outside of a transaction (nothing is sent)
      *
      * @return array<string, mixed>|null First row or null if none found
      */
@@ -908,6 +909,7 @@ class QueryBuilder
      * @param string $column Column to count (default: *)
      *
      * @throws QueryException When the connection delivers a value that is no number (a statement class of the caller's): never passed off as 0
+     * @throws LockOutsideTransactionException When a row lock is requested outside of a transaction (nothing is sent)
      *
      * @return int Number of records
      */
@@ -941,6 +943,8 @@ class QueryBuilder
      *
      * @param string $column Column to sum
      *
+     * @throws LockOutsideTransactionException When a row lock is requested outside of a transaction (nothing is sent)
+     *
      * @return float|string|null The sum as MariaDB delivers it, or null without a value (no rows,
      *                           only NULL, or a having() without groupBy() that filtered out the
      *                           one group)
@@ -957,6 +961,8 @@ class QueryBuilder
      * float for a FLOAT/DOUBLE column. See sum().
      *
      * @param string $column Column to average
+     *
+     * @throws LockOutsideTransactionException When a row lock is requested outside of a transaction (nothing is sent)
      *
      * @return float|string|null The average as MariaDB delivers it, or null without a value (no
      *                           rows, only NULL, or a having() that filtered out the one group)
@@ -991,6 +997,8 @@ class QueryBuilder
      *
      * @param string $column Column to check
      *
+     * @throws LockOutsideTransactionException When a row lock is requested outside of a transaction (nothing is sent)
+     *
      * @return mixed Minimum value in the driver's native type (MariaDB returns integers for
      *               integer columns), or null without a value (no rows, only NULL, or a having()
      *               without groupBy() that filtered out the one group)
@@ -1004,6 +1012,8 @@ class QueryBuilder
      * Get the maximum value of a column.
      *
      * @param string $column Column to check
+     *
+     * @throws LockOutsideTransactionException When a row lock is requested outside of a transaction (nothing is sent)
      *
      * @return mixed Maximum value in the driver's native type (MariaDB returns integers for
      *               integer columns), or null without a value (no rows, only NULL, or a having()
@@ -1113,7 +1123,7 @@ class QueryBuilder
      *
      * The condition is the argument: a where*()/whereRaw(), join, groupBy()/having(), orderBy(),
      * limit()/offset(), distinct() or row lock set on this builder is not part of the statement, so
-     * the method refuses to run with one (insert() ignores them); a select() is harmless and ignored.
+     * the method refuses to run with one (as insert() does); a select() is harmless and ignored.
      *
      * With $update, a row that collides with an existing one changes it instead (see upsert()):
      * `INSERT ... SELECT ... FROM DUAL WHERE (condition) ON DUPLICATE KEY UPDATE ...`.

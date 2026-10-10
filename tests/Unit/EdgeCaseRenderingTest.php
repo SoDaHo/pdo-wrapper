@@ -124,6 +124,28 @@ class EdgeCaseRenderingTest extends TestCase
         }
     }
 
+    /**
+     * An operator that is no string is named by its type, not cast: an int is no operator, and an
+     * object whose __toString() says "=" is none either (3.1.2 cast it and took it).
+     */
+    public function testAnOperatorThatIsNoStringIsNamedByItsType(): void
+    {
+        $equals = new class () {
+            public function __toString(): string
+            {
+                return '=';
+            }
+        };
+        foreach ([[1, 'int'], [$equals, 'class@anonymous']] as [$operator, $type]) {
+            try {
+                $this->table('users')->where('id', $operator, 1);
+                $this->fail('Expected QueryException: ' . $type);
+            } catch (QueryException $e) {
+                $this->assertStringStartsWith('Invalid operator "' . $type . '"', $e->getDebugMessage() ?? '', $type);
+            }
+        }
+    }
+
     // =========================================================================
     // WHERE NULL BUG FIX TEST
     // Bug: where('column', null) generated "column = NULL" which is always false

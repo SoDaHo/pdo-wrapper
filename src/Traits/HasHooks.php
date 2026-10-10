@@ -101,8 +101,9 @@ use Sodaho\PdoWrapper\Exception\DatabaseException;
  *   the transaction reaches the caller unchanged.
  *
  * No transaction control inside a listener that runs in the middle of a transaction:
- * beginTransaction(), commit() and rollback() - and with them transaction() and updateMultiple() -
- * throw a ListenerTransactionException when called from inside a 'transaction.begin',
+ * beginTransaction(), commit() and rollback() - and with them transaction(), and updateMultiple()
+ * where it would begin its own transaction (inside an open one it runs its statements) - throw a
+ * ListenerTransactionException when called from inside a 'transaction.begin',
  * 'transaction.commit' or 'transaction.rollback' listener of the driver, or a 'query.before',
  * 'query' or 'error' listener entered while a transaction was open (one begun through the driver,
  * or one PDO reports; an unreadable state counts as open) - also from any listener running inside
@@ -151,7 +152,8 @@ use Sodaho\PdoWrapper\Exception\DatabaseException;
  * let the failure escape. Not to be found out: the begin fails, a ROLLBACK cleans up, 'lost'
  * (when that ROLLBACK fails too, the transaction may still be open: its later rollback() tells
  * no second end). A failure that ended the transaction for certain (transactionIsOver(): a
- * deadlock or a 1020) fails the begin as well, also when the listener swallowed it: undone, no event.
+ * deadlock or a 1020) fails the begin as well, also when the listener swallowed it: undone - its
+ * begin was told, so its end is ('rolled_back'), and no rollback listener runs.
  * The 'transaction.begin' listeners are called one by one by beginTransaction() itself, as the
  * 'transaction.commit' and 'transaction.end' listeners always were: an overriding trigger() does
  * not see these three events.
@@ -285,7 +287,8 @@ use Sodaho\PdoWrapper\Exception\DatabaseException;
  * is not committed.
  *
  * 'query.before', 'query' and 'error': the payload carries the SQL and the parameters unredacted - passwords,
- * tokens and personal data included; redact before logging. 'error' also fires, with code 0, for
+ * tokens and personal data included; redact before logging, or switch the option redactParameters on (every
+ * value '[redacted]', the 'error' payload's error the codes instead of the database's message). 'error' also fires, with code 0, for
  * a parameter that must not be bound (an array, a resource, an object without __toString(), a
  * RawExpression; the statement is not sent). insert() reads the new id before
  * the 'query' listeners run, so a listener may insert on the same connection (inside the caller's
