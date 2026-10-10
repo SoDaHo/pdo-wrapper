@@ -13,10 +13,10 @@ use Sodaho\PdoWrapper\Tests\Support\Untyped;
 
 /**
  * The driver's configuration, without a database: what is refused before connecting, and which values
- * reach the connection - read from the failed attempt's message. The attempts go to 127.0.0.1, to
- * ports nothing listens on (59994 and up), with a user no server knows: no name lookup, no local
- * socket. The default port 3306 is read from the DSN of a PDO class that refuses every connection,
- * so that a server on 3306 cannot answer.
+ * reach the connection - read from the failed attempt's message and the DSN. Every attempt goes to a
+ * PDO class that keeps the DSN and refuses the connection (DsnRefusingPdo): nothing is opened, so
+ * whatever listens on a port of the machine - a server on 3306 that lets an unknown user in
+ * included - cannot answer.
  */
 class MariaDbDriverTest extends TestCase
 {
@@ -93,7 +93,7 @@ class MariaDbDriverTest extends TestCase
         foreach (['abc', '1e3', '1.9', '70000', '65536', '0', '-1', '33 06'] as $port) {
             $_ENV['DB_PORT'] = $port;
             try {
-                Database::fromEnv(['driver' => 'mariadb']);
+                Database::fromEnv(['driver' => 'mariadb', 'pdoClass' => DsnRefusingPdo::class]);
                 $this->fail("Expected ConnectionException for DB_PORT={$port}");
             } catch (ConnectionException $e) {
                 $this->assertSame('Invalid config value "port": expected a whole number between 1 and 65535', $e->getDebugMessage());
@@ -105,10 +105,11 @@ class MariaDbDriverTest extends TestCase
         foreach (['' => 3306, '   ' => 3306, " 59998\r\n" => 59998] as $value => $expected) {
             $_ENV['DB_PORT'] = $value;
             try {
-                Database::fromEnv(['driver' => 'mariadb', 'host' => '127.0.0.1', 'password' => 'wrong-on-purpose']);
+                Database::fromEnv(['driver' => 'mariadb', 'pdoClass' => DsnRefusingPdo::class, 'host' => '127.0.0.1', 'password' => 'wrong-on-purpose']);
                 $this->fail('Expected ConnectionException: wrong password or nothing listening');
             } catch (ConnectionException $e) {
                 $this->assertStringContainsString("MariaDB connection to 127.0.0.1:{$expected} failed", (string) $e->getDebugMessage());
+                $this->assertStringContainsString(";port={$expected};", (string) DsnRefusingPdo::$dsn);
             }
         }
 
@@ -126,7 +127,7 @@ class MariaDbDriverTest extends TestCase
     public function testAcceptsANumericStringAsPort(): void
     {
         try {
-            new MariaDbDriver(['host' => '127.0.0.1', 'port' => '59999', 'database' => 'app', 'username' => 'root', 'password' => 'x']);
+            new MariaDbDriver(['host' => '127.0.0.1', 'port' => '59999', 'database' => 'app', 'username' => 'root', 'password' => 'x', 'pdoClass' => DsnRefusingPdo::class]);
             $this->fail('Expected ConnectionException: nothing listens there');
         } catch (ConnectionException $e) {
             $this->assertStringContainsString('MariaDB connection to 127.0.0.1:59999 failed', (string) $e->getDebugMessage());
@@ -170,7 +171,7 @@ class MariaDbDriverTest extends TestCase
      */
     public function testAnEmptyHostDatabaseOrUsernameCountsAsMissing(): void
     {
-        $config = ['host' => '127.0.0.1', 'port' => 59999, 'database' => 'test', 'username' => 'root', 'password' => ''];
+        $config = ['host' => '127.0.0.1', 'port' => 59999, 'database' => 'test', 'username' => 'root', 'password' => '', 'pdoClass' => DsnRefusingPdo::class];
         foreach (['host', 'database', 'username'] as $key) {
             try {
                 new MariaDbDriver([$key => ''] + $config);
@@ -214,7 +215,7 @@ class MariaDbDriverTest extends TestCase
         $_ENV['DB_PASSWORD'] = 'testpass';
 
         try {
-            Database::fromEnv(['driver' => 'mariadb']);
+            Database::fromEnv(['driver' => 'mariadb', 'pdoClass' => DsnRefusingPdo::class]);
             $this->fail('Expected ConnectionException');
         } catch (ConnectionException $e) {
             $this->assertStringStartsWith('MariaDB connection to 127.0.0.1:59991 failed', (string) $e->getDebugMessage());
@@ -232,7 +233,7 @@ class MariaDbDriverTest extends TestCase
         putenv('DB_USERNAME=' . self::NOBODY);
 
         try {
-            Database::fromEnv(['driver' => 'mariadb']);
+            Database::fromEnv(['driver' => 'mariadb', 'pdoClass' => DsnRefusingPdo::class]);
             $this->fail('Expected ConnectionException');
         } catch (ConnectionException $e) {
             $this->assertStringStartsWith('MariaDB connection to 127.0.0.1:59992 failed', (string) $e->getDebugMessage());
@@ -251,7 +252,7 @@ class MariaDbDriverTest extends TestCase
         $_ENV['DB_USERNAME'] = self::NOBODY;
 
         try {
-            Database::fromEnv(['driver' => 'mariadb']);
+            Database::fromEnv(['driver' => 'mariadb', 'pdoClass' => DsnRefusingPdo::class]);
             $this->fail('Expected ConnectionException');
         } catch (ConnectionException $e) {
             $this->assertStringStartsWith('MariaDB connection to 127.0.0.1:59993 failed', (string) $e->getDebugMessage());
@@ -272,7 +273,7 @@ class MariaDbDriverTest extends TestCase
         $_ENV['DB_USERNAME'] = self::NOBODY;
 
         try {
-            Database::fromEnv(['driver' => 'mariadb']);
+            Database::fromEnv(['driver' => 'mariadb', 'pdoClass' => DsnRefusingPdo::class]);
             $this->fail('Expected ConnectionException: nothing listens on the port');
         } catch (ConnectionException $e) {
             $this->assertStringStartsWith('MariaDB connection to 127.0.0.1:59999 failed', (string) $e->getDebugMessage());
@@ -295,7 +296,7 @@ class MariaDbDriverTest extends TestCase
 
         // fromEnv(): what is passed counts instead of the variable ...
         try {
-            Database::fromEnv(['driver' => 'mariadb', 'host' => '127.0.0.1', 'port' => 59994, 'username' => self::NOBODY]);
+            Database::fromEnv(['driver' => 'mariadb', 'pdoClass' => DsnRefusingPdo::class, 'host' => '127.0.0.1', 'port' => 59994, 'username' => self::NOBODY]);
             $this->fail('Expected ConnectionException: nothing listens on the port');
         } catch (ConnectionException $e) {
             $this->assertStringStartsWith('MariaDB connection to 127.0.0.1:59994 failed', (string) $e->getDebugMessage());
@@ -304,7 +305,7 @@ class MariaDbDriverTest extends TestCase
 
         // ... also null: an explicit null is a missing value, not "ask the environment"
         try {
-            Database::fromEnv(['driver' => 'mariadb', 'host' => null]);
+            Database::fromEnv(['driver' => 'mariadb', 'pdoClass' => DsnRefusingPdo::class, 'host' => null]);
             $this->fail('Expected ConnectionException: the host was passed as null');
         } catch (ConnectionException $e) {
             $this->assertSame('Missing required config: host, database, or username', $e->getDebugMessage());
@@ -340,6 +341,7 @@ class MariaDbDriverTest extends TestCase
                 'database' => 'test',
                 'username' => self::NOBODY,
                 'port' => 59994,
+                'pdoClass' => DsnRefusingPdo::class,
             ]);
             $this->fail('Expected ConnectionException');
         } catch (ConnectionException $e) {
@@ -355,7 +357,7 @@ class MariaDbDriverTest extends TestCase
         $_ENV['DB_PORT'] = '59996';
 
         try {
-            Database::fromEnv(['driver' => 'mariadb', 'port' => 59997, 'password' => 'wrong-on-purpose']);
+            Database::fromEnv(['driver' => 'mariadb', 'pdoClass' => DsnRefusingPdo::class, 'port' => 59997, 'password' => 'wrong-on-purpose']);
             $this->fail('Expected ConnectionException: nothing listens there');
         } catch (ConnectionException $e) {
             $this->assertStringContainsString(':59997', (string) $e->getDebugMessage());
@@ -371,7 +373,7 @@ class MariaDbDriverTest extends TestCase
         $_ENV['DB_PORT'] = '59996';
 
         try {
-            Database::fromEnv(['driver' => 'mariadb']);
+            Database::fromEnv(['driver' => 'mariadb', 'pdoClass' => DsnRefusingPdo::class]);
             $this->fail('Expected ConnectionException');
         } catch (ConnectionException $e) {
             $this->assertStringStartsWith('MariaDB connection to 127.0.0.1:59996 failed', (string) $e->getDebugMessage());

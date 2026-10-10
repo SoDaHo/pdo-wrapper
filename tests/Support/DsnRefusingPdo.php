@@ -8,9 +8,9 @@ use PDO;
 use PDOException;
 
 /**
- * A PDO class that keeps the DSN it is given and refuses every connection: for the tests of what
- * reaches the connection (host, port) without a connection attempt - nothing that listens on a port
- * of the machine can answer them.
+ * A PDO class that keeps the DSN it is given and refuses every connection, as pdo_mysql reports a
+ * refused TCP connection (HY000, 2002): for the tests of what reaches the connection (host, port)
+ * without a connection attempt - nothing that listens on a port of the machine can answer them.
  */
 final class DsnRefusingPdo extends PDO
 {
@@ -24,6 +24,10 @@ final class DsnRefusingPdo extends PDO
     {
         self::$dsn = $dsn;
 
-        throw new PDOException('connection refused (fixture)');
+        // As pdo_mysql reports a refused TCP connection: the codes in the message, the code and errorInfo
+        $refused = new PDOException('SQLSTATE[HY000] [2002] Connection refused (fixture)', 2002);
+        $refused->errorInfo = ['HY000', 2002, 'Connection refused (fixture)'];
+
+        throw $refused;
     }
 }
