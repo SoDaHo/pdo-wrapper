@@ -839,11 +839,12 @@ class QueryBuilder
 
     /**
      * A name the builder renders quoted (a column, a string entry's alias) as a comparison key.
-     * MariaDB compares column names without case: folded to lower case.
+     * MariaDB compares column names without case, in every script: folded to lower case with
+     * mbstring - "Ä" and "ä" are one name, "a" and "ä" two (measured on 10.11).
      */
     private function quotedNameKey(string $name): string
     {
-        return strtolower($name);
+        return mb_strtolower($name, 'UTF-8');
     }
 
     /**

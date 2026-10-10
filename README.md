@@ -18,7 +18,7 @@ Since 3.0 the library supports MariaDB only; the drivers for MySQL, PostgreSQL a
 composer require sodaho/pdo-wrapper
 ```
 
-Requires PHP 8.5, pdo_mysql built on mysqlnd (the default of PHP's own builds), and MariaDB 10.11 or later.
+Requires PHP 8.5, pdo_mysql built on mysqlnd (the default of PHP's own builds), mbstring, and MariaDB 10.11 or later.
 
 ## Quick Start
 
@@ -1110,6 +1110,7 @@ These limitations keep the QueryBuilder simple and predictable. For complex quer
 
 - PHP 8.5 or a later 8.x (`^8.5`)
 - PDO and pdo_mysql, built on mysqlnd
+- mbstring (since 3.2: the builder compares the names of output columns without case, in every script, as MariaDB does)
 - MariaDB 10.11 or later
 
 ## Testing

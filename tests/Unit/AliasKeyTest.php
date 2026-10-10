@@ -51,14 +51,23 @@ class AliasKeyTest extends TestCase
         $this->assertSame('SELECT COUNT(*) as aggregate FROM (SELECT COUNT(*) AS zähler FROM `t` GROUP BY `x` HAVING `zähler` > ?) as grouped', $sql);
     }
 
+    /**
+     * MariaDB takes "Ä" and "ä" for one name (measured: 1060 Duplicate column name), "a" and "ä"
+     * for two: so does the comparison.
+     */
     public function testTwoEntriesWithTheSameNonAsciiAliasAreAConflictForDistinctCount(): void
     {
-        try {
-            $this->table()->select(['a as ä', 'b as ä'])->distinct()->count();
-            $this->fail('Expected QueryException');
-        } catch (QueryException $e) {
-            $this->assertStringContainsString('"ä" appears twice as an output name', (string) $e->getDebugMessage());
+        foreach ([['a as ä', 'b as ä'], ['a as Ä', 'b as ä'], ['a as ÄRGER', 'b as ärger']] as $entries) {
+            try {
+                $this->table()->select($entries)->distinct()->count();
+                $this->fail('Expected QueryException: ' . implode(', ', $entries));
+            } catch (QueryException $e) {
+                $this->assertStringContainsString('appears twice as an output name', (string) $e->getDebugMessage(), implode(', ', $entries));
+            }
         }
+
+        $sql = $this->countSql($this->table()->select(['a as a', 'b as ä'])->distinct());
+        $this->assertStringContainsString('SELECT DISTINCT', $sql, 'a and ä are two names');
     }
 
     public function testAnAliasEndsTheEntry(): void

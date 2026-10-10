@@ -12,6 +12,7 @@
   ],
   "require": {
     "php": "^8.5",
+    "ext-mbstring": "*",
     "ext-pdo": "*",
     "ext-pdo_mysql": "*"
   },
