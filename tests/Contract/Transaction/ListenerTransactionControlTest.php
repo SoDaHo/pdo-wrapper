@@ -19,8 +19,9 @@ use Throwable;
  * steer transactions. A query.before, query or error listener may run transaction() or
  * updateMultiple() - which begin and end a transaction of their own inside the listener - when no
  * transaction was open as it was entered, and never beginTransaction(), commit() or rollback(). A
- * transaction.begin, transaction.commit or transaction.rollback listener may do none of it.
- * Refused calls throw a ListenerTransactionException and do nothing.
+ * transaction.begin, transaction.commit or transaction.rollback listener may do none of it, nor
+ * may a listener of a custom event (tests/Unit/Driver/CustomEventListenerTest). Refused calls
+ * throw a ListenerTransactionException and do nothing.
  */
 class ListenerTransactionControlTest extends ContractTestCase
 {

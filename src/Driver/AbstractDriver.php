@@ -1218,7 +1218,9 @@ abstract class AbstractDriver implements DatabaseInterface
      *   statement in, in autocommit, and its rollback in 'query' would take it back out;
      * - a 'transaction.begin', 'transaction.commit' or 'transaction.rollback' listener runs in the
      *   middle of the caller's transaction, on the caller's connection: nothing goes - a commit()
-     *   would commit what the caller is still building, a rollback() undo it.
+     *   would commit what the caller is still building, a rollback() undo it;
+     * - a listener of any other event - a custom driver's own (knownEvents()) - may run in the
+     *   middle of anything: nothing goes either (fail-closed).
      *
      * @param bool $closedForm The call is transaction() or updateMultiple(), about to begin a transaction it ends itself
      *

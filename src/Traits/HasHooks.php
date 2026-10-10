@@ -110,7 +110,8 @@ use Sodaho\PdoWrapper\Exception\DatabaseException;
  * its rollback in 'query' would take it back out. A 'transaction.begin', 'transaction.commit' or
  * 'transaction.rollback' listener runs in the middle of the caller's transaction, on the caller's
  * connection, and may do none of it: its commit() would commit what the caller is still building,
- * its rollback() undo it. A refused call - also from any listener running inside a refusing one,
+ * its rollback() undo it - nor may a listener of any other event, a custom driver's own
+ * (knownEvents()), which may run in the middle of anything. A refused call - also from any listener running inside a refusing one,
  * an end listener included - throws a ListenerTransactionException and does nothing
  * (updateMultiple() counts as transaction control only where it would begin its own transaction:
  * inside an open one it runs its statements). The exception is that listener's like any other: it stops a

@@ -13,7 +13,8 @@ use Throwable;
  * transaction has ended); a 'query.before', 'query' or 'error' listener may run transaction() and
  * updateMultiple() when no transaction was open as it was entered, never beginTransaction(),
  * commit() or rollback(); a 'transaction.begin', 'transaction.commit' or 'transaction.rollback'
- * listener may do none of it. A listener that may not refuses for every listener inside it, an
+ * listener may do none of it, nor may a listener of any other event (a custom driver's own,
+ * knownEvents()). A listener that may not refuses for every listener inside it, an
  * end listener included. A statement listener runs in the middle of the caller's statement, a
  * begin, commit or rollback listener in the middle of the caller's transaction, on the caller's
  * connection: a commit() there committed what the caller was still building, a rollback() undid
