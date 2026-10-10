@@ -6,6 +6,7 @@ namespace Sodaho\PdoWrapper\Tests\Contract\Query;
 
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Tests\Contract\ContractTestCase;
+use Sodaho\PdoWrapper\Tests\Support\Untyped;
 
 /**
  * updateMultiple() checks every row before it sends anything: a refused row - one without the key
@@ -33,7 +34,7 @@ class UpdateMultiplePreflightTest extends ContractTestCase
     }
 
     /**
-     * @return array<string, array{list<array<string, mixed>>, string, string}>
+     * @return array<string, array{list<array<array-key, mixed>>, string, string}>
      */
     public static function refusedBatches(): array
     {
@@ -47,7 +48,7 @@ class UpdateMultiplePreflightTest extends ContractTestCase
     }
 
     /**
-     * @param list<array<string, mixed>> $rows
+     * @param list<array<array-key, mixed>> $rows
      */
     #[\PHPUnit\Framework\Attributes\DataProvider('refusedBatches')]
     public function testARefusedRowLeavesNothingWrittenInsideTheCallersTransaction(array $rows, string $keyColumn, string $why): void
@@ -55,7 +56,7 @@ class UpdateMultiplePreflightTest extends ContractTestCase
         $this->db->beginTransaction();
         $this->sent = [];
         try {
-            $this->db->updateMultiple('batch', $rows, $keyColumn);
+            Untyped::call($this->db->updateMultiple(...), 'batch', $rows, $keyColumn); // a numeric key is no array<string, mixed>
             $this->fail('Expected QueryException');
         } catch (QueryException $e) {
             $this->assertStringContainsString($why, (string) $e->getDebugMessage());
@@ -67,13 +68,13 @@ class UpdateMultiplePreflightTest extends ContractTestCase
     }
 
     /**
-     * @param list<array<string, mixed>> $rows
+     * @param list<array<array-key, mixed>> $rows
      */
     #[\PHPUnit\Framework\Attributes\DataProvider('refusedBatches')]
     public function testARefusedRowBeginsNoTransactionOfItsOwn(array $rows, string $keyColumn, string $why): void
     {
         try {
-            $this->db->updateMultiple('batch', $rows, $keyColumn);
+            Untyped::call($this->db->updateMultiple(...), 'batch', $rows, $keyColumn); // a numeric key is no array<string, mixed>
             $this->fail('Expected QueryException');
         } catch (QueryException $e) {
             $this->assertStringContainsString($why, (string) $e->getDebugMessage());
