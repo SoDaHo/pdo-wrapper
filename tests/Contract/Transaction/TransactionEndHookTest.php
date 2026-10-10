@@ -10,7 +10,6 @@ use PDO;
 use PDOException;
 use RuntimeException;
 use Sodaho\PdoWrapper\DatabaseInterface;
-use Sodaho\PdoWrapper\Driver\AbstractDriver;
 use Sodaho\PdoWrapper\Exception\CommitHookException;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Exception\TransactionException;
@@ -725,7 +724,7 @@ class TransactionEndHookTest extends ContractTestCase
     /**
      * The test's driver ($this->db, on the users table) with the recording listeners (see recording()).
      */
-    private function driver(): AbstractDriver
+    private function driver(): DatabaseInterface
     {
         return $this->recording($this->db);
     }
@@ -738,7 +737,7 @@ class TransactionEndHookTest extends ContractTestCase
      *
      * @param class-string<T> $pdoClass
      *
-     * @return array{AbstractDriver, T}
+     * @return array{DatabaseInterface, T}
      */
     private function driverOn(string $pdoClass): array
     {
@@ -762,7 +761,7 @@ class TransactionEndHookTest extends ContractTestCase
      * The driver with listeners that record 'commit', 'rollback' and 'end' in order, the end
      * payloads, and 'error' hook contexts.
      */
-    private function recording(AbstractDriver $db): AbstractDriver
+    private function recording(DatabaseInterface $db): DatabaseInterface
     {
         $this->events = [];
         $this->ends = [];

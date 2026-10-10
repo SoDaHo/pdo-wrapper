@@ -24,7 +24,6 @@ use Sodaho\PdoWrapper\Exception\RedactedPdoException;
 use Sodaho\PdoWrapper\Exception\TransactionException;
 use Sodaho\PdoWrapper\Exception\TransactionOpenException;
 use Sodaho\PdoWrapper\Exception\UniqueViolationException;
-use Sodaho\PdoWrapper\InternalMethods;
 use Sodaho\PdoWrapper\Query\FloatText;
 use Sodaho\PdoWrapper\Query\RawExpression;
 use Sodaho\PdoWrapper\Query\Sql;
@@ -40,7 +39,7 @@ use WeakReference;
  * Provides PDO wrapper functionality, CRUD helpers, transactions,
  * and hooks. Extend this class for database-specific drivers.
  */
-abstract class AbstractDriver implements DatabaseInterface, InternalMethods
+abstract class AbstractDriver implements DatabaseInterface
 {
     use HasHooks;
 
@@ -2890,7 +2889,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
     }
 
     /**
-     * Insert a row only when a condition holds, in one statement (see InternalMethods::insertWhen()).
+     * Insert a row only when a condition holds, in one statement (see DatabaseInterface::insertWhen()).
      *
      * Renders `INSERT INTO table (...) SELECT ?, ?, ... FROM DUAL WHERE (condition)` (MariaDB needs
      * `FROM DUAL` before a WHERE without a table), with $update followed by
@@ -2915,7 +2914,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
     }
 
     /**
-     * insertWhen() with `RETURNING` (see InternalMethods::insertWhenReturning()).
+     * insertWhen() with `RETURNING` (see DatabaseInterface::insertWhenReturning()).
      *
      * @param string $table Table name (supports schema.table format)
      * @param array<string, mixed> $data Column => value pairs of the row
@@ -2936,7 +2935,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
     }
 
     /**
-     * Insert a row, or change the row it collides with (see InternalMethods::upsert()).
+     * Insert a row, or change the row it collides with (see DatabaseInterface::upsert()).
      *
      * @param string $table Table name (supports schema.table format)
      * @param array<string, mixed> $row Column => value pairs of the row
@@ -2954,7 +2953,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
     }
 
     /**
-     * upsert() with `RETURNING` (see InternalMethods::upsertReturning()).
+     * upsert() with `RETURNING` (see DatabaseInterface::upsertReturning()).
      *
      * @param string $table Table name (supports schema.table format)
      * @param array<string, mixed> $row Column => value pairs of the row
@@ -3117,7 +3116,7 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
     }
 
     /**
-     * Insert a row unless it collides with an existing one (see InternalMethods::insertIgnore()).
+     * Insert a row unless it collides with an existing one (see DatabaseInterface::insertIgnore()).
      *
      * `ON DUPLICATE KEY UPDATE col = col` on the row's first column: a no-op whichever key
      * collided, reported as 0 affected rows.

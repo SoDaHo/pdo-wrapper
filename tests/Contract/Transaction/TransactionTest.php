@@ -1144,7 +1144,7 @@ class TransactionTest extends ContractTestCase
      * counted there - after a successful commit there must be none -, and its commit() and
      * rollBack() fail on demand.
      */
-    private function scenarioDriver(): AbstractDriver
+    private function scenarioDriver(): DatabaseInterface
     {
         $db = $this->connect(['pdoClass' => ScenarioPdo::class]);
         $pdo = $db->getPdo();

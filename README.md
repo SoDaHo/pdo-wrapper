@@ -199,6 +199,8 @@ $pdo = $db->getPdo();
 
 ## CRUD Methods
 
+Every method of this README is on `DatabaseInterface` - since 3.2 also `insertWhen()`, `insertWhenReturning()`, `upsert()`, `upsertReturning()`, `insertIgnore()`, `updateMultiple()`, `lastInsertId()` and `utcNow()`: type against the interface.
+
 ### Insert
 
 ```php

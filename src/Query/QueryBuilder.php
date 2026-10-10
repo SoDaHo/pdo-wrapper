@@ -8,7 +8,6 @@ use PDO;
 use Sodaho\PdoWrapper\DatabaseInterface;
 use Sodaho\PdoWrapper\Exception\LockOutsideTransactionException;
 use Sodaho\PdoWrapper\Exception\QueryException;
-use Sodaho\PdoWrapper\InternalMethods;
 
 /**
  * Fluent query builder for constructing SQL queries.
@@ -35,7 +34,7 @@ class QueryBuilder
      */
     private const LIKE_ESCAPE = '\\';
 
-    private DatabaseInterface&InternalMethods $db;
+    private DatabaseInterface $db;
     private string $table;
 
     /** @var array<int, string|RawExpression> */
@@ -67,10 +66,10 @@ class QueryBuilder
     /**
      * Create a new query builder instance.
      *
-     * @param DatabaseInterface&InternalMethods $db Database connection (a driver of this library)
+     * @param DatabaseInterface $db Database connection
      * @param string $table Table name
      */
-    public function __construct(DatabaseInterface&InternalMethods $db, string $table)
+    public function __construct(DatabaseInterface $db, string $table)
     {
         $this->db = $db;
         $this->table = $table;
@@ -1086,7 +1085,7 @@ class QueryBuilder
     }
 
     /**
-     * Insert a row only when a condition holds, in one statement (see InternalMethods::insertWhen()).
+     * Insert a row only when a condition holds, in one statement (see DatabaseInterface::insertWhen()).
      *
      * The condition is the argument: a where*()/whereRaw(), join, groupBy()/having(), orderBy(),
      * limit()/offset(), distinct() or row lock set on this builder is not part of the statement, so
@@ -1133,7 +1132,7 @@ class QueryBuilder
     }
 
     /**
-     * Insert a row unless it collides with an existing one (see InternalMethods::insertIgnore()).
+     * Insert a row unless it collides with an existing one (see DatabaseInterface::insertIgnore()).
      *
      * A where*()/whereRaw(), join, groupBy()/having(), orderBy(), limit()/offset(), distinct() or
      * row lock set on this builder is not part of the statement, so it throws instead of being
@@ -1155,7 +1154,7 @@ class QueryBuilder
     /**
      * Insert a row, or change the row it collides with on any unique key or the primary key, in
      * one statement: `INSERT INTO t (...) VALUES (...) ON DUPLICATE KEY UPDATE col = ?, ...` (see
-     * InternalMethods::upsert()). MariaDB has no conflict target: a collision on any unique key
+     * DatabaseInterface::upsert()). MariaDB has no conflict target: a collision on any unique key
      * counts. The update is rendered in the order of $update and applied from left to right; a
      * value may be Database::raw() with bindings, Database::value('col') is the value the row
      * would have been inserted with. Clauses set on the builder throw, as for insertIgnore().

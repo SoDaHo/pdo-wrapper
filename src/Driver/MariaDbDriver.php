@@ -280,7 +280,7 @@ class MariaDbDriver extends AbstractDriver
     }
 
     /**
-     * Insert a row unless it collides with an existing one (see InternalMethods::insertIgnore()).
+     * Insert a row unless it collides with an existing one (see DatabaseInterface::insertIgnore()).
      *
      * `ON DUPLICATE KEY UPDATE col = col` reports 1 affected row for an inserted row and 0 for an
      * existing one - unless the connection counts matched rows (the driver's ATTR_FOUND_ROWS
@@ -311,7 +311,7 @@ class MariaDbDriver extends AbstractDriver
     }
 
     /**
-     * Insert a row, or change the row it collides with (see InternalMethods::upsert()).
+     * Insert a row, or change the row it collides with (see DatabaseInterface::upsert()).
      *
      * On a connection that counts matched rows (ATTR_FOUND_ROWS) the server reports 1 for an
      * unchanged existing row, as for an inserted one (measured on 10.11, 11.4 and 12.3): the
@@ -331,7 +331,7 @@ class MariaDbDriver extends AbstractDriver
     }
 
     /**
-     * Insert a row only when a condition holds (see InternalMethods::insertWhen()). With $update,
+     * Insert a row only when a condition holds (see DatabaseInterface::insertWhen()). With $update,
      * not on a connection that counts matched rows (see upsert()).
      *
      * @param array<string, mixed> $data Column => value pairs of the row

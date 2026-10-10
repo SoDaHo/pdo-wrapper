@@ -6,7 +6,6 @@ namespace Sodaho\PdoWrapper\Tests\Contract\Reconnect;
 
 use RuntimeException;
 use Sodaho\PdoWrapper\DatabaseInterface;
-use Sodaho\PdoWrapper\Driver\AbstractDriver;
 use Sodaho\PdoWrapper\Exception\CommitHookException;
 use Sodaho\PdoWrapper\Exception\NamedLocksHeldException;
 use Sodaho\PdoWrapper\Exception\TransactionOpenException;
@@ -150,7 +149,6 @@ class ReconnectOpenTransactionTest extends ContractTestCase
     public function testNamedLocksAreRefusedFirst(): void
     {
         $db = $this->db;
-        $this->assertInstanceOf(AbstractDriver::class, $db);
         $this->assertTrue($db->namedLock('reconnect-open'));
         $db->beginTransaction();
         try {

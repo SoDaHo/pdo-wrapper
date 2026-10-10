@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Sodaho\PdoWrapper\Tests\Contract;
 
 use PHPUnit\Framework\Attributes\DataProvider;
-use Sodaho\PdoWrapper\Driver\AbstractDriver;
+use Sodaho\PdoWrapper\DatabaseInterface;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Tests\Support\ReportingPdo;
 
@@ -115,7 +115,7 @@ class CrudTest extends ContractTestCase
      * A driver whose PDO object reports as the last insert ID what a test wants a database to have
      * reported.
      */
-    private function driverReporting(string $id): AbstractDriver
+    private function driverReporting(string $id): DatabaseInterface
     {
         ReportingPdo::$reported = $id;
 

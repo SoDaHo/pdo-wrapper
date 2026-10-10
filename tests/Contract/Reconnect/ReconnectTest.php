@@ -55,7 +55,7 @@ class ReconnectTest extends ContractTestCase
         unset($this->observer);
     }
 
-    protected function listenTo(AbstractDriver $db): AbstractDriver
+    protected function listenTo(DatabaseInterface $db): DatabaseInterface
     {
         $this->events = [];
         $this->ends = [];

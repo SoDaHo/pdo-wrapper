@@ -29,6 +29,7 @@ interface DatabaseInterface
      *
      * @throws Exception\ImplicitCommitException When the statement would commit the open transaction implicitly (inside a transaction begun through this library; nothing is sent, the transaction stays open)
      * @throws Exception\QueryException When the statement fails (also when PDO reports that without an exception), when a parameter is not null, a scalar or a Stringable object, is a float INF or NAN, or is a Query\RawExpression (the statement is not sent), when the server has thrown the open transaction away (after a deadlock or a 1020 - see MariaDbDriver - nothing is sent until that transaction is ended: by rollback(), by a refused commit() that tells 'lost', and for a transaction begun on raw PDO also once PDO reports none), when the transaction begun through this library is gone or may be - the driver, asked right after an earlier failure, found it gone or could not find out, or PDO reports no transaction any more (raw PDO ended it): nothing is sent until rollback() tells its end -, or when a 'query' listener threw a PDOException ('Query hook failed': the statement did run) or a 'query.before' listener did (the statement was not sent)
+     * @throws \Throwable What a 'query.before', 'query' or 'error' listener throws otherwise (a LogicException after 32 of them inside each other), and what an error handler throws that is not about a PDO failure: both pass unchanged
      */
     public function query(string $sql, #[\SensitiveParameter] array $params = []): PDOStatement;
 
@@ -446,4 +447,162 @@ interface DatabaseInterface
      * @param string $table Table name
      */
     public function table(string $table): Query\QueryBuilder;
+
+    /**
+     * Get the last inserted ID.
+     *
+     * @param string|null $name Ignored by MariaDB (PDO's sequence name)
+     *
+     * @return string|false Last insert ID or false on failure
+     */
+    public function lastInsertId(?string $name = null): string|false;
+
+    /**
+     * Current UTC date and time at statement time, to the second, as a raw SQL expression:
+     * `UTC_TIMESTAMP()`. A zoneless value: a TIMESTAMP column would interpret it in the session's
+     * time zone; use DATETIME, or a UTC session.
+     */
+    public function utcNow(): Query\RawExpression;
+
+    /**
+     * Insert a row only when a condition holds, in one statement:
+     * `INSERT INTO table (...) SELECT ?, ?, ... FROM DUAL WHERE (condition)`.
+     *
+     * Check and insert see the same snapshot, but two concurrent statements can still both see
+     * the condition true and both insert (READ COMMITTED / REPEATABLE READ): an invariant such as
+     * "one open code per user" needs a UNIQUE constraint, a row lock (lockForUpdate()) or
+     * SERIALIZABLE on top.
+     *
+     * The condition is trusted developer SQL with ? placeholders, like whereRaw(); it may look at
+     * the target table itself (`NOT EXISTS (SELECT 1 FROM codes WHERE user_id = ? AND used_at IS NULL)`).
+     * Binding order: the row's values first (in column order), then $bindings. A RawExpression in
+     * $data is inlined as in insert() (but inside a SELECT list: `raw('DEFAULT')` is not valid there);
+     * in $bindings it is not accepted. A TEMPORARY target table cannot be read by its own
+     * condition (error 1137). SECURITY: never build the condition from user input; user input
+     * belongs in $bindings. After a return of 0, lastInsertId() is meaningless: it reports an
+     * older value or 0.
+     *
+     * With $update, a row that collides with an existing one on any unique key changes that row
+     * instead (`... WHERE (condition) ON DUPLICATE KEY UPDATE ...`, see upsert()); the update's
+     * values are bound after the condition's. The return is then MariaDB's count: 1 inserted,
+     * 2 updated, 0 neither - the condition was false, or the row already held those values
+     * (insertWhenReturning() tells them apart). On a connection opened with ATTR_FOUND_ROWS an
+     * unchanged row counts 1 like an insert, and the method throws when $update is given; so it
+     * does on a persistent connection, which an earlier request may have opened with that option.
+     *
+     * @param string $table Table name
+     * @param array<string, mixed> $data Column => value pairs of the row
+     * @param string $condition Trusted condition SQL with ? placeholders (never built from user input)
+     * @param array<array-key, mixed> $bindings Values for the condition's placeholders, in order
+     * @param array<string, mixed> $update Column => value pairs to set on a duplicate, in this order
+     *
+     * @throws Exception\QueryException When $data or the condition is empty, a binding is a RawExpression, $update is given on a connection with ATTR_FOUND_ROWS or a persistent one, or the query fails
+     *
+     * @return int Inserted rows, 1 or 0; with $update MariaDB's count (1 inserted, 2 updated, 0 neither)
+     */
+    public function insertWhen(string $table, #[\SensitiveParameter] array $data, string $condition, #[\SensitiveParameter] array $bindings = [], #[\SensitiveParameter] array $update = []): int;
+
+    /**
+     * insertWhen() that returns the row: `... RETURNING <columns>`. Null when the condition was
+     * false (nothing inserted, nothing updated); otherwise the inserted row, or with $update the
+     * existing row after the update (also when it already held those values).
+     *
+     * @param string $table Table name
+     * @param array<string, mixed> $data Column => value pairs of the row
+     * @param string $condition Trusted condition SQL with ? placeholders (never built from user input)
+     * @param array<array-key, mixed> $bindings Values for the condition's placeholders, in order
+     * @param array<string, mixed> $update Column => value pairs to set on a duplicate, in this order
+     * @param list<string|Query\RawExpression> $columns What to return: column names, '*', or expressions without bindings (Database::raw('n * 2 AS twice'))
+     *
+     * @throws Exception\QueryException As insertWhen() (not for ATTR_FOUND_ROWS or a persistent connection), and when $columns is empty or holds an expression with bindings
+     *
+     * @return array<string, mixed>|null The row, or null when the condition was false
+     */
+    public function insertWhenReturning(string $table, #[\SensitiveParameter] array $data, string $condition, #[\SensitiveParameter] array $bindings = [], #[\SensitiveParameter] array $update = [], array $columns = ['*']): ?array;
+
+    /**
+     * Insert a row, or change the row it collides with: `INSERT INTO table (...) VALUES (...)
+     * ON DUPLICATE KEY UPDATE col = ?, ...`.
+     *
+     * MariaDB takes a collision on ANY unique key or the primary key for the duplicate - there is
+     * no conflict target to name. The update's assignments are rendered in the order of $update,
+     * and MariaDB applies them from left to right: a later one sees what an earlier one set
+     * (`n = n + 1, m = n` gives m the new n). A value may be Database::raw() with bindings, and
+     * Database::value('col') is the value the row would have been inserted with. Binding order:
+     * the row's values, then the update's. The update runs the table's update triggers and locks
+     * the existing row until the transaction ends; a BEFORE UPDATE trigger that changes the row
+     * makes an unchanged upsert count 2.
+     *
+     * Returns MariaDB's count: 1 inserted, 2 updated, 0 the existing row already held those
+     * values. On a connection opened with ATTR_FOUND_ROWS the server reports 1 for an unchanged
+     * row as well, and the method throws - also on a persistent connection, which PDO may hand
+     * back opened with that option by an earlier request.
+     *
+     * @param string $table Table name
+     * @param array<string, mixed> $row Column => value pairs of the row
+     * @param array<string, mixed> $update Column => value pairs to set on a duplicate, in this order
+     *
+     * @throws Exception\QueryException When $row or $update is empty, the connection counts matched rows (ATTR_FOUND_ROWS) or may (a persistent one), or the query fails
+     *
+     * @return int 1 inserted, 2 updated, 0 unchanged
+     */
+    public function upsert(string $table, #[\SensitiveParameter] array $row, #[\SensitiveParameter] array $update): int;
+
+    /**
+     * upsert() that returns the row after the statement: `... RETURNING <columns>` - the inserted
+     * row, or the existing one after the update (also when it already held those values; MariaDB
+     * returns it in every case, measured on 10.11, 11.4 and 12.3).
+     *
+     * @param string $table Table name
+     * @param array<string, mixed> $row Column => value pairs of the row
+     * @param array<string, mixed> $update Column => value pairs to set on a duplicate, in this order
+     * @param list<string|Query\RawExpression> $columns What to return: column names, '*', or expressions without bindings
+     *
+     * @throws Exception\QueryException When $row, $update or $columns is empty, a column is an expression with bindings, or the query fails
+     *
+     * @return array<string, mixed> The row
+     */
+    public function upsertReturning(string $table, #[\SensitiveParameter] array $row, #[\SensitiveParameter] array $update, array $columns = ['*']): array;
+
+    /**
+     * Insert a row unless it collides with an existing one: on a duplicate of ANY unique key or
+     * of the primary key of the table the row is not inserted, and no exception is thrown.
+     * `INSERT ... ON DUPLICATE KEY UPDATE <first column> = <first column>` (not INSERT IGNORE,
+     * which would also swallow other errors); that form locks the existing row until the
+     * transaction ends and runs the table's update triggers for it. On a connection opened with
+     * the driver's ATTR_FOUND_ROWS option the method throws: the server reports 1 affected row for
+     * an existing row as well; so it does on a persistent connection, which an earlier request
+     * may have opened with that option. Every other failure (NOT NULL, foreign key, unknown column) throws
+     * as in insert().
+     *
+     * Returns the inserted rows, 1 or 0, not an id: after a return of 0, lastInsertId() is
+     * meaningless, and the skipped insert may still have used up an auto-increment value. A
+     * RawExpression in $data is inlined as in insert().
+     *
+     * @param string $table Table name
+     * @param array<string, mixed> $data Column => value pairs of the row
+     *
+     * @throws Exception\QueryException When $data is empty, the query fails for another reason than a duplicate, or the connection counts matched rows (ATTR_FOUND_ROWS) or may (a persistent one)
+     *
+     * @return int Inserted rows: 1 or 0
+     */
+    public function insertIgnore(string $table, #[\SensitiveParameter] array $data): int;
+
+    /**
+     * Update multiple rows by their key column.
+     *
+     * Without an active transaction, the rows are updated in an own transaction
+     * with the same outcomes as transaction().
+     *
+     * @param string $table Table name
+     * @param array<int, array<string, mixed>> $rows Array of rows with key column
+     * @param string $keyColumn Column to match rows (default: 'id')
+     *
+     * @throws Exception\QueryException
+     * @throws Exception\TransactionException When the own transaction's commit failed, or the own transaction was ended while the batch ran - a listener's reconnect(), an error handler inside a PDO call (a CommitFailedException with outcome 'lost'; what is open then is left alone) -, and when called from inside a listener where it would begin its own transaction (ListenerTransactionException)
+     * @throws Exception\CommitHookException When committed, but a transaction.commit or transaction.end listener failed or the connection state after a commit listener could not be verified
+     *
+     * @return int Number of affected rows
+     */
+    public function updateMultiple(string $table, #[\SensitiveParameter] array $rows, string $keyColumn = 'id'): int;
 }

@@ -7,7 +7,6 @@ namespace Sodaho\PdoWrapper\Tests\Contract;
 use PDO;
 use PHPUnit\Framework\TestCase;
 use Sodaho\PdoWrapper\DatabaseInterface;
-use Sodaho\PdoWrapper\Driver\AbstractDriver;
 use Sodaho\PdoWrapper\Tests\Support\Binding\DriverBinding;
 use Sodaho\PdoWrapper\Tests\Support\Binding\MariaDbBinding;
 use UnexpectedValueException;
@@ -28,7 +27,7 @@ abstract class ContractTestCase extends TestCase
 
     private static ?DatabaseInterface $janitor = null;
 
-    final protected AbstractDriver $db;
+    final protected DatabaseInterface $db;
 
     /** @var list<string> */
     private array $created = [];
@@ -69,7 +68,7 @@ abstract class ContractTestCase extends TestCase
      *
      * @param array{pdoClass?: class-string<PDO>, options?: array<int, mixed>} $extra
      */
-    protected function connect(array $extra = []): AbstractDriver
+    protected function connect(array $extra = []): DatabaseInterface
     {
         return self::binding()->connect($extra);
     }
