@@ -6,6 +6,7 @@ namespace Sodaho\PdoWrapper\Query;
 
 use PDO;
 use Sodaho\PdoWrapper\DatabaseInterface;
+use Sodaho\PdoWrapper\Exception\LockOutsideTransactionException;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\InternalMethods;
 
@@ -130,8 +131,9 @@ class QueryBuilder
      * rows it reads - in REPEATABLE READ the gaps between them too -, so a count followed by an
      * insert in the same transaction is not overtaken by another transaction's insert. Not
      * allowed together with distinct(), groupBy() or having() (QueryException): such a result is
-     * not the rows the lock would hold. Use inside a transaction, otherwise the lock ends with the
-     * statement.
+     * not the rows the lock would hold. Only inside a transaction: outside of one the lock would end
+     * with its own statement, and get(), first(), exists() and the aggregates refuse it with a
+     * LockOutsideTransactionException before anything is sent (toSql() renders it all the same).
      */
     public function lockForUpdate(): self
     {
@@ -711,6 +713,7 @@ class QueryBuilder
     /**
      * Execute the query and get all results.
      *
+     * @throws LockOutsideTransactionException When a row lock is requested outside of a transaction (nothing is sent)
      * @throws QueryException On query failure
      *
      * @return array<int, array<string, mixed>> Array of rows as associative arrays
@@ -718,6 +721,7 @@ class QueryBuilder
     public function get(): array
     {
         [$sql, $params] = $this->toSql();
+        $this->refuseALockOutsideATransaction();
         $stmt = $this->db->query($sql, $params);
 
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -748,12 +752,14 @@ class QueryBuilder
      * `count() > 0` instead, which drops the offset as before.
      *
      * @throws QueryException When a row lock is combined with distinct(), groupBy() or having()
+     * @throws LockOutsideTransactionException When a row lock is requested outside of a transaction (nothing is sent)
      *
      * @return bool True if at least one record exists
      */
     public function exists(): bool
     {
         $this->assertTheLockFitsTheResult();
+        $this->refuseALockOutsideATransaction();
 
         // HAVING without GROUP BY makes the whole set one group (see count()): keep the COUNT(*)
         // evaluation there.
@@ -993,8 +999,9 @@ class QueryBuilder
     private function aggregate(string $function, string $column): mixed
     {
         // The lock stays (see lockForUpdate()); the combinations a select refuses are refused here
-        // before any of them is taken apart
+        // before any of them is taken apart, and so is a lock outside of a transaction
         $this->assertTheLockFitsTheResult();
+        $this->refuseALockOutsideATransaction();
 
         $query = clone $this;
         $query->limit = null;
@@ -1575,6 +1582,41 @@ class QueryBuilder
     private function unlimitedLimit(): string
     {
         return ' LIMIT 18446744073709551615';
+    }
+
+    /**
+     * A row lock outside of a transaction ends with its own statement: by the time the caller acts on
+     * the rows, nothing holds them. Refused before anything is sent - no 'query.before' fires. Open
+     * is a transaction the library began (currentTransaction(): when the server has ended it,
+     * query() refuses the statement and says so) or one PDO reports (begun on raw PDO); a state
+     * that cannot be read is none (fail-closed, the cause as previous). With autocommit switched
+     * off and nothing sent yet PDO reports none, although the SELECT would open one: refused as
+     * well - begin the transaction explicitly.
+     *
+     * @throws LockOutsideTransactionException
+     */
+    private function refuseALockOutsideATransaction(): void
+    {
+        if ($this->lock === null) {
+            return;
+        }
+        try {
+            if ($this->db->currentTransaction() !== null || $this->db->inTransaction()) {
+                return;
+            }
+            $unreadable = null;
+        } catch (\Throwable $e) {
+            $unreadable = $e;
+        }
+
+        throw new LockOutsideTransactionException(
+            previous: $unreadable,
+            debugMessage: sprintf(
+                '%s outside of a transaction: the lock would end with its own statement, and nothing would hold the rows afterwards. Read them inside transaction() or after beginTransaction()%s.',
+                $this->lock === 'share' ? 'sharedLock()' : 'lockForUpdate()',
+                $unreadable !== null ? ' (the transaction state could not be read: the previous exception)' : ''
+            )
+        );
     }
 
     /**

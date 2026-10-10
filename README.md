@@ -435,6 +435,8 @@ $db->transaction(function ($db) use ($id) {
 
 The builder renders `FOR UPDATE` / `LOCK IN SHARE MODE`. `exists()` (`SELECT 1 ... LIMIT 1`) and the aggregates keep the lock: `count()` under `lockForUpdate()` locks the rows it reads - in `REPEATABLE READ`, the default, the gaps between them too -, so "count, then insert" in one transaction is not overtaken by another transaction's insert. A lock combined with `distinct()`, `groupBy()` or `having()` throws a `QueryException`, for the aggregates too: such a result is not the rows the lock would hold.
 
+**Only inside a transaction.** Outside of one the lock would end with its own statement, and nothing would hold the rows while the code acts on them - two requests both read "not used yet" and both redeem a one-time code. `get()`, `first()`, `exists()` and the aggregates throw a `LockOutsideTransactionException` (a `QueryException`) instead, before anything is sent (no `query.before`): open means a transaction the library began (`currentTransaction()`) or one PDO reports (begun on raw PDO); a state that cannot be read counts as none. With autocommit switched off and nothing sent yet PDO reports no transaction, although the read would open one: refused as well - begin the transaction explicitly. `toSql()` renders the lock either way.
+
 ### Group By, Having
 
 ```php
@@ -940,6 +942,7 @@ Every exception of the library carries what the database said in `$sqlState` and
 **Refusals with a class of their own** - each a subclass of what the method throws anyway, so an existing `catch` keeps seeing it; `getMessage()` is static, and `$sqlState`/`$driverCode` are `null` (nothing was sent):
 
 - `ImplicitCommitException` (a `QueryException`): a statement that would commit the open transaction implicitly, inside a transaction the library began (see [Transactions](#transactions)); `$statement` names its leading keywords (`CREATE`, `LOCK`).
+- `LockOutsideTransactionException` (a `QueryException`): a locking read outside of a transaction (see [Row Locks](#row-locks)).
 - `NamedLockReentryException` (a `QueryException`): `namedLock()` for a lock this connection holds already (see [Named Locks](#named-locks)).
 - `NamedLocksHeldException` (a `ConnectionException`): `reconnect()` while the driver holds named locks (see [Reconnecting](#reconnecting)).
 
@@ -960,7 +963,7 @@ What the library renders, and what MariaDB does with it, where that is worth kno
 |---|---|
 | Identifier quoting | backticks |
 | `update()` / `delete()` with `limit()` | `ORDER BY ... LIMIT n`; `limit()` needs an `orderBy()` |
-| `lockForUpdate()` / `sharedLock()` | `FOR UPDATE` / `LOCK IN SHARE MODE` |
+| `lockForUpdate()` / `sharedLock()` | `FOR UPDATE` / `LOCK IN SHARE MODE`; only inside a transaction |
 | `insert()` returns | the `AUTO_INCREMENT` id; 0 for a table without one; throws for an id above `PHP_INT_MAX` (`BIGINT UNSIGNED`) and for a negative id in an `AUTO_INCREMENT` column |
 | `insertIgnore()` | `ON DUPLICATE KEY UPDATE col = col`: the existing row is locked until the transaction ends and its update triggers run; throws with `ATTR_FOUND_ROWS` and on a persistent connection |
 | `sum()` / `avg()` return | a numeric string for integer and `DECIMAL` columns (`'75'`, `'1.5000'`), a float for `FLOAT`/`DOUBLE` (see "What Comes Back") |
