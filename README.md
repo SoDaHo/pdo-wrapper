@@ -735,7 +735,7 @@ Ask both: `currentTransaction()` is the library's view, `inTransaction()` PDO's.
 - **The callback calls `transaction()` or `beginTransaction()` again** - there are no nested transactions (no savepoints): the inner call throws a `TransactionException` `Failed to begin transaction` ("There is already an active transaction") before its callback runs. Left to escape, it rolls the outer transaction back like any other exception of the callback. A function that must work inside and outside a transaction asks `currentTransaction()` (or `inTransaction()`) first.
 - **A `transaction.commit` hook fails, or a `transaction.end` hook fails after the commit** (throws, or a commit hook leaves the connection in a state that cannot be verified or cleaned up) - the data **is committed**, the committed transaction is not rolled back (only what a commit hook left open is, raw), `CommitHookException` is thrown (see [Hooks](#hooks)). On the rollback and `lost` paths an end hook's failure never replaces the exception that ended the transaction.
 
-Every `TransactionException` that `commit()` itself throws is a `CommitFailedException`. Only `rolled_back` means that nothing of the transaction whose commit failed is committed; treat every other value as unclear.
+Every `TransactionException` that `commit()` itself throws is a `CommitFailedException` - except the `ListenerTransactionException` of a `commit()` called from inside a hook that may not steer a transaction, which tried nothing (see [Hooks](#hooks)). Only `rolled_back` means that nothing of the transaction whose commit failed is committed; treat every other value as unclear.
 
 ```php
 use Sodaho\PdoWrapper\DatabaseInterface;

@@ -26,7 +26,10 @@ use Throwable;
  * All of this is what the exception says when the library throws it. One that arrives through
  * commit() from elsewhere - thrown by the commit() of a caller's PDO class ('pdoClass'), or by an
  * error handler - is passed on unchanged and says nothing about the transaction: transaction()
- * and updateMultiple() end theirs as after any other failure, and nothing is committed.
+ * and updateMultiple() end theirs as after any other failed commit, and the outcome is not
+ * confirmed - the COMMIT may have taken effect before the exception was thrown. Their
+ * 'transaction.end' tells it: 'rolled_back' after a confirmed rollback, nothing committed;
+ * 'lost' (PDO reports no transaction any more, the rollback failed), the data may be committed.
  */
 class CommitHookException extends DatabaseException
 {
