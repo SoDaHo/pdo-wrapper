@@ -187,6 +187,8 @@ class QueryBuilder
         // Array syntax: where(['active' => 1, 'role' => 'admin'])
         if (is_array($column)) {
             $this->guardAgainstNumericKeys($column, 'where() with an array', 'Use where(\'column\', $value) instead.');
+            // Every entry is checked before the first is added: a refused array leaves the builder as it was,
+            // never with part of the filter (a caller that catches the exception and goes on would query with it)
             foreach ($column as $col => $val) {
                 if ($val === null) {
                     throw new QueryException(
@@ -199,7 +201,9 @@ class QueryBuilder
                         )
                     );
                 }
-                $this->where($col, '=', $val);
+            }
+            foreach ($column as $col => $val) {
+                $this->where($col, '=', $val); // a string key and a value that is not null: nothing left to refuse
             }
             return $this;
         }
