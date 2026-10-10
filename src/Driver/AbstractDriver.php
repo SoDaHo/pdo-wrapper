@@ -3442,8 +3442,10 @@ abstract class AbstractDriver implements DatabaseInterface
      * Update multiple rows by their key column.
      *
      * Each row must contain the key column for matching. Every row is checked before the first
-     * is sent (the key column, its presence, every key and condition value): a refused row leaves
-     * nothing written, also inside a transaction of the caller. Without an open transaction, the
+     * is sent (the key column, its presence, every key, every key value - also of a row with
+     * nothing to set, which is skipped only once its key value passed -, and every value that
+     * could not be bound): a refused row leaves nothing written, also inside a transaction of the
+     * caller, and no hook fires for it. Without an open transaction, the
      * rows are updated in an own transaction with the same outcomes as transaction(). Open counts
      * one begun through this driver that ended behind its back (a DDL statement or raw PDO ended
      * it): no transaction of its own then - the rows' statements are refused like any other
@@ -3456,7 +3458,7 @@ abstract class AbstractDriver implements DatabaseInterface
      * @param array<int, array<string, mixed>> $rows Array of rows, each with key column
      * @param string $keyColumn Column to match rows (default: 'id')
      *
-     * @throws QueryException When a row is missing the key column, the key column or a key is no plain column name, or a key value is null - before anything is sent; or when an update fails, or is refused because the transaction this driver began has ended behind its back
+     * @throws QueryException When a row is missing the key column, the key column or a key is no plain column name, a key value is null, or a value to set or match cannot be bound (see query()) - before anything is sent; or when an update fails, or is refused because the transaction this driver began has ended behind its back
      * @throws TransactionException When the own transaction's commit failed, or the own transaction was ended while the batch ran - a listener's reconnect(), an error handler inside a PDO call (a CommitFailedException with outcome 'lost'; what is open then is left alone) -, when PDO cannot tell whether a transaction is open ('Connection state unknown', nothing is sent), and where it would begin its own transaction from inside a listener that may not run one (ListenerTransactionException, nothing is sent; see transaction())
      * @throws CommitHookException When committed, but a transaction.commit or transaction.end listener failed or the connection state after a commit listener could not be verified
      *
@@ -3469,21 +3471,31 @@ abstract class AbstractDriver implements DatabaseInterface
         }
 
         // Every row is checked before anything is sent - the key column, its presence in each row,
-        // every key and every condition value, as update() will -, so that a refused row leaves no
-        // earlier row written: inside a transaction of the caller nothing would undo it, and a
-        // caller that catches the refusal and commits would keep part of the batch
+        // every key, every key value (also of a row with nothing to set: a null or unbindable one is
+        // refused, not skipped) and every value to set or match that query() would refuse to bind -,
+        // so that a refused row leaves no earlier row written: inside a transaction of the caller
+        // nothing would undo it, and a caller that catches the refusal and commits would keep part
+        // of the batch. Refused like an argument: no hook fires for it
         self::columnKey($keyColumn, 'The key column of updateMultiple()');
-        foreach ($rows as $row) {
+        foreach (array_values($rows) as $at => $row) {
             if (!array_key_exists($keyColumn, $row)) {
                 throw new QueryException(
                     message: 'Update failed',
                     debugMessage: sprintf('Missing key column "%s" in row', $keyColumn)
                 );
             }
+            [, $params] = $this->buildWhereClause([$keyColumn => $row[$keyColumn]]);
             $data = array_diff_key($row, [$keyColumn => null]);
             if ($data !== []) {
-                $this->buildSetClause($data);
-                $this->buildWhereClause([$keyColumn => $row[$keyColumn]]);
+                [, $setParams] = $this->buildSetClause($data);
+                $params = [...$setParams, ...$params]; // the order of update()'s statement
+            }
+            $unbindable = $this->unbindableParameter($params);
+            if ($unbindable !== null) {
+                throw new QueryException(
+                    message: 'Query failed',
+                    debugMessage: sprintf('Row %d of updateMultiple(): %s (its UPDATE binds the values to set, then the key). Nothing was sent.', $at + 1, $unbindable)
+                );
             }
         }
 

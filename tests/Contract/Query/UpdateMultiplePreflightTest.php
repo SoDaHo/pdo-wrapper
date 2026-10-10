@@ -4,14 +4,17 @@ declare(strict_types=1);
 
 namespace Sodaho\PdoWrapper\Tests\Contract\Query;
 
+use Sodaho\PdoWrapper\Database;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Tests\Contract\ContractTestCase;
 use Sodaho\PdoWrapper\Tests\Support\Untyped;
+use stdClass;
 
 /**
  * updateMultiple() checks every row before it sends anything: a refused row - one without the key
- * column, a qualified key, a null key value - leaves no earlier row written, inside a transaction
- * of the caller (nothing would undo it there) and without one (no transaction is begun at all).
+ * column, a qualified key, a null key value, a value that cannot be bound, also the key value of a
+ * row with nothing to set - leaves no earlier row written, inside a transaction of the caller
+ * (nothing would undo it there) and without one (no transaction is begun at all).
  */
 class UpdateMultiplePreflightTest extends ContractTestCase
 {
@@ -44,6 +47,13 @@ class UpdateMultiplePreflightTest extends ContractTestCase
             'a null key value in the second row' => [[['id' => 1, 'name' => 'changed'], ['id' => null, 'name' => 'changed']], 'id', 'NULL value for column "id"'],
             'a numeric key in the second row' => [[['id' => 1, 'name' => 'changed'], ['id' => 2, 0 => 'changed']], 'id', 'need column names as keys'],
             'a qualified key column, no data to set' => [[['batch.id' => 1]], 'batch.id', 'The key column of updateMultiple() need the plain names'],
+            'an array to set in the second row' => [[['id' => 1, 'name' => 'changed'], ['id' => 2, 'name' => ['changed']]], 'id', 'Row 2 of updateMultiple(): Cannot bind a value of type array (parameter #1)'],
+            'INF to set in the second row' => [[['id' => 1, 'name' => 'changed'], ['id' => 2, 'name' => INF]], 'id', 'Row 2 of updateMultiple(): Cannot bind INF (parameter #1)'],
+            'an object as the key value of the second row' => [[['id' => 1, 'name' => 'changed'], ['id' => new stdClass(), 'name' => 'changed']], 'id', 'Row 2 of updateMultiple(): Cannot bind a value of type stdClass (parameter #2)'],
+            'an array among the bindings of a raw expression to set' => [[['id' => 1, 'name' => 'changed'], ['id' => 2, 'name' => Database::raw('CONCAT(?, ?)', ['changed', ['x']])]], 'id', 'Row 2 of updateMultiple(): Cannot bind a value of type array (parameter #2)'],
+            'an unbindable key value in a row with nothing to set' => [[['id' => 1, 'name' => 'changed'], ['id' => []]], 'id', 'Row 2 of updateMultiple(): Cannot bind a value of type array (parameter #1)'],
+            'a null key value in a row with nothing to set' => [[['id' => 1, 'name' => 'changed'], ['id' => null]], 'id', 'NULL value for column "id"'],
+            'a null key value alone' => [[['id' => null]], 'id', 'NULL value for column "id"'],
         ];
     }
 
@@ -65,6 +75,17 @@ class UpdateMultiplePreflightTest extends ContractTestCase
         $this->db->commit(); // a caller that catches the refusal and goes on
 
         $this->assertSame(['one', 'two'], array_column($this->db->table('batch')->orderBy('id')->get(), 'name'));
+    }
+
+    /**
+     * A row with nothing to set but a good key value is still skipped: nothing to update, no
+     * statement for it.
+     */
+    public function testARowWithNothingToSetButAGoodKeyIsSkipped(): void
+    {
+        $this->assertSame(1, $this->db->updateMultiple('batch', [['id' => 1], ['id' => 2, 'name' => 'changed']]));
+        $this->assertSame(['one', 'changed'], array_column($this->db->table('batch')->orderBy('id')->get(), 'name'));
+        $this->assertCount(1, array_filter($this->sent, static fn (string $sql): bool => str_starts_with($sql, 'UPDATE')), 'one UPDATE');
     }
 
     /**
