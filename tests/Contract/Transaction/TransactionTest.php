@@ -357,7 +357,9 @@ class TransactionTest extends ContractTestCase
      * Regression test: updateMultiple must rollback all changes on failure.
      *
      * Previously, updateMultiple had no transaction wrapper, causing partial
-     * updates when an error occurred mid-batch (e.g., 49/100 rows updated).
+     * updates when an error occurred mid-batch (e.g., 49/100 rows updated). The row that fails is
+     * a good one that fails on the server, after the first two were updated: a row the check
+     * refuses would leave nothing to roll back.
      */
     public function testUpdateMultipleRollsBackOnFailure(): void
     {
@@ -365,18 +367,23 @@ class TransactionTest extends ContractTestCase
         $this->db->insert('users', ['id' => 1, 'name' => 'Max']);
         $this->db->insert('users', ['id' => 2, 'name' => 'Anna']);
         $this->db->insert('users', ['id' => 3, 'name' => 'Tom']);
+        $sent = 0;
+        $this->db->on('query', static function (array $data) use (&$sent): void {
+            $sent += str_starts_with(is_string($data['sql']) ? $data['sql'] : '', 'UPDATE') ? 1 : 0;
+        });
 
-        // Try to update with one row missing the key column (will fail)
+        // The third row fails on the server, after the first two were updated
         try {
             $this->db->updateMultiple('users', [
                 ['id' => 1, 'name' => 'Max Updated'],
                 ['id' => 2, 'name' => 'Anna Updated'],
-                ['name' => 'Tom Updated'], // Missing 'id' - will throw
+                ['id' => 3, 'no_such_column' => 'Tom Updated'], // an unknown column - the server refuses it
             ]);
             $this->fail('Expected QueryException was not thrown');
         } catch (QueryException $e) {
-            // Expected
+            $this->assertNotNull($e->driverCode, 'a failure of the server, not a refusal of the check');
         }
+        $this->assertSame(2, $sent, 'the first two rows were updated before the third failed');
 
         // All rows should be unchanged (rollback)
         $users = $this->db->findAll('users');
