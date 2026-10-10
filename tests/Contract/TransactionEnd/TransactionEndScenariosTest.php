@@ -234,10 +234,10 @@ class TransactionEndScenariosTest extends TransactionEndTestCase
         $this->assertSame(['commit', 'end'], $this->events);
 
         try {
-            $this->db->updateMultiple(self::TABLE, [['id' => 1, 'name' => 'x'], ['name' => 'no key']]);
+            $this->db->updateMultiple(self::TABLE, [['id' => 1, 'name' => 'x'], ['id' => 2, 'no_such_column' => 'x']]); // fails on the server, after the first update
             $this->fail('Expected QueryException');
         } catch (QueryException $e) {
-            $this->assertSame('Update failed', $e->getMessage());
+            $this->assertSame('Query failed', $e->getMessage());
             $this->assertSame([self::COMMITTED, self::ROLLED_BACK], array_column($this->ends, 'outcome'));
             $this->assertSame($e, $this->ends[1]['error']);
         }

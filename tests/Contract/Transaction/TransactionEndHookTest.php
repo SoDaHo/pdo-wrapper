@@ -568,7 +568,7 @@ class TransactionEndHookTest extends ContractTestCase
 
         $this->events = [];
         try {
-            $db->updateMultiple('users', [['id' => 1, 'name' => 'Anna'], ['name' => 'no key']]);
+            $db->updateMultiple('users', [['id' => 1, 'name' => 'Anna'], ['id' => 1, 'no_such_column' => 'x']]); // fails on the server, after the first update
             $this->fail('Expected QueryException');
         } catch (QueryException $e) {
             $this->assertSame(['rollback', 'end'], $this->events);

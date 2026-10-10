@@ -467,11 +467,11 @@ class TransactionTest extends ContractTestCase
         try {
             $failingDb->updateMultiple('users', [
                 ['id' => 1, 'name' => 'Updated'],
-                ['name' => 'No ID'], // Missing key column - triggers error
+                ['id' => 1, 'no_such_column' => 'x'], // fails on the server, after the first update
             ]);
             $this->fail('Expected QueryException');
         } catch (QueryException $e) {
-            $this->assertSame('Update failed', $e->getMessage());
+            $this->assertSame('Query failed', $e->getMessage());
         }
 
         $this->assertSame(1, $this->scenarioPdo->rollBackCalls, 'the rollback was tried');
