@@ -10,9 +10,10 @@ use Sodaho\PdoWrapper\Driver\ImplicitCommit;
 
 /**
  * Which statements the MariaDB driver takes for ones that commit implicitly, without a database:
- * the list of the MariaDB documentation, read from the leading keywords past whitespace and
- * comments - not the statements that steer transactions themselves, not the TEMPORARY tables, not
- * what a procedure or a compound statement runs inside.
+ * the list of the MariaDB documentation and what was measured besides, read from the leading
+ * keywords past whitespace and comments, versioned executable comments both ways - not the
+ * statements that steer transactions themselves, not the TEMPORARY tables, not what a procedure or
+ * a compound statement runs inside.
  */
 class ImplicitCommitStatementsTest extends TestCase
 {
@@ -49,6 +50,15 @@ class ImplicitCommitStatementsTest extends TestCase
             'flush' => ['FLUSH PRIVILEGES', 'FLUSH'],
             'reset' => ['RESET QUERY CACHE', 'RESET'],
             'shutdown' => ['SHUTDOWN', 'SHUTDOWN'],
+            // measured on 10.11 and 12.3: @@in_transaction 0 afterwards, the row before survives a ROLLBACK
+            'backup stage' => ['BACKUP STAGE START', 'BACKUP'],
+            'backup lock' => ['BACKUP LOCK t', 'BACKUP'],
+            'install plugin' => ["INSTALL PLUGIN p SONAME 'p'", 'INSTALL'],
+            'install soname' => ["INSTALL SONAME 'p'", 'INSTALL'],
+            'uninstall plugin' => ['UNINSTALL PLUGIN p', 'UNINSTALL'],
+            'uninstall soname' => ["UNINSTALL SONAME 'p'", 'UNINSTALL'],
+            'set default role' => ['SET DEFAULT ROLE NONE', 'SET DEFAULT ROLE'],
+            'set default role for' => ["SET DEFAULT ROLE r FOR 'u'", 'SET DEFAULT ROLE'],
             // accounts
             'create user' => ["CREATE USER 'u'@'%'", 'CREATE'],
             'drop role' => ['DROP ROLE r', 'DROP'],
@@ -69,15 +79,38 @@ class ImplicitCommitStatementsTest extends TestCase
             'dash comment' => ["-- why\nCREATE TABLE t (id INT)", 'CREATE'],
             'dash comment at the end' => ["--\nTRUNCATE t", 'TRUNCATE'],
             'hash comment' => ["# why\nDROP TABLE t", 'DROP'],
+            'dash comment, a control character after the dashes' => ["--\x01 why\nDROP TABLE t", 'DROP'],
+            'dash comment at the very end' => ['DROP TABLE t --', 'DROP'],
+            'versioned comment never closed' => ['/*!50700 DROP TABLE t', 'DROP'],
+            'executable comment with a comment inside' => ['/*!50100 CREATE /* x */ TABLE t (id INT) */', 'CREATE'],
+            'set statement, a closing parenthesis too many' => ['SET STATEMENT x = 1) FOR DROP TABLE t', 'SET STATEMENT ... FOR DROP'],
+            'set statement, a backslash in a quoted name' => ['SET STATEMENT x = `a\\` FOR DROP TABLE t', 'SET STATEMENT ... FOR DROP'],
             'executable comment' => ['/*!50100 CREATE TABLE t (id INT) */', 'CREATE'],
             'executable comment of MariaDB' => ['/*M!100100 ALTER TABLE t ADD c INT */', 'ALTER'],
             'empty executable comment first' => ['/*!*/ DROP TABLE t', 'DROP'],
             'set statement for ddl' => ['SET STATEMENT max_statement_time = 1 FOR CREATE TABLE t (id INT)', 'SET STATEMENT ... FOR CREATE'],
             'set statement, the word in a value' => ["SET STATEMENT lc_messages = 'for' FOR DROP TABLE t", 'SET STATEMENT ... FOR DROP'],
+            'set statement, a comment before the statement' => ['SET STATEMENT max_statement_time = 1 FOR /* why */ DROP TABLE t', 'SET STATEMENT ... FOR DROP'],
+            // versioned executable comments: both readings, one that commits decides
+            'versioned temporary, MySQL version' => ['CREATE /*!50700 TEMPORARY */ TABLE t (id INT)', 'CREATE'],
+            'versioned temporary, old version' => ['CREATE /*!40000 TEMPORARY */ TABLE t (id INT)', 'CREATE'],
+            'versioned temporary of MariaDB' => ['CREATE /*M!100100 TEMPORARY */ TABLE t (id INT)', 'CREATE'],
+            'versioned drop temporary' => ['DROP /*!50700 TEMPORARY */ TABLE t', 'DROP'],
+            'versioned or replace temporary' => ['CREATE OR REPLACE /*!50700 TEMPORARY */ TABLE t (id INT)', 'CREATE'],
+            'versioned ddl alone' => ['/*!50700 DROP TABLE t */', 'DROP'],
+            'versioned ddl after a select' => ['SELECT 1 /*!50700 , 2 */', null],
+            // strings without backslash escapes (NO_BACKSLASH_ESCAPES): the FOR after the string counts too
+            'set statement, a backslash ending the string' => ["SET STATEMENT sql_mode = '\\' FOR DROP TABLE t -- '", 'SET STATEMENT ... FOR DROP'],
+            // and the price of that: a backslash-escaped quote reads as the end of the string as well (fail-closed)
+            'set statement, a backslash-escaped quote' => ["SET STATEMENT lc_messages = 'it\\'s FOR DROP' FOR SELECT 1", 'SET STATEMENT ... FOR DROP'],
             // commit nothing
             'create temporary table' => ['CREATE TEMPORARY TABLE t (id INT)', null],
             'create temporary, a comment between' => ['CREATE /* scratch */ TEMPORARY TABLE t (id INT)', null],
             'create or replace temporary' => ['CREATE OR REPLACE TEMPORARY TABLE t (id INT)', null],
+            'unversioned temporary' => ['CREATE /*!TEMPORARY */ TABLE t (id INT)', null],
+            'unversioned temporary of MariaDB' => ['CREATE /*M! TEMPORARY */ TABLE t (id INT)', null],
+            'set role' => ['SET ROLE r', null],
+            'checksum table' => ['CHECKSUM TABLE t', null],
             'drop temporary table' => ['DROP TEMPORARY TABLE t', null],
             'analyze select' => ['ANALYZE SELECT 1', null],
             'analyze format' => ['ANALYZE FORMAT=JSON SELECT 1', null],
@@ -92,6 +125,13 @@ class ImplicitCommitStatementsTest extends TestCase
             'set a variable' => ['SET @x = 1', null],
             'set a session variable' => ["SET SESSION sql_mode = 'STRICT_ALL_TABLES'", null],
             'set statement for select' => ['SET STATEMENT max_statement_time = 1 FOR SELECT 1', null],
+            'set statement, ddl in a comment before the for' => ['SET STATEMENT max_statement_time = 1 /* FOR DROP TABLE x */ FOR SELECT 1', null],
+            'set statement, ddl in a string before the for' => ["SET STATEMENT lc_messages = 'x FOR DROP TABLE t' FOR SELECT 1", null],
+            'set statement, ddl in a dash comment' => ["SET STATEMENT max_statement_time = 1 -- FOR DROP TABLE x\nFOR SELECT 1", null],
+            'set statement, the for inside parentheses' => ['SET STATEMENT x = (SELECT a FOR DROP) FOR SELECT 1', null],
+            'set statement, a string never closed' => ["SET STATEMENT x = 'abc FOR DROP TABLE t", null],
+            'set statement without a for' => ['SET STATEMENT max_statement_time = 1', null],
+            'set statement, a doubled quote in the string' => ["SET STATEMENT lc_messages = 'it''s FOR DROP' FOR SELECT 1", null],
             'empty' => ['', null],
             'only a comment' => ['/* never closed', null],
             'dashes without whitespace' => ['--1', null],
