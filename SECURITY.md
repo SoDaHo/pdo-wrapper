@@ -34,9 +34,9 @@ Likewise outside the library's reach, and documented in the README:
   log or an error page unredacted leaks them itself. Since 3.2 the option `redactParameters` keeps the values
   out of the hook payloads, the debug messages and the previous exceptions, and the library's value
   parameters are `#[\SensitiveParameter]` in every trace.
-- **PDO options.** `options` replace the secure defaults (native prepared statements, exceptions,
-  no multi-statements on MySQL/MariaDB). Switching to emulated prepares, multi-statements or a
-  runtime `SET NAMES` is the application's decision and risk.
+- **PDO options.** `options` replace the secure defaults (native prepared statements, exceptions).
+  Switching to emulated prepares or a runtime `SET NAMES` is the application's decision and risk.
+  Multi-statements cannot be switched on (since 3.2): `ATTR_MULTI_STATEMENTS` is refused.
 - **Transport and charset.** The library sets no TLS option: a connection across a network the
   application does not control needs `Pdo\Mysql::ATTR_SSL_CA` and `ATTR_SSL_VERIFY_SERVER_CERT` among the
   `options`. The quoting of names assumes an ASCII-safe charset (`utf8mb4`, the default); `big5`, `cp932`,

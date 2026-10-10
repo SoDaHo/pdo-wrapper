@@ -118,6 +118,32 @@ class ConnectionCheckTest extends ContractTestCase
     }
 
     /**
+     * ATTR_MULTI_STATEMENTS would let one string carry several statements - the second one unseen
+     * by the check for implicit commits (with emulated prepares a SELECT followed by a CREATE TABLE
+     * went through as a SELECT): refused before anything is tried. Off, also written as 0, is what
+     * the driver sets anyway.
+     */
+    public function testAnOptionThatAllowsMultiStatementsIsRefused(): void
+    {
+        foreach ([true, 1, '1'] as $on) {
+            try {
+                $this->connect(['options' => [\Pdo\Mysql::ATTR_MULTI_STATEMENTS => $on, PDO::ATTR_EMULATE_PREPARES => true]]);
+                $this->fail('Expected ConnectionException for ' . var_export($on, true));
+            } catch (ConnectionException $e) {
+                $this->assertSame('Database connection failed', $e->getMessage());
+                $this->assertStringStartsWith('The option ATTR_MULTI_STATEMENTS would let one string carry several statements', (string) $e->getDebugMessage());
+                $this->assertNull($e->getPrevious(), 'nothing was tried');
+                $this->assertNull($e->refusal, 'a refused configuration, not a refused connection');
+            }
+        }
+
+        foreach ([false, 0] as $off) {
+            $db = $this->connect(['options' => [\Pdo\Mysql::ATTR_MULTI_STATEMENTS => $off]]);
+            $this->assertSame(1, $db->query('SELECT 1 AS one')->fetchColumn());
+        }
+    }
+
+    /**
      * ATTR_ORACLE_NULLS other than NULL_NATURAL would turn NULL into '' (NULL_TO_STRING) or '' into
      * NULL (NULL_EMPTY_STRING): the connection is refused. PDO takes any spelling of an int for
      * it, so the mode is read back from the connection; every spelling of NULL_NATURAL passes, and

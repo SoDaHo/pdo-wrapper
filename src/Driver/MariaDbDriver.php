@@ -64,13 +64,16 @@ class MariaDbDriver extends AbstractDriver
      *   false. The trace arguments of the library's methods that take values are marked
      *   #[\SensitiveParameter] either way.
      *
-     * Multi-statements are switched off: no statement this library sends needs them, and with them
-     * a string that reaches raw PDO (getPdo()->exec()) or an emulated prepare could carry a second
-     * statement. Pass the driver's ATTR_MULTI_STATEMENTS option as true to get them back.
+     * Multi-statements are switched off and stay off: no statement this library sends needs them,
+     * and with them a string that reaches raw PDO (getPdo()->exec()) or an emulated prepare could
+     * carry a second statement - one the library does not judge (it reads a statement's start to
+     * refuse one that commits implicitly inside a transaction). ATTR_MULTI_STATEMENTS as anything
+     * but false (or 0) among the options is refused; a migration that sends a whole file in one call
+     * uses a PDO connection of its own.
      *
      * @param array{host?: string|null, database?: string|null, username?: string|null, password?: string|null, port?: int|string, charset?: string, options?: array<int, mixed>, pdoClass?: class-string<PDO>|null, redactParameters?: bool} $config
      *
-     * @throws ConnectionException When required config is missing, 'pdoClass' names no class that extends PDO, 'redactParameters' is no boolean, 'options' turn ATTR_STRINGIFY_FETCHES on, the connection fails, or the server is no MariaDB 10.11 or later, the client no mysqlnd or ATTR_ORACLE_NULLS not NULL_NATURAL, or completion_type cannot be set to NO_CHAIN
+     * @throws ConnectionException When required config is missing, 'pdoClass' names no class that extends PDO, 'redactParameters' is no boolean, 'options' turn ATTR_STRINGIFY_FETCHES or ATTR_MULTI_STATEMENTS on, the connection fails, or the server is no MariaDB 10.11 or later, the client no mysqlnd or ATTR_ORACLE_NULLS not NULL_NATURAL, or completion_type cannot be set to NO_CHAIN
      * @throws \Throwable What a 'pdoClass', or an error handler under a non-exception error mode, throws while the connection opens besides a PDOException: unchanged
      */
     public function __construct(#[\SensitiveParameter] array $config)
@@ -126,6 +129,12 @@ class MariaDbDriver extends AbstractDriver
             throw new ConnectionException(
                 message: 'Database connection failed',
                 debugMessage: 'The option ATTR_STRINGIFY_FETCHES would turn every fetched value into a string: the library promises the PHP types of the results (see MariaDbDriver). Cast in the application instead.'
+            );
+        }
+        if (!in_array($options[\Pdo\Mysql::ATTR_MULTI_STATEMENTS], [false, 0], true)) {
+            throw new ConnectionException(
+                message: 'Database connection failed',
+                debugMessage: 'The option ATTR_MULTI_STATEMENTS would let one string carry several statements: the library judges a statement by its start (it refuses one that commits implicitly inside a transaction), and the statements after the first would pass unseen. Send a migration that needs them on a PDO connection of your own.'
             );
         }
 

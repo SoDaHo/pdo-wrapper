@@ -13,6 +13,7 @@ use Sodaho\PdoWrapper\DatabaseInterface;
 use Sodaho\PdoWrapper\Driver\MariaDbDriver;
 use Sodaho\PdoWrapper\Exception\CommitFailedException;
 use Sodaho\PdoWrapper\Exception\CommitHookException;
+use Sodaho\PdoWrapper\Exception\ConnectionException;
 use Sodaho\PdoWrapper\Exception\DatabaseException;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Exception\TransactionException;
@@ -362,8 +363,12 @@ class DriverIntegrationTest extends TestCase
             $this->assertSame(1064, $this->errorInfoBehind($e, 1));
         }
 
-        $optedIn = new MariaDbDriver(self::getConfig() + ['options' => [\Pdo\Mysql::ATTR_MULTI_STATEMENTS => true]]);
-        $this->assertSame(0, $optedIn->getPdo()->exec($two));
+        try {
+            new MariaDbDriver(self::getConfig() + ['options' => [\Pdo\Mysql::ATTR_MULTI_STATEMENTS => true]]);
+            $this->fail('Expected ConnectionException: multi-statements cannot be switched on');
+        } catch (ConnectionException $e) {
+            $this->assertStringStartsWith('The option ATTR_MULTI_STATEMENTS would let one string carry several statements', (string) $e->getDebugMessage());
+        }
     }
 
     /**
