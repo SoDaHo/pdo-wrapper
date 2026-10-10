@@ -1343,9 +1343,10 @@ class QueryBuilder
         if (is_float($by)) {
             $text = self::decimalText($by);
             if ($text === null) {
+                // Without the float itself: the step is a bound value, and redactParameters keeps those out of every debug message
                 throw new QueryException(
                     message: 'Update failed',
-                    debugMessage: sprintf('%s() adds a float as DECIMAL(65,30), which cannot hold %s: more than 35 integer or 30 fraction digits, or no finite number. Use update() with Database::raw() for it.', $method, var_export($by, true))
+                    debugMessage: sprintf('%s() adds a float as DECIMAL(65,30), which cannot hold the one given (not shown: a bound value): more than 35 integer or 30 fraction digits, or no finite number. Use update() with Database::raw() for it.', $method)
                 );
             }
             $step = new RawExpression(sprintf('%s %s CAST(? AS DECIMAL(65,30))', $this->quoteIdentifier($column), $sign), [$text]);

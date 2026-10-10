@@ -168,7 +168,7 @@ class QueryBuilderStatementsTest extends ContractTestCase
                     $this->fail(sprintf('Expected QueryException: %s(%s)', $method, var_export($step, true)));
                 } catch (QueryException $e) {
                     $this->assertSame('Update failed', $e->getMessage());
-                    $this->assertSame(sprintf('%s() adds a float as DECIMAL(65,30), which cannot hold %s: more than 35 integer or 30 fraction digits, or no finite number. Use update() with Database::raw() for it.', $method, var_export($step, true)), $e->getDebugMessage());
+                    $this->assertSame(sprintf('%s() adds a float as DECIMAL(65,30), which cannot hold the one given (not shown: a bound value): more than 35 integer or 30 fraction digits, or no finite number. Use update() with Database::raw() for it.', $method), $e->getDebugMessage());
                 }
             }
         }

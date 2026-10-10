@@ -270,6 +270,27 @@ class RedactParametersTest extends TestCase
         $this->assertSame([], $db->heldNamedLocks(), 'the release ran');
     }
 
+    /**
+     * A float step that DECIMAL(65,30) cannot hold is refused before anything is sent, and the
+     * refusal does not show the float - a bound value: with the option no channel carries it
+     * (Daybreak review of the sixth candidate: the debug message showed it, var_export()).
+     */
+    public function testWithTheOptionARefusedFloatStepIsNotShown(): void
+    {
+        [$db, $payloads] = $this->driver(true);
+        $step = 4.711471147114711e40;
+        foreach (['increment', 'decrement'] as $method) {
+            $e = $this->failWith(static fn (): mixed => $db->table(self::TABLE)->where('id', 1)->{$method}('n', $step));
+            $this->assertSame('Update failed', $e->getMessage(), $method);
+            foreach ([(string) $e->getDebugMessage(), (string) $e] as $channel) {
+                $this->assertStringNotContainsString('4711', $channel, $method);
+                $this->assertStringNotContainsString('E+40', $channel, $method);
+            }
+            $this->assertStringContainsString('not shown: a bound value', (string) $e->getDebugMessage(), $method);
+        }
+        $this->assertSame([], $payloads->getArrayCopy(), 'nothing was sent, no hook was told');
+    }
+
     public function testTheOptionMustBeABoolean(): void
     {
         foreach (['yes', 1, 'false', null] as $value) {
