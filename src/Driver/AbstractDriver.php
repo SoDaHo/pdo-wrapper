@@ -3364,14 +3364,16 @@ abstract class AbstractDriver implements DatabaseInterface
     /**
      * Update multiple rows by their key column.
      *
-     * Each row must contain the key column for matching. Without an active transaction, the
+     * Each row must contain the key column for matching. Every row is checked before the first
+     * is sent (the key column, its presence, every key and condition value): a refused row leaves
+     * nothing written, also inside a transaction of the caller. Without an active transaction, the
      * rows are updated in an own transaction with the same outcomes as transaction().
      *
      * @param string $table Table name (supports schema.table format)
      * @param array<int, array<string, mixed>> $rows Array of rows, each with key column
      * @param string $keyColumn Column to match rows (default: 'id')
      *
-     * @throws QueryException When a row is missing the key column
+     * @throws QueryException When a row is missing the key column, the key column or a key is no plain column name, or a key value is null - before anything is sent; or when an update fails
      * @throws TransactionException When the own transaction's commit failed, or the own transaction was ended while the batch ran - a listener's reconnect(), an error handler inside a PDO call (a CommitFailedException with outcome 'lost'; what is open then is left alone) -, and when called from inside a listener that may not steer a transaction (ListenerTransactionException, nothing is sent; see beginTransaction())
      * @throws CommitHookException When committed, but a transaction.commit or transaction.end listener failed or the connection state after a commit listener could not be verified
      *
@@ -3381,6 +3383,25 @@ abstract class AbstractDriver implements DatabaseInterface
     {
         if (empty($rows)) {
             return 0;
+        }
+
+        // Every row is checked before anything is sent - the key column, its presence in each row,
+        // every key and every condition value, as update() will -, so that a refused row leaves no
+        // earlier row written: inside a transaction of the caller nothing would undo it, and a
+        // caller that catches the refusal and commits would keep part of the batch
+        self::columnKey($keyColumn, 'The key column of updateMultiple()');
+        foreach ($rows as $row) {
+            if (!array_key_exists($keyColumn, $row)) {
+                throw new QueryException(
+                    message: 'Update failed',
+                    debugMessage: sprintf('Missing key column "%s" in row', $keyColumn)
+                );
+            }
+            $data = array_diff_key($row, [$keyColumn => null]);
+            if ($data !== []) {
+                $this->buildSetClause($data);
+                $this->buildWhereClause([$keyColumn => $row[$keyColumn]]);
+            }
         }
 
         $own = null; // the number of the transaction begun here; none inside a transaction of the caller
@@ -3393,18 +3414,9 @@ abstract class AbstractDriver implements DatabaseInterface
             $affected = 0;
 
             foreach ($rows as $row) {
-                if (!array_key_exists($keyColumn, $row)) {
-                    throw new QueryException(
-                        message: 'Update failed',
-                        debugMessage: sprintf('Missing key column "%s" in row', $keyColumn)
-                    );
-                }
-
-                $keyValue = $row[$keyColumn];
                 $data = array_diff_key($row, [$keyColumn => null]);
-
-                if (!empty($data)) {
-                    $affected += $this->update($table, $data, [$keyColumn => $keyValue]);
+                if ($data !== []) {
+                    $affected += $this->update($table, $data, [$keyColumn => $row[$keyColumn]]);
                 }
             }
         } catch (Throwable $e) {

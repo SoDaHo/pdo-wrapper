@@ -70,6 +70,13 @@ class ColumnKeyGuardTest extends TestCase
         yield 'insertIgnore()' => [static fn (AbstractDriver $db): mixed => $db->insertIgnore('users', ['users.role' => 'admin']), 'The columns to insert need the plain names'];
         yield 'builder update()' => [static fn (AbstractDriver $db): mixed => $db->table('users')->where('id', 1)->update(['users.role' => 'admin']), 'update() needs the plain names of columns as keys, got "users.role"'];
         yield 'builder increment() $extra' => [static fn (AbstractDriver $db): mixed => $db->table('users')->where('id', 1)->increment('n', 1, ['users.role' => 'admin']), 'increment() with $extra needs the plain names of columns as keys, got "users.role"'];
+        yield 'builder increment() column' => [static fn (AbstractDriver $db): mixed => $db->table('users')->where('id', 1)->increment('users.attempts'), 'increment() needs the plain name of a column, got "users.attempts"'];
+        yield 'builder decrement() column' => [static fn (AbstractDriver $db): mixed => $db->table('users')->where('id', 1)->decrement('users.attempts'), 'decrement() needs the plain name of a column, got "users.attempts"'];
+        yield 'updateMultiple() data' => [static fn (AbstractDriver $db): mixed => $db->updateMultiple('users', [['id' => 1, 'users.role' => 'admin']]), 'The columns to set need the plain names'];
+        yield 'updateMultiple() key column' => [static fn (AbstractDriver $db): mixed => $db->updateMultiple('users', [['users.id' => 1, 'name' => 'x']], 'users.id'), 'The key column of updateMultiple() need the plain names'];
+        yield 'upsertReturning() row' => [static fn (AbstractDriver $db): mixed => $db->upsertReturning('users', ['users.id' => 1], ['name' => 'x']), 'The columns to insert need the plain names'];
+        yield 'upsertReturning() update' => [static fn (AbstractDriver $db): mixed => $db->upsertReturning('users', ['id' => 1], ['users.role' => 'admin']), 'The columns to set need the plain names'];
+        yield 'insertWhenReturning()' => [static fn (AbstractDriver $db): mixed => $db->insertWhenReturning('users', ['users.role' => 'admin'], '1 = 1'), 'The columns to insert need the plain names'];
     }
 
     /**

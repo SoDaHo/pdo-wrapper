@@ -1299,6 +1299,13 @@ class QueryBuilder
     private function step(string $column, string $sign, #[\SensitiveParameter] int|float $by, #[\SensitiveParameter] array $extra): int
     {
         $method = $sign === '+' ? 'increment' : 'decrement';
+        // The column is a key of the assignments as well: a qualified one would be taken apart at its dot
+        if (str_contains($column, '.')) {
+            throw new QueryException(
+                message: 'Query failed',
+                debugMessage: sprintf('%s() needs the plain name of a column, got "%s": a qualified name (table.column) would be taken apart at its dot and name the column after it. Pass the column\'s own name.', $method, $column)
+            );
+        }
         $this->guardTheColumnsToSet($extra, $method . '() with $extra');
         // MariaDB takes "Attempts" and "t.attempts" for the column "attempts": a second assignment
         // to it would silently replace the step
