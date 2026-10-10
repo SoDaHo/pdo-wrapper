@@ -881,6 +881,50 @@ class NamedLockTest extends ContractTestCase
         }
     }
 
+    /**
+     * An answer of another type - a statement class of the connection's that delivers the server's
+     * answer as text - is not understood, never read as the nearest answer: namedLock() counts the
+     * name (GET_LOCK() did take the lock) and throws, so that reconnect() cannot give it up unseen;
+     * isNamedLockHeld() and releaseNamedLock() throw instead of reading '1' as "no". The release
+     * ran: the name no longer counts, and the lock is free on the server.
+     */
+    public function testAnAnswerOfAnotherTypeIsNotUnderstood(): void
+    {
+        $db = $this->mariaDb(StatementClassPdo::config(TextColumnStatement::class));
+        $notUnderstood = '(a statement class of the connection\'s delivers another type).';
+
+        foreach ([
+            'namedLock' => [fn (): bool => $db->namedLock('job'), "namedLock(): GET_LOCK() answered '1' for \"job\", none of 1, 0, -1 or NULL: the answer is not understood {$notUnderstood} The name counts as held: the lock may have been taken. Release it, or ask isNamedLockHeld()."],
+            'isNamedLockHeld' => [fn (): bool => $db->isNamedLockHeld('job'), "isNamedLockHeld(): IS_USED_LOCK() = CONNECTION_ID() answered '1' for \"job\", none of 1, 0 or NULL: the answer is not understood {$notUnderstood} Nothing is recorded."],
+        ] as $method => [$call, $message]) {
+            try {
+                $call();
+                $this->fail('Expected QueryException: ' . $method);
+            } catch (QueryException $e) {
+                $this->assertSame('Query failed', $e->getMessage());
+                $this->assertSame($message, $e->getDebugMessage());
+            }
+            $this->assertSame(['job'], $db->heldNamedLocks(), "{$method}: GET_LOCK() took the lock, and it counts");
+        }
+        $this->assertFalse($this->second->namedLock('job'), 'held on the server');
+        try {
+            $db->reconnect();
+            $this->fail('Expected NamedLocksHeldException');
+        } catch (NamedLocksHeldException $e) {
+            $this->assertSame(['job'], $e->lockNames, 'a lock that counts is not given up with the session');
+        }
+
+        try {
+            $db->releaseNamedLock('job');
+            $this->fail('Expected QueryException: releaseNamedLock');
+        } catch (QueryException $e) {
+            $this->assertSame("releaseNamedLock(): RELEASE_LOCK() answered '1' for \"job\", none of 1, 0 or NULL: the answer is not understood {$notUnderstood} The statement ran: the name no longer counts as held. Ask isNamedLockHeld() whether the server still holds it.", $e->getDebugMessage());
+        }
+        $this->assertSame([], $db->heldNamedLocks(), 'the release ran');
+        $this->assertTrue($this->second->namedLock('job'), 'released on the server');
+        $this->assertTrue($this->second->releaseNamedLock('job'));
+    }
+
     public function testWhatIsRefused(): void
     {
         foreach ([

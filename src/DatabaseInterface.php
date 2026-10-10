@@ -99,7 +99,7 @@ interface DatabaseInterface
      * @param int $timeout Seconds to wait while another connection holds it (0: do not wait)
      *
      * @throws Exception\NamedLockReentryException When this connection holds the lock already
-     * @throws Exception\QueryException When the name is empty or holds a NUL byte, the timeout is negative, the driver names no lock prefix, the server answers NULL, its answer cannot be read, or the connection was replaced while the statement ran
+     * @throws Exception\QueryException When the name is empty or holds a NUL byte, the timeout is negative, the driver names no lock prefix, the server answers NULL, its answer cannot be read or is none of 1, 0, -1 and NULL (the name then counts as held), or the connection was replaced while the statement ran
      * @throws \Throwable What an error handler throws for reading the answer that is not about a failure PDO recorded (passed on unchanged)
      *
      * @return bool True when taken, false when another connection held it beyond the timeout
@@ -109,7 +109,7 @@ interface DatabaseInterface
     /**
      * Release a named lock this connection holds (RELEASE_LOCK()).
      *
-     * @throws Exception\QueryException When the name is empty or holds a NUL byte, the driver names no lock prefix, the query fails, its answer cannot be read, or the connection was replaced while the statement ran
+     * @throws Exception\QueryException When the name is empty or holds a NUL byte, the driver names no lock prefix, the query fails, its answer cannot be read or is none of 1, 0 and NULL, or the connection was replaced while the statement ran
      * @throws \Throwable What an error handler throws for reading the answer that is not about a failure PDO recorded (passed on unchanged)
      *
      * @return bool True when released, false when this connection did not hold it
@@ -119,7 +119,7 @@ interface DatabaseInterface
     /**
      * Whether this connection holds the named lock, asked on the server.
      *
-     * @throws Exception\QueryException When the name is empty or holds a NUL byte, the driver names no lock prefix, the query fails, its answer cannot be read, or the connection was replaced while the statement ran
+     * @throws Exception\QueryException When the name is empty or holds a NUL byte, the driver names no lock prefix, the query fails, its answer cannot be read or is none of 1, 0 and NULL, or the connection was replaced while the statement ran
      * @throws \Throwable What an error handler throws for reading the answer that is not about a failure PDO recorded (passed on unchanged)
      */
     public function isNamedLockHeld(#[\SensitiveParameter] string $name): bool;

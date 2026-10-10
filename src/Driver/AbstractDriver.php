@@ -2697,7 +2697,9 @@ abstract class AbstractDriver implements DatabaseInterface
      * the server answers that this connection holds it (taken, or held already), and no longer
      * when it answers that another one does; an error (NULL) and a statement that did not run (it
      * failed, a 'query.before' listener threw) change nothing. An answer that cannot be read after
-     * the statement ran counts the name - the lock may have been taken - and throws. A 'query'
+     * the statement ran counts the name - the lock may have been taken - and throws; so does an
+     * answer that is none of 1, 0, -1 and NULL (a statement class of the caller's that delivers
+     * '1': the lock was taken). A 'query'
      * listener that throws after the statement ran does not undo what was recorded. reconnect() is
      * refused from a 'query' listener of the statement (see lockStatement()).
      *
@@ -2705,7 +2707,7 @@ abstract class AbstractDriver implements DatabaseInterface
      * @param int $timeout Seconds to wait while another connection holds it (0: do not wait)
      *
      * @throws NamedLockReentryException When this connection holds the lock already
-     * @throws QueryException When the name is empty or holds a NUL byte, the timeout is negative, the driver names no lock prefix, the server answers NULL (an error such as a killed thread), the answer cannot be read, or the connection was replaced while the statement ran
+     * @throws QueryException When the name is empty or holds a NUL byte, the timeout is negative, the driver names no lock prefix, the server answers NULL (an error such as a killed thread), the answer cannot be read or is none of 1, 0, -1 and NULL, or the connection was replaced while the statement ran
      * @throws Throwable What an error handler throws for reading the answer that is not about a failure PDO recorded: passed on unchanged (the name counts all the same)
      *
      * @return bool True when taken, false when another connection held it beyond the timeout
@@ -2722,10 +2724,13 @@ abstract class AbstractDriver implements DatabaseInterface
 
         // One statement: whether this connection holds it already, and if not the attempt itself
         $taken = $this->lockStatement('namedLock', 'SELECT CASE WHEN IS_USED_LOCK(?) = CONNECTION_ID() THEN -1 ELSE GET_LOCK(?, ?) END', [$lock, $lock, $timeout], function (mixed $taken, bool $known) use ($name): void {
-            if (!$known || $taken === 1 || $taken === -1) {
-                $this->heldNamedLocks[$name] = $name;
-            } elseif ($taken === 0) {
+            // Not counted only where the server said so: 0 (another connection holds it) clears it, NULL (an
+            // error) changes nothing. Every other answer - 1, -1, one that cannot be read, one of another type
+            // (a statement class of the caller's that delivers '1') - may stand for a lock that was taken: it counts
+            if ($known && $taken === 0) {
                 unset($this->heldNamedLocks[$name]);
+            } elseif (!$known || $taken !== null) {
+                $this->heldNamedLocks[$name] = $name;
             }
         });
 
@@ -2737,11 +2742,33 @@ abstract class AbstractDriver implements DatabaseInterface
                 debugMessage: sprintf('namedLock(): this connection holds %s already; MariaDB would count a second hold, and one release would not free it. Release it first, or ask isNamedLockHeld().', $this->shownLockName($name)),
                 lockName: $name
             ),
-            default => throw new QueryException(
+            null => throw new QueryException(
                 message: 'Query failed',
-                debugMessage: sprintf('namedLock(): GET_LOCK() answered %s for %s - an error on the server, not a busy lock', var_export($taken, true), $this->shownLockName($name))
+                debugMessage: sprintf('namedLock(): GET_LOCK() answered NULL for %s - an error on the server, not a busy lock', $this->shownLockName($name))
             ),
+            default => throw $this->answerNotUnderstood('namedLock', 'GET_LOCK()', '1, 0, -1 or NULL', $taken, $name, 'The name counts as held: the lock may have been taken. Release it, or ask isNamedLockHeld().'),
         };
+    }
+
+    /**
+     * The exception for a named-lock statement whose answer is none the server gives - a statement
+     * class of the caller's ('pdoClass') delivered another type: thrown, never read as the nearest
+     * answer (a '1' read as "not taken" would let a lock the connection holds go unrecorded).
+     */
+    private function answerNotUnderstood(string $method, string $function, string $expected, mixed $answer, #[\SensitiveParameter] string $name, string $consequence): QueryException
+    {
+        return new QueryException(
+            message: 'Query failed',
+            debugMessage: sprintf(
+                '%s(): %s answered %s for %s, none of %s: the answer is not understood (a statement class of the connection\'s delivers another type). %s',
+                $method,
+                $function,
+                is_scalar($answer) ? var_export($answer, true) : get_debug_type($answer),
+                $this->shownLockName($name),
+                $expected,
+                $consequence
+            )
+        );
     }
 
     /**
@@ -2749,20 +2776,27 @@ abstract class AbstractDriver implements DatabaseInterface
      *
      * @param string $name The lock's name, without the prefix (see namedLock())
      *
-     * @throws QueryException When the name is empty or holds a NUL byte, the driver names no lock prefix, the query fails, its answer cannot be read, or the connection was replaced while the statement ran
+     * @throws QueryException When the name is empty or holds a NUL byte, the driver names no lock prefix, the query fails, its answer cannot be read or is none of 1, 0 and NULL (a statement class of the caller's), or the connection was replaced while the statement ran
      * @throws Throwable What an error handler throws for reading the answer that is not about a failure PDO recorded: passed on unchanged
      *
      * @return bool True when released; false when this connection did not hold it - another one
      *              does, or nobody does (released before, given up with a connection). Either
-     *              way - also when the answer cannot be read - the name no longer counts as held
+     *              way - also when the answer cannot be read or is not understood - the name no longer counts as held
      *              (heldNamedLocks()), recorded where the statement ran; when it did not run, it
      *              still does.
      */
     public function releaseNamedLock(#[\SensitiveParameter] string $name): bool
     {
-        return $this->lockStatement('releaseNamedLock', 'SELECT RELEASE_LOCK(?)', [$this->lockName('releaseNamedLock', $name)], function () use ($name): void {
+        $released = $this->lockStatement('releaseNamedLock', 'SELECT RELEASE_LOCK(?)', [$this->lockName('releaseNamedLock', $name)], function () use ($name): void {
             unset($this->heldNamedLocks[$name]);
-        }) === 1;
+        });
+
+        // 0: another connection holds it; NULL: nobody does. Any other answer is not read as "not released"
+        return match ($released) {
+            1 => true,
+            0, null => false,
+            default => throw $this->answerNotUnderstood('releaseNamedLock', 'RELEASE_LOCK()', '1, 0 or NULL', $released, $name, 'The statement ran: the name no longer counts as held. Ask isNamedLockHeld() whether the server still holds it.'),
+        };
     }
 
     /**
@@ -2770,12 +2804,19 @@ abstract class AbstractDriver implements DatabaseInterface
      *
      * @param string $name The lock's name, without the prefix (see namedLock())
      *
-     * @throws QueryException When the name is empty or holds a NUL byte, the driver names no lock prefix, the query fails, its answer cannot be read, or the connection was replaced while the statement ran
+     * @throws QueryException When the name is empty or holds a NUL byte, the driver names no lock prefix, the query fails, its answer cannot be read or is none of 1, 0 and NULL (a statement class of the caller's), or the connection was replaced while the statement ran
      * @throws Throwable What an error handler throws for reading the answer that is not about a failure PDO recorded: passed on unchanged
      */
     public function isNamedLockHeld(#[\SensitiveParameter] string $name): bool
     {
-        return $this->lockStatement('isNamedLockHeld', 'SELECT IS_USED_LOCK(?) = CONNECTION_ID()', [$this->lockName('isNamedLockHeld', $name)]) === 1;
+        $held = $this->lockStatement('isNamedLockHeld', 'SELECT IS_USED_LOCK(?) = CONNECTION_ID()', [$this->lockName('isNamedLockHeld', $name)]);
+
+        // 0: another connection holds it; NULL: nobody does. Any other answer is not read as "not held"
+        return match ($held) {
+            1 => true,
+            0, null => false,
+            default => throw $this->answerNotUnderstood('isNamedLockHeld', 'IS_USED_LOCK() = CONNECTION_ID()', '1, 0 or NULL', $held, $name, 'Nothing is recorded.'),
+        };
     }
 
     /**
