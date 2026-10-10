@@ -2848,9 +2848,14 @@ abstract class AbstractDriver implements DatabaseInterface
     {
         $holder = $this->lockStatement('namedLockHolder', 'SELECT IS_USED_LOCK(?)', [$this->lockName('namedLockHolder', $name)]);
         if ($holder !== null && !is_int($holder)) {
+            // Without redactParameters as before: every answer as var_export() shows it, an array or an object too
             throw new QueryException(
                 message: 'Query failed',
-                debugMessage: sprintf('namedLockHolder(): IS_USED_LOCK() answered %s for %s, neither a connection id nor NULL', $this->shownAnswer($holder), $this->shownLockName($name))
+                debugMessage: sprintf(
+                    'namedLockHolder(): IS_USED_LOCK() answered %s for %s, neither a connection id nor NULL',
+                    $this->redactParameters ? $this->shownAnswer($holder) : var_export($holder, true),
+                    $this->shownLockName($name)
+                )
             );
         }
 

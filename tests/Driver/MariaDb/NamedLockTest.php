@@ -10,6 +10,7 @@ use PDO;
 use PDOException;
 use PDOStatement;
 use RuntimeException;
+use Sodaho\PdoWrapper\Database;
 use Sodaho\PdoWrapper\Driver\AbstractDriver;
 use Sodaho\PdoWrapper\Driver\MariaDbDriver;
 use Sodaho\PdoWrapper\Exception\ConnectionException;
@@ -879,6 +880,34 @@ class NamedLockTest extends ContractTestCase
         } catch (QueryException $e) {
             $this->assertSame("namedLockHolder(): IS_USED_LOCK() answered '7' for \"job\", neither a connection id nor NULL", $e->getDebugMessage());
         }
+    }
+
+    /**
+     * An answer that is no scalar - an array here - is shown as var_export() shows it, as before
+     * 3.2 (Daybreak review of the sixth candidate: it was shown by its type alone, also without
+     * redactParameters); with the option by its type alone.
+     */
+    public function testANamedLockHolderThatIsNoScalarIsShownAsItIs(): void
+    {
+        $this->second->namedLock('job');
+        $secondId = $this->second->query('SELECT CONNECTION_ID()')->fetchColumn();
+        $this->assertIsInt($secondId);
+
+        foreach ([false, true] as $redact) {
+            $db = Database::mariadb(TestEnvironment::mariadb() + StatementClassPdo::config(ArrayColumnStatement::class) + ['redactParameters' => $redact]);
+            try {
+                $db->namedLockHolder('job');
+                $this->fail('Expected QueryException');
+            } catch (QueryException $e) {
+                $this->assertSame(
+                    $redact
+                        ? 'namedLockHolder(): IS_USED_LOCK() answered array for the lock (name redacted), neither a connection id nor NULL'
+                        : sprintf('namedLockHolder(): IS_USED_LOCK() answered %s for "job", neither a connection id nor NULL', var_export([$secondId], true)),
+                    $e->getDebugMessage()
+                );
+            }
+        }
+        $this->assertTrue($this->second->releaseNamedLock('job'));
     }
 
     /**
