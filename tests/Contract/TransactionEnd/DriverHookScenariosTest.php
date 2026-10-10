@@ -164,9 +164,10 @@ class DriverHookScenariosTest extends TransactionEndTestCase
         $db->commit();
         $this->assertSame([], $db->asked);
 
-        // a commit listener's transaction, ended raw by the listener itself
-        $listener = function () use ($db, $fail): void {
-            $db->beginTransaction();
+        // a commit listener's transaction (begun on raw PDO: through the driver it is refused in a
+        // listener), ended raw by the listener itself
+        $listener = function () use ($fail): void {
+            $this->pdo->beginTransaction();
             $fail('fatal_table');
             $this->pdo->rollBack();
         };
@@ -180,8 +181,8 @@ class DriverHookScenariosTest extends TransactionEndTestCase
         $this->assertSame([], $db->asked);
 
         // a commit listener's transaction, left open and cleaned up by the library
-        $listener = static function () use ($db, $fail): void {
-            $db->beginTransaction();
+        $listener = function () use ($fail): void {
+            $this->pdo->beginTransaction();
             $fail('fatal_table');
         };
         $db->beginTransaction();
@@ -829,7 +830,8 @@ class DriverHookScenariosTest extends TransactionEndTestCase
 
     /**
      * The end listeners of a rollback that confirmed nothing: one that throws is told to the
-     * 'error' hook and rollback() returns; one that begins a transaction keeps it.
+     * 'error' hook and rollback() returns; one that begins a transaction (on raw PDO: through the
+     * driver it is refused in a listener) keeps it.
      */
     public function testEndListenersOfARollbackThatConfirmsNothing(): void
     {
@@ -860,14 +862,15 @@ class DriverHookScenariosTest extends TransactionEndTestCase
             public string $mode = 'throw';
         };
         $outcomes = [];
-        $db->on('transaction.end', static function (array $data) use ($db, $state, &$outcomes): void {
+        $pdo = $this->pdo;
+        $db->on('transaction.end', static function (array $data) use ($db, $pdo, $state, &$outcomes): void {
             $outcomes[] = $data['outcome'];
             if ($state->mode === 'throw') {
                 throw new \RuntimeException('end listener failed');
             }
             if ($state->mode === 'begin') {
                 $state->mode = 'none';
-                $db->beginTransaction();
+                $pdo->beginTransaction();
                 $db->insert(self::TABLE, ['id' => 5, 'name' => 'listener']);
             }
         });
@@ -896,11 +899,11 @@ class DriverHookScenariosTest extends TransactionEndTestCase
 
     /**
      * The cleanup after a begin listener whose failed statement left the state unknown: an error
-     * handler inside the failing ROLLBACK commits the transaction through the driver, and a commit
-     * listener runs a transaction of its own before that end is told. The cleanup still sees that
-     * the transaction it was for has ended: no 'lost' after its 'committed'.
+     * handler inside the failing ROLLBACK commits the transaction through the driver and runs a
+     * transaction of its own (the next number is begun). The cleanup still sees that the
+     * transaction it was for has ended: no 'lost' after its 'committed'.
      */
-    public function testAListenersOwnTransactionDuringTheUnconfirmedCleanupDoesNotHideThatTheTransactionEnded(): void
+    public function testAHandlersOwnTransactionDuringTheUnconfirmedCleanupDoesNotHideThatTheTransactionEnded(): void
     {
         $db = new AskingDriver($this->pdo);
         $db->answers = ['alive']; // right after the failure: still there; asked again before the cleanup: not to be found out
@@ -910,8 +913,6 @@ class DriverHookScenariosTest extends TransactionEndTestCase
         $db->on('transaction.end', $ends);
         $once = new class () {
             public bool $fail = true;
-
-            public bool $audit = true;
         };
         $db->on('transaction.begin', static function () use ($db, $once): void {
             if ($once->fail) {
@@ -919,14 +920,9 @@ class DriverHookScenariosTest extends TransactionEndTestCase
                 $db->query('SELECT * FROM harmless_table'); // fails, and leaves the listener
             }
         });
-        $db->on('transaction.commit', static function () use ($db, $once): void {
-            if ($once->audit) {
-                $once->audit = false;
-                $db->transaction(static fn (DatabaseInterface $db) => $db->insert(self::TABLE, ['id' => 2, 'name' => 'audit']));
-            }
-        });
         $pdo->duringRollBack = static function () use ($db): void {
             $db->commit();
+            $db->transaction(static fn (DatabaseInterface $db) => $db->insert(self::TABLE, ['id' => 2, 'name' => 'audit']));
         };
         $pdo->rollBackReturnsFalse = true;
 
@@ -940,7 +936,7 @@ class DriverHookScenariosTest extends TransactionEndTestCase
         $this->assertSame(
             [DatabaseInterface::TRANSACTION_COMMITTED, DatabaseInterface::TRANSACTION_COMMITTED],
             $ends->all(),
-            'the listener\'s transaction, then the one the handler committed - and no "lost" after it'
+            'the one the handler committed, then the handler\'s own - and no "lost" after it'
         );
         $this->assertFalse($this->pdo->reallyInTransaction());
     }

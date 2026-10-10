@@ -152,7 +152,7 @@ class DriverIntegrationTest extends TestCase
         $secondRan = false;
         $db->on('transaction.commit', static function () use ($db): void {
             $db->execute('SET SESSION completion_type = CHAIN');
-            $db->beginTransaction();
+            $db->getPdo()->beginTransaction(); // on raw PDO: through the driver it is refused in a listener
         });
         $db->on('transaction.commit', static function () use (&$secondRan): void {
             $secondRan = true;
@@ -176,7 +176,7 @@ class DriverIntegrationTest extends TestCase
             $this->assertSame('listener skipped: connection left in transaction', $e->failures[1]->getMessage());
             $this->assertSame($cleanupError, $e->failures[1]->getPrevious());
             $this->assertTrue($db->inTransaction(), 'the chained transaction is open');
-            $this->assertSame(['lost', 'committed'], $ends, "the listener's transaction: rolled back, but the connection is still in one (chained) - lost; then the outer committed");
+            $this->assertSame(['committed'], $ends, "the listener's transaction was begun on raw PDO: no end of its own; the outer committed");
         } finally {
             $db->execute('SET SESSION completion_type = NO_CHAIN');
             if ($db->inTransaction()) {
@@ -186,7 +186,7 @@ class DriverIntegrationTest extends TestCase
 
         $this->assertFalse($secondRan);
         $this->assertFalse($db->inTransaction());
-        $this->assertSame(['lost', 'committed'], $ends, 'the rollback of the chained transaction tells no second end');
+        $this->assertSame(['committed', 'rolled_back'], $ends, 'the chained transaction, rolled back through the library, tells its end as one begun on raw PDO');
     }
 
     /**
@@ -530,7 +530,8 @@ class DriverIntegrationTest extends TestCase
 
     /**
      * A refused commit that told 'lost' has ended the transaction: a transaction an end listener
-     * begins in response is the listener's own and is neither rolled back nor told about here.
+     * begins in response (on raw PDO: through the driver it is refused in a listener) is the
+     * listener's own and is neither rolled back nor told about here.
      */
     public function testATransactionAnEndListenerBeginsAfterARefusalIsLeftAlone(): void
     {
@@ -539,7 +540,7 @@ class DriverIntegrationTest extends TestCase
                 $db->getPdo()->exec("UPDATE lock_users SET name = 'after the deadlock' WHERE id = 2");
                 $db->on('transaction.end', static function (array $data) use ($db): void {
                     if ($data['outcome'] === 'lost') {
-                        $db->beginTransaction();
+                        $db->getPdo()->beginTransaction();
                     }
                 });
             }
@@ -548,30 +549,6 @@ class DriverIntegrationTest extends TestCase
         $this->assertSame([['outcome' => 'lost', 'error' => $e, 'transaction' => 1, 'depth' => 1]], $measured->ends);
         $this->assertSame(0, $listenerRuns, 'no rollback was sent for the listener\'s transaction');
         $this->assertTrue($measured->inTransactionAfterwards, "the listener's transaction is still open");
-    }
-
-    /**
-     * The same when the end listener first runs a whole transaction of its own (its commit must
-     * not make the library forget that the refusal already told the end) and then leaves another open.
-     */
-    public function testAnEndListenerMayCommitATransactionOfItsOwnAfterARefusal(): void
-    {
-        [$e, $listenerRuns, $measured] = $this->runSwallowedDeadlock(
-            afterwards: static function (MariaDbDriver $db): void {
-                $db->getPdo()->exec('DO 1');
-                $db->on('transaction.end', static function (array $data) use ($db): void {
-                    if ($data['outcome'] === 'lost') {
-                        $db->updateMultiple('lock_users', [['id' => 3, 'name' => 'by the end listener']]);
-                        $db->beginTransaction();
-                    }
-                });
-            }
-        );
-
-        $this->assertSame(['lost', 'committed'], array_column($measured->ends, 'outcome'), "the refused transaction, then the listener's own");
-        $this->assertSame($e, $measured->ends[0]['error']);
-        $this->assertSame(0, $listenerRuns, 'no rollback was sent for the transaction the listener left open');
-        $this->assertTrue($measured->inTransactionAfterwards);
     }
 
     /**

@@ -5,13 +5,13 @@ declare(strict_types=1);
 namespace Sodaho\PdoWrapper\Tests\Contract\TransactionEnd;
 
 use ArrayObject;
-use Closure;
 use LogicException;
 use RuntimeException;
 use Sodaho\PdoWrapper\DatabaseInterface;
 use Sodaho\PdoWrapper\Driver\AbstractDriver;
 use Sodaho\PdoWrapper\Exception\CommitFailedException;
 use Sodaho\PdoWrapper\Exception\CommitHookException;
+use Sodaho\PdoWrapper\Exception\ListenerTransactionException;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Exception\TransactionException;
 use Sodaho\PdoWrapper\Tests\Support\ScenarioPdo;
@@ -478,69 +478,22 @@ class TransactionEndScenariosTest extends TransactionEndTestCase
 
     // ---- transactions inside listeners -----------------------------------------------------------
 
-    public function testATransactionStartedInACommitListenerEndsBeforeTheOuterEnd(): void
-    {
-        $started = false;
-        $this->db->on('transaction.commit', function () use (&$started): void {
-            if ($started) {
-                return;
-            }
-            $started = true;
-            $this->db->transaction(static function (DatabaseInterface $db): void {
-                $db->insert(self::TABLE, ['id' => 2, 'name' => 'inner']);
-            });
-        });
-
-        $this->db->transaction(static function (DatabaseInterface $db): void {
-            $db->insert(self::TABLE, ['id' => 1, 'name' => 'outer']);
-        });
-
-        $this->assertSame(['commit', 'commit', 'end', 'end'], $this->events, 'inner commit and inner end before the outer end');
-        $this->assertSame([self::COMMITTED, self::COMMITTED], array_column($this->ends, 'outcome'));
-        $this->assertVisible([1, 2]);
-    }
-
-    public function testATransactionStartedInAnEndListenerEndsInsideThatListener(): void
-    {
-        $depth = 0;
-        $started = false;
-        $this->db->on('transaction.end', function () use (&$depth, &$started): void {
-            $this->events[] = 'L1@' . $depth;
-            if ($started) {
-                return;
-            }
-            $started = true;
-            $depth = 1;
-            $this->db->transaction(static function (DatabaseInterface $db): void {
-                $db->insert(self::TABLE, ['id' => 2, 'name' => 'inner']);
-            });
-            $depth = 0;
-            $this->events[] = 'L1-done';
-        });
-        $this->db->on('transaction.end', function () use (&$depth): void {
-            $this->events[] = 'L2@' . $depth;
-        });
-
-        $this->db->transaction(static function (DatabaseInterface $db): void {
-            $db->insert(self::TABLE, ['id' => 1, 'name' => 'outer']);
-        });
-
-        $this->assertSame(['commit', 'end', 'L1@0', 'commit', 'end', 'L1@1', 'L2@1', 'L1-done', 'L2@0'], $this->events);
-        $this->assertVisible([1, 2]);
-    }
-
-    public function testACommitListenerLeavingATransactionOpenGetsItsOwnEndAndItsDataIsRolledBack(): void
+    /**
+     * A commit listener that leaves a transaction open (begun on raw PDO: through the driver it is
+     * refused in a listener): rolled back raw, without rollback listeners - its row is gone, the
+     * outer row committed.
+     */
+    public function testACommitListenerLeavingATransactionOpenHasItsDataRolledBack(): void
     {
         $once = false;
         $this->db->on('transaction.commit', function () use (&$once): void {
             if (!$once) {
                 $once = true;
-                $this->db->beginTransaction();
+                $this->pdo->beginTransaction();
                 $this->db->insert(self::TABLE, ['id' => 2, 'name' => 'left open']);
             }
         });
 
-        $leftOpen = null;
         try {
             $this->db->transaction(static function (DatabaseInterface $db): void {
                 $db->insert(self::TABLE, ['id' => 1, 'name' => 'outer']);
@@ -550,12 +503,10 @@ class TransactionEndScenariosTest extends TransactionEndTestCase
             $this->assertCount(1, $e->failures);
             $this->assertSame('listener left a transaction open', $e->failures[0]->getMessage());
             $this->assertFalse($e->connectionInTransaction, 'the raw cleanup succeeded');
-            $leftOpen = $e->failures[0];
         }
 
-        $this->assertSame(['commit', 'end', 'end'], $this->events, 'no rollback listener for the raw cleanup');
-        $this->assertSame([self::ROLLED_BACK, self::COMMITTED], array_column($this->ends, 'outcome'), 'inner end first');
-        $this->assertSame($leftOpen, $this->ends[0]['error']);
+        $this->assertSame(['commit', 'end'], $this->events, 'no rollback listener for the raw cleanup');
+        $this->assertSame([self::COMMITTED], array_column($this->ends, 'outcome'), 'the raw transaction tells no end of its own');
         $this->assertVisible([1], "the listener's row was rolled back, the outer row committed");
     }
 
@@ -1094,9 +1045,9 @@ class TransactionEndScenariosTest extends TransactionEndTestCase
 
     /**
      * The callback committed itself, and a commit listener left a transaction of its own behind
-     * whose state could not be read: told as 'lost', it may still be open. It is not the one
-     * transaction() began. Nothing is sent for it - no COMMIT, no ROLLBACK -, and the call fails
-     * for its own transaction, which is over.
+     * (on raw PDO) whose state could not be read. It is not the one transaction() began. Nothing is
+     * sent for it - no COMMIT, no ROLLBACK -, and the call fails for its own transaction, which is
+     * over.
      */
     public function testATransactionACommitListenerLeftBehindAfterTheCallbacksOwnCommitIsLeftAlone(): void
     {
@@ -1104,7 +1055,7 @@ class TransactionEndScenariosTest extends TransactionEndTestCase
         $this->db->on('transaction.commit', function () use (&$once): void {
             if (!$once) {
                 $once = true;
-                $this->db->beginTransaction(); // left open
+                $this->pdo->beginTransaction(); // left open
                 $this->pdo->stateUnreadable = true;
             }
         });
@@ -1127,8 +1078,8 @@ class TransactionEndScenariosTest extends TransactionEndTestCase
             $this->assertNull($e->getPrevious(), 'refused: no COMMIT was sent');
         }
 
-        $this->assertSame(['commit', 'end', 'end'], $this->events, "the listener's transaction as lost, the callback's as committed; nothing after that");
-        $this->assertSame([self::LOST, self::COMMITTED], array_column($this->ends, 'outcome'));
+        $this->assertSame(['commit', 'end'], $this->events, "the callback's transaction as committed; nothing after that");
+        $this->assertSame([self::COMMITTED], array_column($this->ends, 'outcome'));
         $this->assertTrue($this->pdo->reallyInTransaction(), "the listener's transaction is the listener's to end");
         $this->pdo->rollBack();
         $this->assertVisible([1], "the callback's own commit stands");
@@ -1410,214 +1361,6 @@ class TransactionEndScenariosTest extends TransactionEndTestCase
         $this->assertNull($old->outcome);
     }
 
-    /**
-     * A commit listener runs a transaction of its own, whose commit fails; the listener catches
-     * that. What is left of the listener's transaction is cleaned up by the library - raw, and
-     * told with another error. Thrown later by the callback, that old exception is nobody's
-     * failed commit any more: it keeps no outcome, however the listener left its transaction.
-     */
-    public function testAFailedCommitInsideACommitListenerGetsNoOutcomeFromALaterEnd(): void
-    {
-        $leftovers = [
-            'left open' => function (): void {
-            },
-            'rolled back on raw PDO' => function (): void {
-                $this->pdo->rollBack();
-            },
-            'state unreadable afterwards' => function (): void {
-                $this->pdo->stateUnreadable = true;
-            },
-        ];
-        $this->db->on('transaction.end', function (): void {
-            $this->pdo->stateUnreadable = false;
-        });
-        $caught = null;
-        $state = new class () {
-            public bool $armed = false;
-
-            public Closure $leftover;
-        };
-        $this->db->on('transaction.commit', function () use (&$caught, $state): void {
-            if (!$state->armed) {
-                return;
-            }
-            $state->armed = false;
-            $this->db->beginTransaction();
-            $this->pdo->failCommit = true;
-            try {
-                $this->db->commit();
-            } catch (CommitFailedException $e) {
-                $caught = $e;
-            }
-            ($state->leftover)();
-        });
-
-        foreach ($leftovers as $how => $leftover) {
-            $state->leftover = $leftover;
-            $caught = null;
-            $state->armed = true;
-            try {
-                $this->db->transaction(function (DatabaseInterface $db) use (&$caught): void {
-                    try {
-                        $db->commit();
-                    } catch (CommitHookException) {
-                        // the callback's transaction is committed; the listener's leftover was dealt with
-                    }
-                    $this->assertInstanceOf(CommitFailedException::class, $caught);
-                    throw $caught;
-                });
-                $this->fail('Expected CommitFailedException: ' . $how);
-            } catch (CommitFailedException $e) {
-                $this->assertSame($caught, $e, $how);
-                $this->assertNull($e->outcome, $how);
-            }
-            if ($this->pdo->reallyInTransaction()) {
-                $this->pdo->rollBack();
-            }
-        }
-    }
-
-    /**
-     * The same for the listeners that run when a transaction ends: an end or rollback listener
-     * runs a transaction on raw PDO, its commit through the library fails, the listener catches
-     * that and rolls back raw. Thrown later by the callback, that exception is no failed commit
-     * of the callback's transaction: no outcome - whichever way the transaction before it ended.
-     */
-    public function testAFailedCommitInsideAnEndOrRollbackListenerGetsNoOutcomeFromALaterEnd(): void
-    {
-        $state = new class () {
-            public ?string $armed = null;
-        };
-        $caught = null;
-        $rawTransactionWithAFailedCommit = function (string $event) use ($state, &$caught): void {
-            if ($state->armed !== $event) {
-                return;
-            }
-            $state->armed = null;
-            $this->pdo->hideTransaction = false;
-            if ($this->pdo->reallyInTransaction()) {
-                $this->pdo->rollBack(); // what the 'lost' simulation left open
-            }
-            $this->pdo->beginTransaction();
-            $this->pdo->failCommit = true;
-            $this->pdo->vanishOnFailedCommit = false; // this one stays open: the failed commit tells nothing
-            try {
-                $this->db->commit();
-            } catch (CommitFailedException $e) {
-                $caught = $e;
-            }
-            $this->pdo->rollBack();
-        };
-        $this->db->on('transaction.end', static fn () => $rawTransactionWithAFailedCommit('transaction.end'));
-        $this->db->on('transaction.rollback', static fn () => $rawTransactionWithAFailedCommit('transaction.rollback'));
-
-        $endings = [
-            'an end listener after a commit' => function (DatabaseInterface $db) use ($state): void {
-                $state->armed = 'transaction.end';
-                $db->commit();
-            },
-            'a rollback listener' => function (DatabaseInterface $db) use ($state): void {
-                $state->armed = 'transaction.rollback';
-                $db->rollback();
-            },
-            'an end listener after a rollback' => function (DatabaseInterface $db) use ($state): void {
-                $state->armed = 'transaction.end';
-                $db->rollback();
-            },
-            'an end listener after a lost end' => function (DatabaseInterface $db) use ($state): void {
-                $state->armed = 'transaction.end';
-                $this->pdo->failCommit = true;
-                $this->pdo->vanishOnFailedCommit = true;
-                try {
-                    $db->commit();
-                } catch (CommitFailedException) {
-                    // told as lost; the listener ran
-                }
-            },
-        ];
-
-        foreach ($endings as $how => $end) {
-            $caught = null;
-            try {
-                $this->db->transaction(function (DatabaseInterface $db) use ($end, &$caught): void {
-                    $end($db);
-                    $this->assertInstanceOf(CommitFailedException::class, $caught);
-                    throw $caught;
-                });
-                $this->fail('Expected CommitFailedException: ' . $how);
-            } catch (CommitFailedException $e) {
-                $this->assertSame($caught, $e, $how);
-                $this->assertNull($e->outcome, $how);
-            }
-            $this->assertFalse($this->pdo->reallyInTransaction(), $how);
-        }
-    }
-
-    /**
-     * While transaction() ends the transaction of its failed commit, an end listener is handed
-     * that exception - and throws it again inside a transaction of its own. Whatever becomes of
-     * the listener's transaction, the outcome told for the failed commit's transaction stays.
-     */
-    public function testAnEndListenerThatThrowsTheFailedCommitAgainDoesNotRewriteItsOutcome(): void
-    {
-        $state = new class () {
-            public ?Closure $inner = null;
-        };
-        $this->db->on('transaction.end', function (array $data) use ($state): void {
-            if ($state->inner === null || !$data['error'] instanceof CommitFailedException) {
-                return;
-            }
-            $prepare = $state->inner;
-            $state->inner = null;
-            $prepare();
-            try {
-                $this->db->transaction(static function () use ($data): void {
-                    throw $data['error'];
-                });
-            } catch (CommitFailedException) {
-                // the listener's own business
-            }
-        });
-
-        // rolled back - then the listener's transaction is lost with the same exception
-        $state->inner = function (): void {
-            $this->pdo->failRollBackAlways = true;
-        };
-        try {
-            $this->db->transaction(function (DatabaseInterface $db): void {
-                $db->insert(self::TABLE, ['id' => 1, 'name' => 'a']);
-                $this->pdo->failCommit = true;
-            });
-            $this->fail('Expected CommitFailedException');
-        } catch (CommitFailedException $e) {
-            $this->assertSame(self::ROLLED_BACK, $e->outcome);
-            $this->assertSame([self::ROLLED_BACK, self::LOST], array_column($this->ends, 'outcome'));
-            $this->assertSame($e, $this->ends[1]['error']);
-        }
-        $this->pdo->failRollBackAlways = false;
-        $this->db->rollback();
-
-        // lost - then the listener's transaction is rolled back with the same exception
-        $this->ends = [];
-        $state->inner = function (): void {
-            $this->pdo->failRollBackAlways = false;
-            $this->pdo->rollBack(); // what the failed rollback left open
-        };
-        try {
-            $this->db->transaction(function (DatabaseInterface $db): void {
-                $db->insert(self::TABLE, ['id' => 2, 'name' => 'b']);
-                $this->pdo->failCommit = true;
-                $this->pdo->failRollBackAlways = true;
-            });
-            $this->fail('Expected CommitFailedException');
-        } catch (CommitFailedException $e) {
-            $this->assertSame(self::LOST, $e->outcome);
-            $this->assertSame([self::LOST, self::ROLLED_BACK], array_column($this->ends, 'outcome'));
-            $this->assertSame($e, $this->ends[1]['error']);
-        }
-        $this->assertVisible([]);
-    }
-
     public function testUpdateMultipleReportsTheOutcomeOfItsFailedCommit(): void
     {
         $this->db->insert(self::TABLE, ['id' => 1, 'name' => 'a']);
@@ -1714,64 +1457,6 @@ class TransactionEndScenariosTest extends TransactionEndTestCase
     }
 
     /**
-     * updateMultiple() ends only the transaction it began: an 'error' listener that rolls it back
-     * and begins another keeps that other one, and so does a 'query' listener when the batch
-     * goes through.
-     */
-    public function testUpdateMultipleLeavesATransactionAListenerBeganAlone(): void
-    {
-        $this->db->insert(self::TABLE, ['id' => 1, 'name' => 'a']);
-        $this->events = [];
-        $takeOver = function (): void {
-            $this->db->rollback();
-            $this->db->beginTransaction();
-            $this->db->insert(self::TABLE, ['id' => 2, 'name' => 'listener']);
-        };
-        $state = new class () {
-            public ?string $armed = 'error';
-        };
-        $this->db->on('error', static function () use ($state, $takeOver): void {
-            if ($state->armed === 'error') {
-                $state->armed = null;
-                $takeOver();
-            }
-        });
-        $this->db->on('query', static function (array $data) use ($state, $takeOver): void {
-            if ($state->armed === 'query') { // the first statement once armed: the batch's update
-                $state->armed = null;
-                $takeOver();
-            }
-        });
-
-        try {
-            $this->db->updateMultiple(self::TABLE, [['id' => 1, 'name' => 'x'], ['id' => 1, 'no_such_column' => 'y']]);
-            $this->fail('Expected QueryException');
-        } catch (QueryException $e) {
-            $this->assertSame(['rollback', 'end'], $this->events, "the listener's rollback; nothing for the transaction it began");
-        }
-        $this->assertTrue($this->pdo->reallyInTransaction());
-        $this->db->commit();
-        $this->assertVisible([1, 2]);
-        $this->assertSame(['a', 'listener'], array_column($this->rows(), 'name'));
-
-        $this->db->delete(self::TABLE, ['id' => 2]);
-        $this->events = [];
-        $state->armed = 'query';
-        try {
-            $this->db->updateMultiple(self::TABLE, [['id' => 1, 'name' => 'x']]);
-            $this->fail('Expected CommitFailedException: the batch\'s transaction is over');
-        } catch (CommitFailedException $e) {
-            $this->assertSame(self::LOST, $e->outcome);
-            $this->assertNull($e->getPrevious());
-        }
-        $this->assertSame(['rollback', 'end'], $this->events);
-        $this->assertTrue($this->pdo->reallyInTransaction());
-        $this->db->rollback();
-        $this->assertVisible([1]);
-        $this->assertSame(['a'], array_column($this->rows(), 'name'), 'the update was rolled back by the listener');
-    }
-
-    /**
      * A callback that commits and begins a second transaction: the second one is the callback's.
      * transaction() neither commits it on return nor rolls it back on a throw - 'rolled_back' at
      * its exception would speak of data that is committed.
@@ -1841,65 +1526,13 @@ class TransactionEndScenariosTest extends TransactionEndTestCase
     }
 
     /**
-     * beginTransaction() tells the end of a transaction that ended behind the library's back. An
-     * end listener that answers with a transaction of its own which ends the same way gets that
-     * end told too, before the new transaction begins - it used to be buried.
+     * A 'transaction.begin' listener that tries to end the transaction it was told about is refused
+     * (no transaction control inside a listener): its exception makes the begin fail like every
+     * listener exception - the transaction is rolled back raw and told 'rolled_back', no further
+     * begin listener runs, and transaction() does not run the callback; updateMultiple() sends
+     * none of its updates.
      */
-    public function testAnEndListenersTransactionThatEndsOutsideTheLibraryIsToldBeforeTheNextBegins(): void
-    {
-        $this->endOnRawPdoInAnEndListener(times: 1);
-
-        $this->db->beginTransaction();
-        $this->db->insert(self::TABLE, ['id' => 1, 'name' => 'a']);
-        $this->pdo->commit(); // behind the library's back
-
-        $this->db->beginTransaction();
-        $this->assertSame(['end', 'end'], $this->events, 'the first transaction, then the listener\'s');
-        $this->assertSame([self::LOST, self::LOST], array_column($this->ends, 'outcome'));
-        $this->assertTrue($this->pdo->reallyInTransaction());
-
-        $this->db->insert(self::TABLE, ['id' => 2, 'name' => 'b']);
-        $this->db->commit();
-        $this->assertSame(['end', 'end', 'commit', 'end'], $this->events);
-        $this->assertVisible([1, 2]);
-    }
-
-    /**
-     * Listeners that answer every such end with another transaction of that kind do not keep
-     * beginTransaction() in a loop: after two ends it throws, begins nothing, and the next call
-     * tells the end that is still owed.
-     */
-    public function testEndListenersThatKeepLeavingSuchATransactionBehindStopTheBegin(): void
-    {
-        $left = $this->endOnRawPdoInAnEndListener(times: 5);
-
-        $this->db->beginTransaction();
-        $this->pdo->commit();
-
-        try {
-            $this->db->beginTransaction();
-            $this->fail('Expected TransactionException');
-        } catch (TransactionException $e) {
-            $this->assertSame('Failed to begin transaction', $e->getMessage());
-            $this->assertStringStartsWith('Not begun: the transaction.end listeners keep leaving behind', (string) $e->getDebugMessage());
-        }
-        $this->assertSame([self::LOST, self::LOST], array_column($this->ends, 'outcome'), 'two ends told, the third transaction still owes its');
-        $this->assertFalse($this->pdo->reallyInTransaction(), 'nothing was begun');
-
-        $left->times = 0;
-        $this->db->beginTransaction();
-        $this->assertSame([self::LOST, self::LOST, self::LOST], array_column($this->ends, 'outcome'));
-        $this->db->rollback();
-        $this->assertSame(['end', 'end', 'end', 'rollback', 'end'], $this->events);
-        $this->assertVisible([]);
-    }
-
-    /**
-     * A 'transaction.begin' listener that ends the transaction it was told about leaves the
-     * caller without one: beginTransaction() fails, and transaction() does not run the callback
-     * outside of a transaction - or inside one an end listener began in response.
-     */
-    public function testABeginListenerThatEndsTheTransactionMakesTheBeginFail(): void
+    public function testABeginListenerThatTriesToEndTheTransactionMakesTheBeginFail(): void
     {
         $armed = true;
         $this->db->on('transaction.begin', function () use (&$armed): void {
@@ -1908,86 +1541,36 @@ class TransactionEndScenariosTest extends TransactionEndTestCase
                 $this->db->rollback();
             }
         });
+        $secondRan = false;
+        $this->db->on('transaction.begin', static function () use (&$secondRan): void {
+            $secondRan = true;
+        });
         $ran = false;
 
         try {
             $this->db->transaction(static function () use (&$ran): void {
                 $ran = true;
             });
-            $this->fail('Expected TransactionException');
-        } catch (TransactionException $e) {
-            $this->assertNotInstanceOf(CommitFailedException::class, $e);
-            $this->assertSame('Failed to begin transaction', $e->getMessage());
-            $this->assertStringStartsWith('A transaction.begin listener ended the transaction that was just begun', (string) $e->getDebugMessage());
+            $this->fail('Expected ListenerTransactionException');
+        } catch (ListenerTransactionException $e) {
+            $this->assertStringStartsWith('rollback() was called from inside a listener', (string) $e->getDebugMessage());
+            $this->assertSame([self::ROLLED_BACK], array_column($this->ends, 'outcome'));
+            $this->assertSame($e, $this->ends[0]['error']);
         }
-        $this->assertFalse($ran, 'the callback did not run outside of a transaction');
-        $this->assertSame(['rollback', 'end'], $this->events);
+        $this->assertFalse($ran, 'the callback did not run');
+        $this->assertFalse($secondRan, 'no further begin listener ran');
+        $this->assertSame(['end'], $this->events, 'rolled back raw: no rollback listener');
         $this->assertFalse($this->pdo->reallyInTransaction());
 
-        // updateMultiple() does not send its updates in autocommit either
         $this->db->insert(self::TABLE, ['id' => 9, 'name' => 'before']);
         $armed = true;
         try {
             $this->db->updateMultiple(self::TABLE, [['id' => 9, 'name' => 'after']]);
-            $this->fail('Expected TransactionException');
-        } catch (TransactionException $e) {
-            $this->assertStringStartsWith('A transaction.begin listener ended the transaction that was just begun', (string) $e->getDebugMessage());
+            $this->fail('Expected ListenerTransactionException');
+        } catch (ListenerTransactionException) {
+            // refused in the begin listener
         }
         $this->assertSame(['before'], array_column($this->rows(), 'name'));
-        $this->db->delete(self::TABLE, ['id' => 9]);
-
-        // the same with a transaction an end listener begins in response: not the caller's
-        $this->events = [];
-        $armed = true;
-        $this->beginInAnEndListenerOnce();
-        try {
-            $this->db->transaction(static function (DatabaseInterface $db) use (&$ran): void {
-                $ran = true;
-                $db->insert(self::TABLE, ['id' => 1, 'name' => 'a']);
-            });
-            $this->fail('Expected TransactionException');
-        } catch (TransactionException $e) {
-            $this->assertNotInstanceOf(CommitFailedException::class, $e);
-            $this->assertStringStartsWith('A transaction.begin listener ended the transaction that was just begun', (string) $e->getDebugMessage());
-        }
-        $this->assertFalse($ran);
-        $this->assertSame(['rollback', 'end'], $this->events);
-        $this->assertTrue($this->pdo->reallyInTransaction(), "the listener's transaction, left to the listener");
-        $this->assertNotVisibleElsewhere(2);
-        $this->db->rollback();
-        $this->assertVisible([]);
-    }
-
-    /**
-     * Once a 'transaction.begin' listener has ended the transaction, no further begin listener
-     * runs: it would write outside of any transaction.
-     */
-    public function testNoBeginListenerRunsAfterOneThatEndedTheTransaction(): void
-    {
-        $state = new class () {
-            public bool $armed = true;
-        };
-        $this->db->on('transaction.begin', function () use ($state): void {
-            if ($state->armed) {
-                $this->db->rollback();
-            }
-        });
-        $this->db->on('transaction.begin', function (): void {
-            $this->db->insert(self::TABLE, ['id' => 3, 'name' => 'second begin listener']);
-        });
-
-        try {
-            $this->db->beginTransaction();
-            $this->fail('Expected TransactionException');
-        } catch (TransactionException $e) {
-            $this->assertStringStartsWith('A transaction.begin listener ended the transaction that was just begun', (string) $e->getDebugMessage());
-        }
-        $this->assertSame(['rollback', 'end'], $this->events);
-        $this->assertVisible([], 'the second listener did not write in autocommit');
-
-        $state->armed = false;
-        $this->db->transaction(static fn (): null => null);
-        $this->assertVisible([3], 'both listeners run for a transaction that stays open');
     }
 
     /**
@@ -2114,39 +1697,6 @@ class TransactionEndScenariosTest extends TransactionEndTestCase
         $this->assertSame(['commit', 'end'], $this->events, 'no end of an earlier transaction is owed any more');
     }
 
-    /**
-     * After a throwing 'transaction.begin' listener the transaction just begun is rolled back on
-     * raw PDO - but not one the listener began itself after ending the first: that one keeps its
-     * mark and its end.
-     */
-    public function testAThrowingBeginListenerDoesNotHaveItsOwnTransactionRolledBack(): void
-    {
-        $armed = true;
-        $failure = new RuntimeException('begin listener failed');
-        $this->db->on('transaction.begin', function () use (&$armed, $failure): void {
-            if ($armed) {
-                $armed = false;
-                $this->db->rollback();
-                $this->db->beginTransaction();
-                $this->db->insert(self::TABLE, ['id' => 2, 'name' => 'listener']);
-                throw $failure;
-            }
-        });
-
-        try {
-            $this->db->beginTransaction();
-            $this->fail('Expected the listener exception');
-        } catch (RuntimeException $e) {
-            $this->assertSame($failure, $e);
-        }
-        $this->assertSame(['rollback', 'end'], $this->events);
-        $this->assertTrue($this->pdo->reallyInTransaction(), "the listener's own transaction is still open");
-
-        $this->db->commit();
-        $this->assertSame(['rollback', 'end', 'commit', 'end'], $this->events, 'and its end is told when it is ended');
-        $this->assertVisible([2]);
-    }
-
     /** An end listener that, once, answers a 'rolled_back' with a transaction of its own and a row in it. */
     private function beginInAnEndListenerOnce(): void
     {
@@ -2154,29 +1704,10 @@ class TransactionEndScenariosTest extends TransactionEndTestCase
         $this->db->on('transaction.end', function (array $data) use (&$begun): void {
             if (!$begun && $data['outcome'] === self::ROLLED_BACK) {
                 $begun = true;
-                $this->db->beginTransaction();
+                $this->pdo->beginTransaction(); // on raw PDO: through the driver it is refused in a listener
                 $this->db->insert(self::TABLE, ['id' => 2, 'name' => 'listener']);
             }
         });
-    }
-
-    /**
-     * An end listener that answers a 'lost' with a transaction of its own and ends it on raw PDO,
-     * as often as the returned object's $times says.
-     */
-    private function endOnRawPdoInAnEndListener(int $times): \stdClass
-    {
-        $left = new \stdClass();
-        $left->times = $times;
-        $this->db->on('transaction.end', function (array $data) use ($left): void {
-            if ($data['outcome'] === self::LOST && $left->times > 0) {
-                $left->times--;
-                $this->db->beginTransaction();
-                $this->pdo->commit();
-            }
-        });
-
-        return $left;
     }
 
     public function testThePayloadsHaveExactlyTheirKeys(): void
@@ -2476,27 +2007,17 @@ class TransactionEndScenariosTest extends TransactionEndTestCase
     }
 
     /**
-     * The listeners of a transaction run before its end is told, and they may run a transaction
-     * of their own. A handler that rolls back in the middle of the failing COMMIT, with a rollback
-     * listener that writes an audit row in a transaction: the transaction the COMMIT was for is
-     * ended by that rollback - counted when it ended, not when its end was told - and gets no
-     * second end.
+     * A handler that rolls back in the middle of the failing COMMIT and then writes an audit row in
+     * a transaction of its own: the transaction the COMMIT was for is ended by that rollback -
+     * counted when it ended, not when its end was told - and gets no second end.
      */
-    public function testAListenersOwnTransactionDuringAHandlersRollbackDoesNotHideThatTheTransactionEnded(): void
+    public function testAHandlersOwnTransactionAfterItsRollbackDoesNotHideThatTheTransactionEnded(): void
     {
         $db = $this->db;
         $pdo = $this->pdo;
-        $audit = new class () {
-            public bool $written = false;
-        };
-        $this->db->on('transaction.rollback', static function () use ($db, $audit): void {
-            if (!$audit->written) {
-                $audit->written = true;
-                $db->transaction(static fn (DatabaseInterface $db) => $db->insert(self::TABLE, ['id' => 2, 'name' => 'audit']));
-            }
-        });
         $this->pdo->duringCommit = static function () use ($db, $pdo): void {
             $db->rollback();
+            $db->transaction(static fn (DatabaseInterface $db) => $db->insert(self::TABLE, ['id' => 2, 'name' => 'audit']));
             $pdo->failCommit = true;
         };
         $this->events = [];
@@ -2510,31 +2031,23 @@ class TransactionEndScenariosTest extends TransactionEndTestCase
         }
 
         $this->assertSame(
-            [['outcome' => self::COMMITTED, 'error' => null], ['outcome' => self::ROLLED_BACK, 'error' => null]],
+            [['outcome' => self::ROLLED_BACK, 'error' => null], ['outcome' => self::COMMITTED, 'error' => null]],
             $this->ends,
-            'the listener\'s transaction, then the one the handler rolled back - and no "lost" after it'
+            'the one the handler rolled back, then the handler\'s own - and no "lost" after it'
         );
         $this->assertVisible([2]);
     }
 
     /**
-     * The same with a handler that commits the transaction itself and a commit listener that runs
-     * a transaction: committed once, and the COMMIT that then finds nothing left tells no 'lost'.
+     * The same with a handler that commits the transaction itself and then runs a transaction of
+     * its own: committed once, and the COMMIT that then finds nothing left tells no 'lost'.
      */
-    public function testAListenersOwnTransactionDuringAHandlersCommitDoesNotHideThatTheTransactionEnded(): void
+    public function testAHandlersOwnTransactionAfterItsCommitDoesNotHideThatTheTransactionEnded(): void
     {
         $db = $this->db;
-        $audit = new class () {
-            public bool $written = false;
-        };
-        $this->db->on('transaction.commit', static function () use ($db, $audit): void {
-            if (!$audit->written) {
-                $audit->written = true;
-                $db->transaction(static fn (DatabaseInterface $db) => $db->insert(self::TABLE, ['id' => 2, 'name' => 'audit']));
-            }
-        });
         $this->pdo->duringCommit = static function () use ($db): void {
             $db->commit();
+            $db->transaction(static fn (DatabaseInterface $db) => $db->insert(self::TABLE, ['id' => 2, 'name' => 'audit']));
         };
         $this->events = [];
         $this->ends = [];
@@ -2549,16 +2062,16 @@ class TransactionEndScenariosTest extends TransactionEndTestCase
         $this->assertSame(
             [['outcome' => self::COMMITTED, 'error' => null], ['outcome' => self::COMMITTED, 'error' => null]],
             $this->ends,
-            'the listener\'s transaction, then the one the handler committed - and no "lost" after it'
+            'the one the handler committed, then the handler\'s own - and no "lost" after it'
         );
         $this->assertVisible([1, 2]);
     }
 
     /**
      * And with a handler whose own commit() fails and finds the transaction gone: that commit
-     * told the end as 'lost' - and an end listener answers that 'lost' with a transaction of its
-     * own. The transaction counts as ended before its end listeners run: the COMMIT of
-     * transaction() tells no second 'lost'.
+     * told the end as 'lost' - and the handler then runs a transaction of its own. The
+     * transaction counts as ended at that moment: the COMMIT of transaction() tells no second
+     * 'lost'.
      */
     public function testAFailedCommitAfterAHandlersOwnCommitToldTheEndAsLostTellsNoSecondEnd(): void
     {
@@ -2566,15 +2079,7 @@ class TransactionEndScenariosTest extends TransactionEndTestCase
         $pdo = $this->pdo;
         $seen = new class () {
             public ?CommitFailedException $inner = null;
-
-            public bool $answered = false;
         };
-        $this->db->on('transaction.end', static function (array $data) use ($db, $seen): void {
-            if ($data['outcome'] === DatabaseInterface::TRANSACTION_LOST && !$seen->answered) {
-                $seen->answered = true;
-                $db->transaction(static fn (DatabaseInterface $db) => $db->insert(self::TABLE, ['id' => 2, 'name' => 'by the end listener']));
-            }
-        });
         $this->pdo->duringCommit = static function () use ($db, $pdo, $seen): void {
             $pdo->rollBack(); // the server has thrown the transaction away
             $pdo->failCommit = true;
@@ -2583,6 +2088,7 @@ class TransactionEndScenariosTest extends TransactionEndTestCase
             } catch (CommitFailedException $e) {
                 $seen->inner = $e;
             }
+            $db->transaction(static fn (DatabaseInterface $db) => $db->insert(self::TABLE, ['id' => 2, 'name' => 'by the handler']));
         };
 
         try {
@@ -2598,7 +2104,7 @@ class TransactionEndScenariosTest extends TransactionEndTestCase
         $this->assertSame(
             [['outcome' => self::LOST, 'error' => $seen->inner], ['outcome' => self::COMMITTED, 'error' => null]],
             $this->ends,
-            'lost once, then the end listener\'s own transaction - and no second "lost"'
+            'lost once, then the handler\'s own transaction - and no second "lost"'
         );
         $this->assertVisible([2]);
     }
@@ -2693,56 +2199,6 @@ class TransactionEndScenariosTest extends TransactionEndTestCase
             'begin 1/1', 'commit 1/1', 'end committed 1/1',
             'begin 2/1', 'rollback 2/1', 'end rolled_back 2/1',
             'begin 3/1', 'commit 3/1', 'end committed 3/1',
-        ], $seen->getArrayCopy());
-    }
-
-    /**
-     * A transaction a commit listener runs is begun while the committed one still owes its end:
-     * one level deeper. Its end comes first; the numbers tell the two apart, whatever the order.
-     */
-    public function testATransactionACommitListenerRunsIsOneLevelDeeper(): void
-    {
-        $seen = $this->recordNumbers();
-        $once = true;
-        $this->db->on('transaction.commit', function () use (&$once): void {
-            if ($once) {
-                $once = false;
-                $this->db->transaction(fn (): int => $this->db->insert(self::TABLE, ['id' => 2, 'name' => 'listener']));
-            }
-        });
-
-        $this->db->transaction(fn (): int => $this->db->insert(self::TABLE, ['id' => 1, 'name' => 'outer']));
-        $this->db->transaction(static fn (): null => null);
-
-        $this->assertSame([
-            'begin 1/1', 'commit 1/1',
-            'begin 2/2', 'commit 2/2', 'end committed 2/2',
-            'end committed 1/1',
-            'begin 3/1', 'commit 3/1', 'end committed 3/1',
-        ], $seen->getArrayCopy(), 'back at depth 1 afterwards');
-        $this->assertVisible([1, 2]);
-    }
-
-    /**
-     * An end listener runs once the end is told: a transaction it runs is not nested in the one
-     * that ended.
-     */
-    public function testATransactionAnEndListenerRunsIsNotNested(): void
-    {
-        $seen = $this->recordNumbers();
-        $once = true;
-        $this->db->on('transaction.end', function () use (&$once): void {
-            if ($once) {
-                $once = false;
-                $this->db->transaction(static fn (): null => null);
-            }
-        });
-
-        $this->db->transaction(static fn (): null => null);
-
-        $this->assertSame([
-            'begin 1/1', 'commit 1/1', 'end committed 1/1',
-            'begin 2/1', 'commit 2/1', 'end committed 2/1',
         ], $seen->getArrayCopy());
     }
 
@@ -2860,94 +2316,6 @@ class TransactionEndScenariosTest extends TransactionEndTestCase
     }
 
     /**
-     * A transaction a commit listener begins through the driver and ends on raw PDO was told
-     * begun: it gets its end, 'lost' - it ended outside the library -, before the outer one.
-     */
-    public function testATransactionACommitListenerEndsOnRawPdoGetsItsEndAsLost(): void
-    {
-        $seen = $this->recordNumbers();
-        $once = true;
-        $this->db->on('transaction.commit', function () use (&$once): void {
-            if ($once) {
-                $once = false;
-                $this->db->beginTransaction();
-                $this->db->insert(self::TABLE, ['id' => 2, 'name' => 'listener']);
-                $this->pdo->commit();
-            }
-        });
-
-        $this->db->transaction(fn (): int => $this->db->insert(self::TABLE, ['id' => 1, 'name' => 'outer']));
-
-        $this->assertSame(['begin 1/1', 'commit 1/1', 'begin 2/2', 'end lost 2/2', 'end committed 1/1'], $seen->getArrayCopy());
-        $this->assertInstanceOf(TransactionException::class, $this->ends[0]['error']);
-        $this->assertSame('Transaction ended outside this library', $this->ends[0]['error']->getMessage());
-        $this->assertVisible([1, 2], 'the listener committed its row itself');
-    }
-
-    /**
-     * A transaction a commit listener leaves open is rolled back raw and gets its end with its own
-     * number, before the outer one.
-     */
-    public function testATransactionACommitListenerLeavesOpenEndsWithItsNumber(): void
-    {
-        $seen = $this->recordNumbers();
-        $once = true;
-        $this->db->on('transaction.commit', function () use (&$once): void {
-            if ($once) {
-                $once = false;
-                $this->db->beginTransaction();
-            }
-        });
-
-        try {
-            $this->db->transaction(static fn (): null => null);
-            $this->fail('Expected CommitHookException');
-        } catch (CommitHookException $e) {
-            $this->assertSame('listener left a transaction open', $e->failures[0]->getMessage());
-        }
-
-        $this->assertSame(['begin 1/1', 'commit 1/1', 'begin 2/2', 'end rolled_back 2/2', 'end committed 1/1'], $seen->getArrayCopy());
-        $this->assertVisible([]);
-    }
-
-    /**
-     * A transaction a commit listener left open waits for its end until the commit listeners are
-     * done: one a later commit listener runs meanwhile is a level deeper still.
-     */
-    public function testATransactionLeftOpenByACommitListenerCountsUntilItsEndIsTold(): void
-    {
-        $seen = $this->recordNumbers();
-        $once = ['first' => true, 'second' => true];
-        $this->db->on('transaction.commit', function () use (&$once): void {
-            if ($once['first']) {
-                $once['first'] = false;
-                $this->db->beginTransaction(); // left open: rolled back raw, its end buffered
-            }
-        });
-        $this->db->on('transaction.commit', function () use (&$once): void {
-            if ($once['second']) {
-                $once['second'] = false;
-                $this->db->transaction(static fn (): null => null);
-            }
-        });
-
-        try {
-            $this->db->transaction(static fn (): null => null);
-            $this->fail('Expected CommitHookException');
-        } catch (CommitHookException) {
-        }
-        $this->db->transaction(static fn (): null => null);
-
-        $this->assertSame([
-            'begin 1/1', 'commit 1/1',
-            'begin 2/2',
-            'begin 3/3', 'commit 3/3', 'end committed 3/3',
-            'end rolled_back 2/2', 'end committed 1/1',
-            'begin 4/1', 'commit 4/1', 'end committed 4/1',
-        ], $seen->getArrayCopy());
-    }
-
-    /**
      * A transaction that vanished behind the driver's back is told as 'lost' by the next begin,
      * with its own number, before the next one is told begun.
      */
@@ -3038,11 +2406,11 @@ class TransactionEndScenariosTest extends TransactionEndTestCase
         $this->db->on('transaction.commit', function () use ($state): void {
             if ($state->mode === 'inner ended raw') {
                 $state->mode = '';
-                $this->db->beginTransaction();
+                $this->pdo->beginTransaction(); // on raw PDO: through the driver it is refused in a listener
                 $this->pdo->rollBack();
             } elseif ($state->mode === 'inner left open') {
                 $state->mode = '';
-                $this->db->beginTransaction();
+                $this->pdo->beginTransaction();
             }
         });
 
@@ -3064,7 +2432,7 @@ class TransactionEndScenariosTest extends TransactionEndTestCase
                             throw new LogicException('callback failed');
                         });
                     } else {
-                        $begun += $mode === 'begin listener throws' ? 1 : 2;
+                        $begun += 1; // a commit listener's transaction is raw: no number
                         $this->db->transaction(static fn (): null => null);
                     }
                 } catch (RuntimeException | LogicException | CommitHookException) {

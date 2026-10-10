@@ -19,9 +19,9 @@ use Throwable;
  * not be read, or the session chained a new transaction to the COMMIT; the remaining commit
  * listeners - with a chained transaction all of them - are then skipped and listed in $failures,
  * and $connectionInTransaction is true; the end listeners still run). $failures lists the commit
- * listeners' failures first, then the failures of the 'transaction.end' listeners for transactions
- * commit listeners left open, then those of the committed transaction's end. getPrevious() is the
- * first failure.
+ * listeners' failures first (a ListenerTransactionException among them for a listener that tried to
+ * steer a transaction through the library), then those of the committed transaction's end.
+ * getPrevious() is the first failure.
  *
  * All of this is what the exception says when the library throws it. One that arrives through
  * commit() from elsewhere - thrown by the commit() of a caller's PDO class ('pdoClass'), or by an
@@ -34,7 +34,7 @@ class CommitHookException extends DatabaseException
      * @param Throwable $first First failure, used as previous
      * @param list<Throwable> $failures All failures in listener order
      * @param bool $connectionInTransaction True when the connection is, or may still be, in a transaction:
-     *                                      one a commit listener left open whose rollback failed or did not
+     *                                      one a commit listener left open (on raw PDO) whose rollback failed or did not
      *                                      end it, one the session chained to the COMMIT
      *                                      (completion_type=CHAIN), or the connection state could not be
      *                                      read (reported as true, fail-closed). Do not run

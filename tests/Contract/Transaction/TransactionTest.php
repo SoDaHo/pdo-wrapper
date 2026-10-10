@@ -15,6 +15,7 @@ use Sodaho\PdoWrapper\DatabaseInterface;
 use Sodaho\PdoWrapper\Driver\AbstractDriver;
 use Sodaho\PdoWrapper\Exception\CommitFailedException;
 use Sodaho\PdoWrapper\Exception\CommitHookException;
+use Sodaho\PdoWrapper\Exception\ListenerTransactionException;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Exception\TransactionException;
 use Sodaho\PdoWrapper\Tests\Contract\ContractTestCase;
@@ -658,7 +659,7 @@ class TransactionTest extends ContractTestCase
             $events[] = 'rollback';
         });
         $this->db->on('transaction.commit', function () use ($first): void {
-            $this->db->beginTransaction();
+            $this->db->getPdo()->beginTransaction(); // on raw PDO: through the driver it is refused in a listener
             $this->db->execute('INSERT INTO users (name) VALUES (?)', ['from listener']);
             throw $first;
         });
@@ -688,7 +689,7 @@ class TransactionTest extends ContractTestCase
     public function testQuietListenerLeavingTransactionOpenIsReported(): void
     {
         $this->db->on('transaction.commit', function (): void {
-            $this->db->beginTransaction();
+            $this->db->getPdo()->beginTransaction(); // on raw PDO: through the driver it is refused in a listener
         });
 
         $this->db->beginTransaction();
@@ -876,23 +877,19 @@ class TransactionTest extends ContractTestCase
         $this->assertFalse($db->getPdo()->inTransaction());
     }
 
-    public function testCommitListenerRunningItsOwnTransaction(): void
+    /**
+     * A commit listener that runs a transaction of its own through the driver is refused: the
+     * transaction() inside it throws a ListenerTransactionException before anything is begun, and that
+     * is the listener's failure. The outer transaction is committed; the inner insert never ran.
+     */
+    public function testCommitListenerRunningItsOwnTransactionIsRefused(): void
     {
         $db = $this->scenarioDriver();
-        $innerError = new RuntimeException('inner listener');
-        $nested = false;
-        $thrown = false;
-        $db->on('transaction.commit', static function () use ($db, &$nested): void {
-            if (!$nested) {
-                $nested = true;
-                $db->transaction(static fn (DatabaseInterface $db) => $db->execute('INSERT INTO users (name) VALUES (?)', ['inner']));
-            }
-        });
-        $db->on('transaction.commit', static function () use ($innerError, &$nested, &$thrown): void {
-            if ($nested && !$thrown) {
-                $thrown = true;
-                throw $innerError;
-            }
+        $ran = false;
+        $db->on('transaction.commit', static function () use ($db, &$ran): void {
+            $db->transaction(static function (DatabaseInterface $db) use (&$ran): void {
+                $ran = true;
+            });
         });
 
         try {
@@ -900,12 +897,12 @@ class TransactionTest extends ContractTestCase
             $this->fail('Expected CommitHookException');
         } catch (CommitHookException $e) {
             $this->assertCount(1, $e->failures);
-            $inner = $e->getPrevious();
-            $this->assertInstanceOf(CommitHookException::class, $inner);
-            $this->assertSame($innerError, $inner->getPrevious());
+            $this->assertInstanceOf(ListenerTransactionException::class, $e->getPrevious());
+            $this->assertFalse($e->connectionInTransaction);
         }
 
-        $this->assertSame(2, $this->userCount($db));
+        $this->assertFalse($ran, 'nothing was begun');
+        $this->assertSame(1, $this->userCount($db));
         $this->assertSame(0, $this->scenarioPdo->rollBackCalls);
         $this->assertFalse($db->getPdo()->inTransaction());
     }
@@ -923,13 +920,13 @@ class TransactionTest extends ContractTestCase
         $db->on('transaction.rollback', static function () use (&$events): void {
             $events[] = 'rollback';
         });
-        $db->on('transaction.commit', static function () use ($db, $pdo, $rollbackError, $first): void {
+        $db->on('transaction.commit', static function () use ($pdo, $rollbackError, $first): void {
             if ($rollbackError !== null) {
                 $pdo->duringRollBack = static fn () => throw $rollbackError;
             } else {
                 $pdo->rollBackReturnsFalse = true;
             }
-            $db->beginTransaction();
+            $pdo->beginTransaction(); // on raw PDO: through the driver it is refused in a listener
             throw $first;
         });
         $db->on('transaction.commit', static function () use (&$events): void {

@@ -233,22 +233,13 @@ class TransactionEndScenariosTest extends TransactionEndTestCase
     }
 
     /**
-     * A rollback listener runs before the end of its transaction is told, and may run a
-     * transaction of its own. When the handler's rollback - in the middle of the question - has
-     * such a listener, the rollback() that asked still sees that its transaction has ended.
+     * An error handler that rolls back in the middle of the question and then runs a transaction of
+     * its own (the next number is begun): the rollback() that asked still sees that its
+     * transaction has ended, and tells nothing more.
      */
-    public function testAListenersOwnTransactionWhileRollbackAsksDoesNotHideThatTheTransactionEnded(): void
+    public function testAHandlersOwnTransactionWhileRollbackAsksDoesNotHideThatTheTransactionEnded(): void
     {
         $db = $this->db;
-        $audit = new class () {
-            public bool $written = false;
-        };
-        $this->db->on('transaction.rollback', static function () use ($db, $audit): void {
-            if (!$audit->written) {
-                $audit->written = true;
-                $db->transaction(static fn (DatabaseInterface $db) => $db->insert(self::TABLE, ['id' => 2, 'name' => 'audit']));
-            }
-        });
         $this->db->beginTransaction();
         $this->db->insert(self::TABLE, ['id' => 1, 'name' => 'a']);
         try {
@@ -259,6 +250,7 @@ class TransactionEndScenariosTest extends TransactionEndTestCase
         }
         $this->pdo->duringExec = static function () use ($db): void {
             $db->rollback();
+            $db->transaction(static fn (DatabaseInterface $db) => $db->insert(self::TABLE, ['id' => 2, 'name' => 'audit']));
             throw new \RuntimeException('thrown by an error handler');
         };
         $this->events = [];
@@ -267,23 +259,24 @@ class TransactionEndScenariosTest extends TransactionEndTestCase
         $this->db->rollback();
 
         $this->assertSame(
-            [['outcome' => DatabaseInterface::TRANSACTION_COMMITTED, 'error' => null], ['outcome' => DatabaseInterface::TRANSACTION_ROLLED_BACK, 'error' => null]],
+            [['outcome' => DatabaseInterface::TRANSACTION_ROLLED_BACK, 'error' => null], ['outcome' => DatabaseInterface::TRANSACTION_COMMITTED, 'error' => null]],
             $this->ends,
-            'the listener\'s transaction, then the one the handler rolled back - and nothing after it'
+            'the one the handler rolled back, then the handler\'s own - and nothing after it'
         );
         $this->assertVisible([2]);
     }
 
     /**
-     * The same while the cleanup after a throwing begin listener asks: the handler's rollback
-     * ended the transaction that was just begun, nothing is left to undo or to tell.
+     * The same while the cleanup after a throwing begin listener rolls back: the handler's rollback
+     * (outside of the listener, in the middle of the cleanup's ROLLBACK) ended the transaction that
+     * was just begun, nothing is left to undo or to tell.
      */
-    public function testAnErrorHandlerThatRollsBackWhileTheBeginCleanupAsksLeavesOneEnd(): void
+    public function testAnErrorHandlerThatRollsBackWhileTheBeginCleanupRollsBackLeavesOneEnd(): void
     {
         $db = $this->db;
         $pdo = $this->pdo;
         $this->db->on('transaction.begin', static function () use ($db, $pdo): void {
-            $pdo->duringExec = static function () use ($db): void {
+            $pdo->duringRollBack = static function () use ($db): void {
                 $db->rollback();
                 throw new \RuntimeException('thrown by an error handler');
             };

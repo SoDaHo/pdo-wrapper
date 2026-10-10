@@ -355,7 +355,8 @@ class ReconnectTest extends ContractTestCase
 
     /**
      * In an end listener: the transaction that ended is over; the driver goes on on the new
-     * connection, and a transaction the listener runs there is its own.
+     * connection, and a statement the listener runs goes there (a transaction of its own would be
+     * refused: no transaction control inside a listener).
      */
     public function testReconnectInAnEndListener(): void
     {
@@ -364,13 +365,13 @@ class ReconnectTest extends ContractTestCase
             if ($once) {
                 $once = false;
                 $this->db->reconnect();
-                $this->db->transaction(fn (): int => $this->db->insert(self::TABLE, ['id' => 2, 'name' => 'listener']));
+                $this->db->insert(self::TABLE, ['id' => 2, 'name' => 'listener']);
             }
         });
 
         $this->db->transaction(fn (): int => $this->db->insert(self::TABLE, ['id' => 1, 'name' => 'committed']));
 
-        $this->assertSame(['begin 1', 'commit 1', 'end committed 1', 'begin 2', 'commit 2', 'end committed 2'], $this->events);
+        $this->assertSame(['begin 1', 'commit 1', 'end committed 1'], $this->events);
         $this->assertSame([1, 2], $this->visible());
     }
 

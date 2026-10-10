@@ -503,7 +503,7 @@ class WorkflowTest extends ContractTestCase
             $events[] = 'rollback';
         });
         $this->db->on('transaction.commit', function () {
-            $this->db->beginTransaction();
+            $this->db->getPdo()->beginTransaction(); // on raw PDO: through the driver it is refused in a listener
             $this->db->insert('users', ['email' => 'listener@test.com', 'name' => 'Listener User']);
         });
 
@@ -556,42 +556,6 @@ class WorkflowTest extends ContractTestCase
 
         $this->assertFalse($this->db->getPdo()->inTransaction());
         $this->assertSame('After', $this->db->findOne('users', ['id' => $id])['name'] ?? null);
-    }
-
-    public function testCommitListenerRunningItsOwnTransaction(): void
-    {
-        $events = [];
-        $innerError = new \RuntimeException('inner listener');
-        $nested = false;
-        $thrown = false;
-        $this->db->on('transaction.rollback', static function () use (&$events) {
-            $events[] = 'rollback';
-        });
-        $this->db->on('transaction.commit', function () use (&$nested) {
-            if (!$nested) {
-                $nested = true;
-                $this->db->transaction(fn () => $this->db->insert('users', ['email' => 'inner@test.com', 'name' => 'Inner']));
-            }
-        });
-        $this->db->on('transaction.commit', static function () use ($innerError, &$nested, &$thrown) {
-            if ($nested && !$thrown) {
-                $thrown = true;
-                throw $innerError;
-            }
-        });
-
-        try {
-            $this->db->transaction(fn () => $this->db->insert('users', ['email' => 'outer@test.com', 'name' => 'Outer']));
-            $this->fail('Expected CommitHookException');
-        } catch (CommitHookException $e) {
-            $inner = $e->getPrevious();
-            $this->assertInstanceOf(CommitHookException::class, $inner);
-            $this->assertSame($innerError, $inner->getPrevious());
-        }
-
-        $this->assertSame([], $events);
-        $this->assertFalse($this->db->getPdo()->inTransaction());
-        $this->assertSame(2, $this->db->table('users')->whereIn('email', ['inner@test.com', 'outer@test.com'])->count());
     }
 
     // =========================================================================

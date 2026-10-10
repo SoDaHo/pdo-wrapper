@@ -4,11 +4,9 @@ declare(strict_types=1);
 
 namespace Sodaho\PdoWrapper\Tests\Contract\TransactionEnd;
 
-use LogicException;
 use RuntimeException;
 use Sodaho\PdoWrapper\DatabaseInterface;
 use Sodaho\PdoWrapper\Exception\CommitFailedException;
-use Sodaho\PdoWrapper\Exception\CommitHookException;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Exception\TransactionException;
 use Throwable;
@@ -495,39 +493,6 @@ class ChainedCommitScenariosTest extends TransactionEndTestCase
     }
 
     /**
-     * A commit listener's transaction whose commit() failed on a session that may chain, and the
-     * state cannot be read after the listener: 'lost', and the end names the failed commit.
-     */
-    public function testACommitListenersUnclearTransactionWithAnUnreadableStateNamesTheFailedCommit(): void
-    {
-        $driver = $this->driver;
-        $failed = null;
-        $driver->on('transaction.commit', function () use ($driver, &$failed): void {
-            $driver->beginTransaction();
-            $this->pdo->failCommit = true;
-            try {
-                $driver->commit();
-            } catch (CommitFailedException $e) {
-                $failed = $e;
-            }
-            $this->pdo->stateUnreadable = true;
-        });
-        try {
-            $driver->transaction(static fn () => null);
-            $this->fail('Expected CommitHookException');
-        } catch (CommitHookException $e) {
-            $this->assertTrue($e->connectionInTransaction, 'fail-closed');
-        }
-        $this->pdo->stateUnreadable = false;
-        $this->assertCount(2, $this->ends);
-        $this->assertSame(self::LOST, $this->ends[0]['outcome']);
-        $this->assertNotNull($failed);
-        $this->assertSame($failed, $this->ends[0]['error']);
-        $this->assertSame(self::COMMITTED, $this->ends[1]['outcome']);
-        $this->pdo->rollBack();
-    }
-
-    /**
      * The question is a call into PDO. When it makes PDO learn that the transaction is gone - also
      * on a session that does not chain: the server answered the COMMIT with a failure and ended the
      * transaction (a deadlock at commit) -, the end is 'lost' at once and nothing is sent. When
@@ -650,76 +615,6 @@ class ChainedCommitScenariosTest extends TransactionEndTestCase
         $this->assertSame([['outcome' => self::ROLLED_BACK, 'error' => null]], $this->ends);
         $this->assertSame(['rollback', 'end'], $this->events);
         $this->assertVisible([]);
-    }
-
-    /**
-     * A 'transaction.begin' listener commits the transaction it was told about, the commit fails
-     * on a session that may chain, and the listener throws: the raw rollback that undoes the
-     * transaction confirms nothing, the end is 'lost'. On NO_CHAIN it is 'rolled_back'.
-     */
-    public function testABeginListenerWhoseCommitFailedThenThrowsEndsAsLost(): void
-    {
-        $driver = $this->driver;
-        $driver->on('transaction.begin', function () use ($driver): void {
-            $this->pdo->failCommit = true;
-            try {
-                $driver->commit();
-            } catch (CommitFailedException) {
-                throw new RuntimeException('the listener gave up');
-            }
-        });
-        foreach (['CHAIN' => self::LOST, 'NO_CHAIN' => self::ROLLED_BACK] as $answer => $outcome) {
-            $this->pdo->completionType = $answer;
-            $this->ends = [];
-            try {
-                $driver->transaction(static fn () => null);
-                $this->fail('Expected RuntimeException');
-            } catch (RuntimeException $e) {
-                $this->assertSame([['outcome' => $outcome, 'error' => $e]], $this->ends, $answer);
-            }
-            $this->assertVisible([]);
-        }
-    }
-
-    /**
-     * A 'transaction.commit' listener runs a transaction of its own; its COMMIT fails on a session
-     * that may chain, the listener catches that and returns with the transaction open. The raw
-     * cleanup rolls it back, but confirms nothing: its own end is 'lost' with the failed commit as
-     * error, then the outer 'committed'. On NO_CHAIN it is 'rolled_back'.
-     */
-    public function testACommitListenersTransactionWhoseCommitFailedIsToldAsLost(): void
-    {
-        $driver = $this->driver;
-        $failed = null;
-        $driver->on('transaction.commit', function () use ($driver, &$failed): void {
-            $driver->beginTransaction();
-            $driver->insert(self::TABLE, ['id' => 2, 'name' => 'by the listener']);
-            $this->pdo->failCommit = true;
-            try {
-                $driver->commit();
-            } catch (CommitFailedException $e) {
-                $failed = $e;
-            }
-        });
-        foreach (['CHAIN' => self::LOST, 'NO_CHAIN' => self::ROLLED_BACK] as $answer => $outcome) {
-            $this->pdo->completionType = $answer;
-            $this->ends = [];
-            try {
-                $driver->transaction(static fn (DatabaseInterface $db) => $db->insert(self::TABLE, ['id' => 1, 'name' => 'a']));
-                $this->fail('Expected CommitHookException');
-            } catch (CommitHookException $e) {
-                $this->assertFalse($e->connectionInTransaction, $answer . ': cleaned up');
-                $this->assertInstanceOf(LogicException::class, $e->getPrevious());
-            }
-            $this->assertCount(2, $this->ends, $answer);
-            $this->assertSame($outcome, $this->ends[0]['outcome'], $answer . ': the listener\'s transaction');
-            if ($outcome === self::LOST) {
-                $this->assertSame($failed, $this->ends[0]['error']);
-            }
-            $this->assertSame(self::COMMITTED, $this->ends[1]['outcome']);
-            $this->assertVisible([1]);
-            $this->observer->delete(self::TABLE, ['id' => 1]);
-        }
     }
 
     /**
