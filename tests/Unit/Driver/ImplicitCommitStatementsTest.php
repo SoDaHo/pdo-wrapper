@@ -125,6 +125,8 @@ class ImplicitCommitStatementsTest extends TestCase
             'analyze delete' => ['ANALYZE DELETE FROM t', null],
             'analyze, nothing after it' => ['ANALYZE', null],
             'load data' => ["LOAD DATA INFILE 'f' INTO TABLE t", null],
+            'load data local' => ["LOAD DATA LOCAL INFILE 'f' INTO TABLE t", null],
+            'load xml local' => ["LOAD XML LOCAL INFILE 'f' INTO TABLE t", null],
             'select' => ['SELECT * FROM t', null],
             'insert' => ['INSERT INTO t (a) VALUES (?)', null],
             'update' => ['UPDATE t SET a = 1', null],

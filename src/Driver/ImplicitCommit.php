@@ -19,8 +19,11 @@ namespace Sodaho\PdoWrapper\Driver;
  * caller's (decided 2026-10-03, see the README). Not either: CREATE TEMPORARY TABLE and DROP
  * TEMPORARY TABLE, which commit nothing, SET ROLE and CHECKSUM TABLE, the ANALYZE that runs a
  * statement and reports on it (ANALYZE SELECT, WITH, VALUES, a query in parentheses, INSERT,
- * UPDATE, DELETE, REPLACE, FORMAT=...; measured on 10.11 and 12.3: @@in_transaction stays 1, the
- * row inserted before is gone after the ROLLBACK). What a statement
+ * UPDATE, DELETE, REPLACE, FORMAT=...), and LOAD DATA [LOCAL] INFILE and LOAD XML - the START
+ * TRANSACTION page of the documentation names LOAD DATA among the statements that commit, the
+ * list of those statements does not; on InnoDB nothing is committed (all measured on 10.11 and
+ * 12.3: @@in_transaction stays 1, the rows loaded and the row inserted before them are gone after
+ * the ROLLBACK). What a statement
  * runs inside - a stored procedure (CALL), a prepared statement (EXECUTE), a compound statement
  * (BEGIN NOT ATOMIC) - is not seen.
  *
