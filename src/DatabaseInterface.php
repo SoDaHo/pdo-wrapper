@@ -260,7 +260,7 @@ interface DatabaseInterface
      * after the ROLLBACK (completion_type=CHAIN, not supported), that is reported as
      * TransactionException after the listeners ran, unless a rollback listener threw.
      *
-     * @throws Exception\ListenerTransactionException When called from inside a listener of this library (nothing is sent)
+     * @throws Exception\ListenerTransactionException When called from inside a listener that runs in the middle of a transaction (see beginTransaction(); nothing is sent)
      * @throws Exception\TransactionException On failure, when the connection is in a new, chained transaction afterwards, or when a transaction.end listener failed after a confirmed rollback and no rollback listener did (the first failure; all of them reach the 'error' hook)
      * @throws \Throwable Re-throws a rollback listener's exception
      */
