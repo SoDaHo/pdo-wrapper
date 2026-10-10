@@ -458,8 +458,9 @@ class DriverIntegrationTest extends TestCase
 
     /**
      * A statement on raw PDO tells PDO that the transaction is gone. The library still accepts
-     * nothing but the end of the transaction it began: no statement, no new transaction (which
-     * updateMultiple() would open). The refused commit then tells the end as 'lost'.
+     * nothing but the end of the transaction it began: no statement, and no new transaction -
+     * updateMultiple() begins none while that transaction is the library's, its batch is refused
+     * like any other statement. The refused commit then tells the end as 'lost'.
      */
     public function testRawPdoRevealingTheEndDoesNotLiftTheBlock(): void
     {
@@ -475,10 +476,11 @@ class DriverIntegrationTest extends TestCase
                 }
                 try {
                     $db->updateMultiple('lock_users', [['id' => 2, 'name' => 'in a replacement transaction']]);
-                    $this->fail('Expected TransactionException: no new transaction over the dead one');
-                } catch (TransactionException $e) {
-                    $this->assertSame('Failed to begin transaction', $e->getMessage());
+                    $this->fail('Expected QueryException: no new transaction over the dead one');
+                } catch (QueryException $e) {
+                    $this->assertStringContainsString('Not sent', (string) $e->getDebugMessage());
                     $this->assertSame(1213, $this->errorInfoBehind($e, 1));
+                    $this->assertSame(1, $db->currentTransaction(), 'still the dead transaction, no replacement begun');
                 }
             }
         );

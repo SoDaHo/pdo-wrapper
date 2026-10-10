@@ -611,15 +611,18 @@ interface DatabaseInterface
     /**
      * Update multiple rows by their key column.
      *
-     * Without an active transaction, the rows are updated in an own transaction
-     * with the same outcomes as transaction().
+     * Without an open transaction, the rows are updated in an own transaction
+     * with the same outcomes as transaction(). Open counts one begun through the library that
+     * ended behind its back (a DDL statement or raw PDO ended it): the batch is then refused like
+     * any other statement there, and no transaction of its own takes the old one's place. A state
+     * PDO cannot tell is refused before anything is sent.
      *
      * @param string $table Table name
      * @param array<int, array<string, mixed>> $rows Array of rows with key column
      * @param string $keyColumn Column to match rows (default: 'id')
      *
      * @throws Exception\QueryException
-     * @throws Exception\TransactionException When the own transaction's commit failed, or the own transaction was ended while the batch ran - a listener's reconnect(), an error handler inside a PDO call (a CommitFailedException with outcome 'lost'; what is open then is left alone) -, and when called from inside a listener where it would begin its own transaction (ListenerTransactionException)
+     * @throws Exception\TransactionException When the own transaction's commit failed, or the own transaction was ended while the batch ran - a listener's reconnect(), an error handler inside a PDO call (a CommitFailedException with outcome 'lost'; what is open then is left alone) -, when PDO cannot tell whether a transaction is open ('Connection state unknown', nothing is sent), and when called from inside a listener where it would begin its own transaction (ListenerTransactionException)
      * @throws Exception\CommitHookException When committed, but a transaction.commit or transaction.end listener failed or the connection state after a commit listener could not be verified
      *
      * @return int Number of affected rows

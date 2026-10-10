@@ -2114,6 +2114,21 @@ abstract class AbstractDriver implements DatabaseInterface
     }
 
     /**
+     * Whether a transaction is open on this connection: one begun through this driver that still
+     * owes its end - also when PDO no longer reports it (ended behind the driver's back: its end is
+     * still to be told, and nothing may run in its place) -, or one PDO reports (begun on raw PDO).
+     * The one answer to that question for updateMultiple(), which begins a transaction of its own
+     * only where none is open. PDO is read only when the driver holds none; a state PDO cannot tell
+     * is not interpreted here: what PDO throws then reaches the caller, who refuses.
+     *
+     * @throws Throwable What PDO throws when it cannot tell its state (a PDO class of the caller's)
+     */
+    private function transactionOpen(): bool
+    {
+        return $this->transactionBegun || $this->pdo->inTransaction();
+    }
+
+    /**
      * Execute a callback within a transaction.
      *
      * Auto-commits on success, auto-rollback on exception. What can go wrong:
@@ -3340,15 +3355,19 @@ abstract class AbstractDriver implements DatabaseInterface
      *
      * Each row must contain the key column for matching. Every row is checked before the first
      * is sent (the key column, its presence, every key and condition value): a refused row leaves
-     * nothing written, also inside a transaction of the caller. Without an active transaction, the
-     * rows are updated in an own transaction with the same outcomes as transaction().
+     * nothing written, also inside a transaction of the caller. Without an open transaction, the
+     * rows are updated in an own transaction with the same outcomes as transaction(). Open counts
+     * one begun through this driver that ended behind its back (a DDL statement or raw PDO ended
+     * it): no transaction of its own then - the rows' statements are refused like any other
+     * statement there ("Not sent"), nothing runs in autocommit. A state PDO cannot tell is refused
+     * before anything is sent (TransactionException 'Connection state unknown').
      *
      * @param string $table Table name (supports schema.table format)
      * @param array<int, array<string, mixed>> $rows Array of rows, each with key column
      * @param string $keyColumn Column to match rows (default: 'id')
      *
-     * @throws QueryException When a row is missing the key column, the key column or a key is no plain column name, or a key value is null - before anything is sent; or when an update fails
-     * @throws TransactionException When the own transaction's commit failed, or the own transaction was ended while the batch ran - a listener's reconnect(), an error handler inside a PDO call (a CommitFailedException with outcome 'lost'; what is open then is left alone) -, and when called from inside a listener of this driver other than a transaction.end listener (ListenerTransactionException, nothing is sent)
+     * @throws QueryException When a row is missing the key column, the key column or a key is no plain column name, or a key value is null - before anything is sent; or when an update fails, or is refused because the transaction this driver began has ended behind its back
+     * @throws TransactionException When the own transaction's commit failed, or the own transaction was ended while the batch ran - a listener's reconnect(), an error handler inside a PDO call (a CommitFailedException with outcome 'lost'; what is open then is left alone) -, when PDO cannot tell whether a transaction is open ('Connection state unknown', nothing is sent), and when called from inside a listener of this driver other than a transaction.end listener (ListenerTransactionException, nothing is sent)
      * @throws CommitHookException When committed, but a transaction.commit or transaction.end listener failed or the connection state after a commit listener could not be verified
      *
      * @return int Total number of affected rows
@@ -3378,8 +3397,21 @@ abstract class AbstractDriver implements DatabaseInterface
             }
         }
 
+        // A transaction of its own only where none is open. One this driver began still counts when it
+        // ended behind the driver's back: the rows then go to update(), whose statements are refused
+        // ("Not sent") - a transaction of its own would tell the old one 'lost' in passing and leave what
+        // the caller sends afterwards to autocommit. A state PDO cannot tell: neither would be safe
+        try {
+            $open = $this->transactionOpen();
+        } catch (Throwable $e) {
+            throw new TransactionException(
+                message: 'Connection state unknown',
+                previous: $e,
+                debugMessage: 'updateMultiple() could not tell whether a transaction is open (the previous exception): the rows would run in one nobody can confirm, or in a transaction of its own over one that is open. Nothing was sent and no transaction was begun.'
+            );
+        }
         $own = null; // the number of the transaction begun here; none inside a transaction of the caller
-        if (!$this->pdo->inTransaction()) {
+        if (!$open) {
             $this->beginTransaction();
             $own = $this->transactionJustBegun();
         }

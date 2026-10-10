@@ -609,10 +609,12 @@ class TransactionEndScenariosTest extends TransactionEndTestCase
     }
 
     /**
-     * The DDL statement ended the callback's transaction behind the library's back. A further
-     * transaction begun inside the callback (updateMultiple() opens its own when PDO reports none)
-     * must not take the owed end's place: the first one is told as 'lost' before the next begins,
-     * and that one gets its own 'committed'.
+     * The DDL statement ended the callback's transaction behind the library's back. The batch of
+     * updateMultiple() after it is refused like any other statement there - no transaction of its
+     * own takes the owed end's place, nothing runs in autocommit -, and the callback's exception
+     * ends the transaction as 'lost'. A transaction begun explicitly after such an end does not
+     * swallow it either: the first one is told as 'lost' before the next begins, and that one gets
+     * its own 'committed'.
      */
     public function testATransactionBegunAfterAnImplicitCommitDoesNotSwallowTheOwedEnd(): void
     {
@@ -627,10 +629,27 @@ class TransactionEndScenariosTest extends TransactionEndTestCase
                 self::commitImplicitlyOnRawPdo($db); // implicit COMMIT, on raw PDO
                 $db->updateMultiple(self::TABLE, [['id' => 1, 'name' => 'in its own transaction']]);
             });
-            $this->fail('Expected CommitFailedException: the outer commit finds no transaction');
-        } catch (CommitFailedException $e) {
-            $this->assertSame('Failed to commit transaction', $e->getMessage());
-            $this->assertSame(DatabaseInterface::TRANSACTION_LOST, $e->outcome, 'nothing was left to end: lost, and the rows are in fact committed');
+            $this->fail('Expected QueryException: the batch is not sent');
+        } catch (QueryException $e) {
+            $this->assertStringStartsWith('Not sent: PDO reports no transaction any more', (string) $e->getDebugMessage());
+        } finally {
+            $this->db->execute('DROP TABLE IF EXISTS end_scenarios_ddl');
+        }
+
+        $this->assertSame(['end'], $this->events);
+        $this->assertSame([DatabaseInterface::TRANSACTION_LOST], array_column($this->ends, 'outcome'));
+        $this->assertSame($e, $this->ends[0]['error']);
+        $this->assertVisible([1, 2]);
+        $this->assertSame('before', $this->db->findOne(self::TABLE, ['id' => 1])['name'] ?? null, 'the batch was never sent');
+
+        $this->events = [];
+        $this->ends = [];
+        $this->db->beginTransaction();
+        self::commitImplicitlyOnRawPdo($this->db);
+        try {
+            $this->db->beginTransaction();
+            $this->db->update(self::TABLE, ['name' => 'in the next transaction'], ['id' => 1]);
+            $this->db->commit();
         } finally {
             $this->db->execute('DROP TABLE IF EXISTS end_scenarios_ddl');
         }
@@ -641,7 +660,7 @@ class TransactionEndScenariosTest extends TransactionEndTestCase
         $this->assertSame('Transaction ended outside this library', $this->ends[0]['error']->getMessage());
         $this->assertNull($this->ends[1]['error']);
         $this->assertVisible([1, 2]);
-        $this->assertSame('in its own transaction', $this->db->findOne(self::TABLE, ['id' => 1])['name'] ?? null);
+        $this->assertSame('in the next transaction', $this->db->findOne(self::TABLE, ['id' => 1])['name'] ?? null);
     }
 
     /**

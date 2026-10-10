@@ -281,6 +281,8 @@ $db->updateMultiple('users', [
 
 A row that holds nothing but the key column is skipped (nothing to update). **Note:** This method executes one UPDATE query per row within a transaction. Best suited for batch sizes under ~100 rows. For larger datasets, consider `execute()` with a bulk statement (`INSERT ... ON DUPLICATE KEY UPDATE`).
 
+The transaction is your open one, or one of its own where none is open. A transaction the library began counts as open until it is ended through the library - also when it ended behind its back (a DDL statement or raw PDO ended it, a lock wait timeout under `innodb_rollback_on_timeout`): the batch is then refused like any other statement there (`QueryException` "Not sent: ..."), and no transaction of its own takes the old one's place - what you send after it would run in autocommit. Call `rollback()` and run the whole transaction again. When PDO cannot tell whether a transaction is open (a `pdoClass` whose `inTransaction()` throws), nothing is sent: `TransactionException` `Connection state unknown`.
+
 ## Query Builder
 
 ### Basic Select

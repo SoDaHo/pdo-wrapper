@@ -30,9 +30,10 @@ class RollbackOnTimeoutTest extends TransactionEndTestCase
 
     /**
      * The callback swallows the timeout. The driver asks right after it and finds the transaction
-     * gone: the locking read and the insert that follow are not sent - in autocommit the lock would
-     * end with its own statement and the row be committed on its own. The end is 'lost'; the row
-     * written before the timeout was rolled back by the server.
+     * gone: the locking read, the batch of updateMultiple() and the insert that follow are not sent -
+     * in autocommit the lock would end with its own statement and the rows be committed on their own,
+     * and the batch begins no transaction of its own over the one that is gone. The end is 'lost';
+     * the row written before the timeout was rolled back by the server.
      */
     public function testNothingIsSentAfterALockWaitTimeoutThatEndedTheTransaction(): void
     {
@@ -118,6 +119,7 @@ class RollbackOnTimeoutTest extends TransactionEndTestCase
                 }
                 foreach ([
                     static fn (): ?array => $db->table(self::TABLE)->where('id', 1)->lockForUpdate()->first(),
+                    static fn (): int => $db->updateMultiple(self::TABLE, [['id' => 1, 'name' => 'by the batch']]),
                     static fn (): int => $db->insert(self::TABLE, ['id' => 11, 'name' => 'after the timeout']),
                 ] as $statement) {
                     try {
@@ -137,7 +139,7 @@ class RollbackOnTimeoutTest extends TransactionEndTestCase
         }
 
         $this->assertSame(1205, $code);
-        $this->assertCount(2, $refused);
+        $this->assertCount(3, $refused);
         foreach ($refused as $e) {
             $this->assertStringStartsWith('Not sent: the server ended the transaction this library began', (string) $e->getDebugMessage());
         }
