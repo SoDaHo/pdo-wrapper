@@ -187,8 +187,10 @@ use Sodaho\PdoWrapper\Exception\DatabaseException;
  * the transaction: a statement would run outside of it and be committed on its own, so query()
  * throws a QueryException instead (previous: the deadlock; neither 'query' nor 'error' fires for
  * it), and beginTransaction() refuses.
- * That holds for a listener's statements too: an 'error' listener that writes to the database
- * needs its own connection. rollback() is the way out, for a transaction begun through this
+ * That holds for a listener's statements too - after a deadlock or a 1020, and after every
+ * failure the driver, asking right after it, found had ended the transaction or could not settle
+ * (or while PDO reports no transaction for the one this library began): an 'error' listener that
+ * writes to the database (an audit row) needs its own connection. rollback() is the way out, for a transaction begun through this
  * library also when PDO no longer reports it (a statement on raw PDO told it): nothing is sent
  * then, and the end is told as 'lost' with the deadlock as error instead of failing for want of
  * a transaction (end listener failures reach only the 'error' hook there). A lock wait timeout

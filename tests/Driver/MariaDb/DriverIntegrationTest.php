@@ -20,6 +20,12 @@ use Sodaho\PdoWrapper\Tests\Support\ReadsPdoErrorInfo;
 use Sodaho\PdoWrapper\Tests\Support\Recorder;
 use Sodaho\PdoWrapper\Tests\Support\TestEnvironment;
 
+/**
+ * The MariaDB driver against the server: the connection's attributes and session settings (utf8mb4,
+ * error and fetch mode, native prepares, no multi statements, time zone), chained commits and
+ * rollbacks, what a swallowed deadlock, a lock wait timeout and a lost connection leave behind, and
+ * the refusals of the transaction methods - what only MariaDB shows, outside the contract.
+ */
 class DriverIntegrationTest extends TestCase
 {
     use ReadsPdoErrorInfo;

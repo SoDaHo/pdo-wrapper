@@ -9,6 +9,11 @@ use Sodaho\PdoWrapper\DatabaseInterface;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Tests\Support\ReportingPdo;
 
+/**
+ * The CRUD methods (insert(), update(), delete(), findOne(), findAll(), updateMultiple()) as every
+ * driver must carry them out: the id insert() returns and its type, affected-row counts, and the
+ * QueryExceptions for empty or wrong input - through DatabaseInterface and the binding alone.
+ */
 class CrudTest extends ContractTestCase
 {
     protected function setUp(): void

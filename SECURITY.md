@@ -2,14 +2,12 @@
 
 ## Supported versions
 
+Fixes go into the latest release line only (`main`); older lines get no backports or advisories.
+
 | Version | Supported |
 |---------|-----------|
-| 3.1.x   | yes       |
-| 3.0.x   | yes       |
-| 2.1.x   | yes       |
-| 2.0.x   | yes       |
-| 1.6.x   | yes       |
-| < 1.6   | no        |
+| 3.2.x   | yes       |
+| < 3.2   | no        |
 
 ## Reporting a vulnerability
 
@@ -39,6 +37,10 @@ Likewise outside the library's reach, and documented in the README:
 - **PDO options.** `options` replace the secure defaults (native prepared statements, exceptions,
   no multi-statements on MySQL/MariaDB). Switching to emulated prepares, multi-statements or a
   runtime `SET NAMES` is the application's decision and risk.
+- **Transport and charset.** The library sets no TLS option: a connection across a network the
+  application does not control needs `Pdo\Mysql::ATTR_SSL_CA` and `ATTR_SSL_VERIFY_SERVER_CERT` among the
+  `options`. The quoting of names assumes an ASCII-safe charset (`utf8mb4`, the default); `big5`, `cp932`,
+  `gbk`, `gb18030` and `sjis` are not supported.
 - **Identifiers from request input.** Quoting keeps a column or table name from becoming SQL; it does
   not decide which column a request may read, filter or sort by. That needs a whitelist in the
   application.

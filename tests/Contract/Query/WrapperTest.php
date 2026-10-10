@@ -10,6 +10,10 @@ use Sodaho\PdoWrapper\DatabaseInterface;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Tests\Contract\ContractTestCase;
 
+/**
+ * The statement methods every driver carries: query() and execute() with and without parameters,
+ * lastInsertId(), the QueryException of a failed statement with its debug message, and the query hook.
+ */
 class WrapperTest extends ContractTestCase
 {
     protected function setUp(): void

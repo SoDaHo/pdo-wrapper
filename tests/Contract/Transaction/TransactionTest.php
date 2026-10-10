@@ -22,6 +22,11 @@ use Sodaho\PdoWrapper\Tests\Contract\ContractTestCase;
 use Sodaho\PdoWrapper\Tests\Support\ScenarioPdo;
 use Throwable;
 
+/**
+ * Transactions as every driver must carry them out: manual and callback transactions, the
+ * transaction.* events and their order, what a throwing listener or callback leaves behind, and the
+ * refusals (nesting, a commit without a transaction) - through DatabaseInterface and the binding alone.
+ */
 class TransactionTest extends ContractTestCase
 {
     /** The connection of scenarioDriver(): its rollBack() calls are counted, its commit() and rollBack() can be made to fail */

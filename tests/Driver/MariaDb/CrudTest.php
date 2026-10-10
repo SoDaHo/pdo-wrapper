@@ -10,6 +10,10 @@ use Sodaho\PdoWrapper\Driver\MariaDbDriver;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Tests\Support\TestEnvironment;
 
+/**
+ * The CRUD methods against MariaDB: insert() ids beyond PHP's integer range, below zero and from a
+ * table without AUTO_INCREMENT, and a round trip of insert, update, delete and updateMultiple().
+ */
 class CrudTest extends TestCase
 {
     private MariaDbDriver $db;

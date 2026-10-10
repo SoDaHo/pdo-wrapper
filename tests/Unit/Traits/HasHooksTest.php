@@ -8,6 +8,10 @@ use PHPUnit\Framework\TestCase;
 use Sodaho\PdoWrapper\Driver\AbstractDriver;
 use Sodaho\PdoWrapper\Exception\DatabaseException;
 
+/**
+ * The hook registry of HasHooks without a driver: which events on() accepts, that a driver adds its
+ * own, that a refused listener is not kept, and how listeners of one and of several events are called.
+ */
 class HasHooksTest extends TestCase
 {
     private HooksSubject $subject;

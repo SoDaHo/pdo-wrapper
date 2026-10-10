@@ -8,6 +8,11 @@ use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Query\QueryBuilder;
 use Sodaho\PdoWrapper\Tests\Contract\ContractTestCase;
 
+/**
+ * The query builder against a real table as every driver must carry it out: select, where, joins,
+ * ordering and paging, aggregates, and the builder's own insert/update/delete - by the rows that come
+ * back; of toSql() only its shape (the SQL text is tested in tests/Unit and tests/Driver/MariaDb).
+ */
 class QueryBuilderTest extends ContractTestCase
 {
     protected function setUp(): void

@@ -12,6 +12,10 @@ use Sodaho\PdoWrapper\Exception\DatabaseException;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Exception\TransactionException;
 
+/**
+ * CommitHookException as a value: what its constructor makes of a cause, the codes it hands on,
+ * and the connectionInTransaction flag a commit listener's open transaction sets. No database needed.
+ */
 class CommitHookExceptionTest extends TestCase
 {
     /**

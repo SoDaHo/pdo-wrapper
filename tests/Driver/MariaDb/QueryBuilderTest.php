@@ -12,6 +12,11 @@ use Sodaho\PdoWrapper\Tests\Support\Fetched;
 use Sodaho\PdoWrapper\Tests\Support\ReadsPdoErrorInfo;
 use Sodaho\PdoWrapper\Tests\Support\TestEnvironment;
 
+/**
+ * The SQL the builder renders for MariaDB, run against the server: backtick quoting, the null-safe
+ * IS, DELETE and UPDATE with ORDER BY and LIMIT, RIGHT JOIN, row locks seen from another connection,
+ * and the counts over derived tables.
+ */
 class QueryBuilderTest extends TestCase
 {
     use ReadsPdoErrorInfo;

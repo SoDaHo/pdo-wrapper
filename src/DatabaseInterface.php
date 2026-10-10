@@ -8,6 +8,14 @@ use Closure;
 use PDO;
 use PDOStatement;
 
+/**
+ * What a driver of this library does - the whole API: statements and their hooks, the query
+ * builder and the CRUD methods, transactions with their three outcomes (committed, rolled_back,
+ * lost), named locks, reconnect() and the schema. Driver\AbstractDriver implements it; type against
+ * this interface. Invariants: a statement that would run outside the transaction the caller
+ * believes to be in (after the server ended it, in autocommit) is refused rather than sent; only
+ * 'rolled_back' means that nothing of a transaction is committed.
+ */
 interface DatabaseInterface
 {
     /** Outcomes reported by the 'transaction.end' hook, see Traits\HasHooks */
@@ -194,9 +202,11 @@ interface DatabaseInterface
      * leaves as the handler's exception instead (see Traits\HasHooks).
      *
      * The commit is refused (CommitFailedException, no COMMIT sent) when a statement failed inside
-     * the transaction in a way that ended it on the server: a deadlock or a 1020 on MariaDB (or, with
-     * autocommit on, a lock wait timeout under innodb_rollback_on_timeout). The server would
-     * answer that COMMIT with success. While PDO still reports the transaction, nothing fires and
+     * the transaction in a way that ended it on the server: a deadlock or a 1020 on MariaDB, a lock
+     * wait timeout under innodb_rollback_on_timeout - with autocommit off as well -, or a DDL statement
+     * on raw PDO that committed it implicitly before a statement through this library failed (the
+     * driver asks right after such a failure, and holds what it finds). The server would answer that
+     * COMMIT with success. While PDO still reports the transaction, nothing fires and
      * it stays refused until rollback(); when PDO reports none any more (a statement on raw PDO,
      * or the question to the server before the commit, told it), nothing is left to roll back
      * and the refusal tells 'transaction.end' 'lost'. When the connection is in a transaction
