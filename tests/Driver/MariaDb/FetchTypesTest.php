@@ -106,6 +106,18 @@ class FetchTypesTest extends ContractTestCase
         } catch (QueryException $e) {
             $this->assertSame('sum() got bool from the connection: MariaDB delivers a numeric string, a float or NULL here. The connection does not deliver the types this library promises (see MariaDbDriver).', $e->getDebugMessage());
         }
+
+        // A string that is no number is not the numeric string the method promises: thrown as well,
+        // the value not shown
+        $db = $this->connect(StatementClassPdo::config(WordDeliveringStatement::class));
+        foreach (['sum' => static fn (): mixed => $db->table('fetch_types')->sum('i'), 'avg' => static fn (): mixed => $db->table('fetch_types')->avg('i')] as $method => $call) {
+            try {
+                $call();
+                $this->fail('Expected QueryException: a word, ' . $method);
+            } catch (QueryException $e) {
+                $this->assertSame(sprintf('%s() got a string that is no number from the connection: MariaDB delivers a numeric string, a float or NULL here. The connection does not deliver the types this library promises (see MariaDbDriver).', $method), $e->getDebugMessage());
+            }
+        }
     }
 
     /**

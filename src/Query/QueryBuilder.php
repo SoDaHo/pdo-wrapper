@@ -975,20 +975,26 @@ class QueryBuilder
     /**
      * What MariaDB returns for SUM() and AVG(): a numeric string (they are DECIMAL for integer and
      * DECIMAL columns) or a float (for FLOAT and DOUBLE) - handed on as it is. Null for SQL NULL
-     * (no rows, or only NULL). Anything else means the connection does not deliver MariaDB's
-     * types (see MariaDbDriver): thrown, not passed off as "no value".
+     * (no rows, or only NULL). Anything else - another type, a string that is no number - means the
+     * connection does not deliver MariaDB's types (see MariaDbDriver, a statement class of a PDO
+     * class of the caller's): thrown, not passed off as "no value" or as a number. The value is not
+     * shown: it is the caller's data.
      *
      * @throws QueryException
      */
     private static function numberAsDelivered(string $function, #[\SensitiveParameter] mixed $value): float|string|null
     {
-        if ($value === null || is_float($value) || is_string($value)) {
+        if ($value === null || is_float($value) || (is_string($value) && is_numeric($value))) {
             return $value;
         }
 
         throw new QueryException(
             message: 'Query failed',
-            debugMessage: sprintf('%s() got %s from the connection: MariaDB delivers a numeric string, a float or NULL here. The connection does not deliver the types this library promises (see MariaDbDriver).', $function, get_debug_type($value))
+            debugMessage: sprintf(
+                '%s() got %s from the connection: MariaDB delivers a numeric string, a float or NULL here. The connection does not deliver the types this library promises (see MariaDbDriver).',
+                $function,
+                is_string($value) ? 'a string that is no number' : get_debug_type($value)
+            )
         );
     }
 
