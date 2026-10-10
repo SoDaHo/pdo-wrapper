@@ -41,10 +41,19 @@ namespace Sodaho\PdoWrapper\Driver;
  * nests comments, and rebuilding that grammar here was attack surface without a use (decided
  * 2026-10-10, after the reviews of three candidates in a row turned on its readings). One
  * after that point cannot change the leading keywords and is left alone (`SELECT 1 /*!50700 , 2 *\/`,
- * `SELECT /*!40001 SQL_NO_CACHE *\/ ...`). Strings are read with backslash escapes and without
- * (NO_BACKSLASH_ESCAPES, a setting of the session): a statement is refused when one of the two
- * readings commits. For `SET STATEMENT ... FOR <statement>` the statement after the first FOR
- * outside of strings, comments and parentheses decides. Unknown statements and anything that does
+ * `SELECT /*!40001 SQL_NO_CACHE *\/ ...`). The same holds for a byte the library does not read -
+ * one from 0x80 on, or a control character other than tab, line feed, vertical tab, form feed and
+ * carriage return: what MariaDB makes of it depends on the connection's charset (under latin1 0xA0
+ * separates words like a space, so that CREATE<0xA0>TABLE, <0xA0>CREATE TABLE and a `--` comment
+ * opened by 0xA0 commit; measured on 10.11, 11.4 and 12.3, Astra review of the eighth candidate),
+ * and this class keeps no charset tables. Only the statement up to the first such byte is read:
+ * where the leading keywords are decided only after it - the byte in a word, between words, in a
+ * comment or a string, after `--` -, the statement is not judged either (UNJUDGED_BYTES). One after
+ * that point is left alone (`SELECT 'ü'`; `CREATE TABLE ü (...)` is judged CREATE - a keyword is
+ * ASCII, so a word the byte would continue is no keyword). Strings are read with backslash escapes
+ * and without (NO_BACKSLASH_ESCAPES, a setting of the session): a statement is refused when one of
+ * the two readings commits. For `SET STATEMENT ... FOR <statement>` the statement after the first
+ * FOR outside of strings, comments and parentheses decides. Unknown statements and anything that does
  * not start with a keyword commit nothing.
  *
  * @internal The MariaDB driver's answer to AbstractDriver::implicitCommitOf()
@@ -60,20 +69,31 @@ final class ImplicitCommit
     /** What of() answers for a statement with an executable comment before its leading keywords are decided */
     public const UNJUDGED = 'VERSIONED COMMENTS';
 
+    /** What of() answers for a statement with a byte beyond ASCII or a control character before its leading keywords are decided */
+    public const UNJUDGED_BYTES = 'NON-ASCII OR CONTROL BYTES';
+
+    /** The whitespace the library reads between tokens: the ASCII whitespace MariaDB reads in every charset */
+    private const WHITESPACE = " \t\n\v\f\r";
+
     /**
      * The leading keywords of a statement that commits implicitly ("CREATE", "SET PASSWORD",
      * "START SLAVE"), upper case, or null for one that does not - with backslash escapes in its
      * strings and without. UNJUDGED for a statement with an executable comment before its leading
-     * keywords are decided.
+     * keywords are decided, UNJUDGED_BYTES for one with a byte the library does not read there
+     * (whichever comes first).
      */
     public static function of(string $sql): ?string
     {
-        foreach (str_contains($sql, '\\') ? [true, false] : [true] as $backslashes) {
-            [$tokens, $executableComment] = self::tokens($sql, $backslashes);
-            [$kind, $read] = self::classify($tokens);
-            // The answer depends on a token after the last one read: the comment, or what comes after it
-            if ($executableComment && $read > count($tokens)) {
-                return self::UNJUDGED;
+        // Only the statement up to its first byte beyond printable ASCII and the five whitespace
+        // characters is read: how MariaDB reads such a byte depends on the charset (see the class)
+        $unread = preg_match('/[^\x09-\x0d\x20-\x7e]/', $sql, $match, PREG_OFFSET_CAPTURE) === 1 ? $match[0][1] : null;
+        $readable = $unread === null ? $sql : substr($sql, 0, $unread);
+        foreach (str_contains($readable, '\\') ? [true, false] : [true] as $backslashes) {
+            [$tokens, $executableComment] = self::tokens($readable, $backslashes);
+            [$kind, $needed] = self::classify($tokens);
+            // The answer depends on a token after the last one read: the comment or the byte, or what comes after it
+            if ($needed > count($tokens) && ($executableComment || $unread !== null)) {
+                return $executableComment ? self::UNJUDGED : self::UNJUDGED_BYTES;
             }
             if ($kind !== null) {
                 return $kind;
@@ -208,11 +228,11 @@ final class ImplicitCommit
     }
 
     /**
-     * Split the statement into tokens, up to its first executable comment: words (letters, digits,
-     * `_`, `$`, any byte from 0x80 on), a quoted string or name as one token, every other character
-     * as one. Whitespace and comments separate tokens and leave none; a block comment ends at its
-     * first closer, as MariaDB ends one (a `/*!` inside it is text). A comment or string that is
-     * never closed runs to the end.
+     * Split the statement into tokens, up to its first executable comment: words (ASCII letters,
+     * digits, `_`, `$`), a quoted string or name as one token, every other character as one.
+     * Whitespace (WHITESPACE: of() hands on no other byte below 0x20 and none from 0x7F on) and
+     * comments separate tokens and leave none; a block comment ends at its first closer, as MariaDB
+     * ends one (a `/*!` inside it is text). A comment or string that is never closed runs to the end.
      *
      * @return array{list<string>, bool} The tokens, and whether an executable comment stopped the split
      */
@@ -223,9 +243,9 @@ final class ImplicitCommit
         $at = 0;
         while ($at < $length) {
             $char = $sql[$at];
-            if (ctype_space($char)) {
+            if (str_contains(self::WHITESPACE, $char)) {
                 $at++;
-            } elseif ($char === '#' || ($char === '-' && substr($sql, $at, 2) === '--' && ($at + 2 === $length || ctype_space($sql[$at + 2]) || ctype_cntrl($sql[$at + 2])))) {
+            } elseif ($char === '#' || ($char === '-' && substr($sql, $at, 2) === '--' && ($at + 2 === $length || str_contains(self::WHITESPACE, $sql[$at + 2])))) {
                 $end = strpos($sql, "\n", $at);
                 $at = $end === false ? $length : $end + 1;
             } elseif (preg_match('/\G\/\*M?!/', $sql, $match, 0, $at) === 1) {
@@ -237,7 +257,7 @@ final class ImplicitCommit
                 $end = self::quoteEnd($sql, $at, $backslashes && $char !== '`');
                 $tokens[] = substr($sql, $at, $end - $at);
                 $at = $end;
-            } elseif (preg_match('/\G[A-Za-z0-9_$\x80-\xff]+/', $sql, $match, 0, $at) === 1) {
+            } elseif (preg_match('/\G[A-Za-z0-9_$]+/', $sql, $match, 0, $at) === 1) {
                 $tokens[] = $match[0];
                 $at += strlen($match[0]);
             } else {

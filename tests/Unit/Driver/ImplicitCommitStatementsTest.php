@@ -12,7 +12,8 @@ use Sodaho\PdoWrapper\Driver\ImplicitCommit;
  * Which statements the MariaDB driver takes for ones that commit implicitly, without a database:
  * the list of the MariaDB documentation and what was measured besides, read from the leading
  * keywords past whitespace and comments - an executable comment before they are decided is not
- * judged (UNJUDGED) -, not the statements that steer transactions themselves, not the TEMPORARY
+ * judged (UNJUDGED), nor a byte from 0x80 on or a control character there (UNJUDGED_BYTES), in
+ * every locale -, not the statements that steer transactions themselves, not the TEMPORARY
  * tables, not what a procedure or a compound statement runs inside.
  */
 class ImplicitCommitStatementsTest extends TestCase
@@ -90,7 +91,10 @@ class ImplicitCommitStatementsTest extends TestCase
             'dash comment' => ["-- why\nCREATE TABLE t (id INT)", 'CREATE'],
             'dash comment at the end' => ["--\nTRUNCATE t", 'TRUNCATE'],
             'hash comment' => ["# why\nDROP TABLE t", 'DROP'],
-            'dash comment, a control character after the dashes' => ["--\x01 why\nDROP TABLE t", 'DROP'],
+            // a control character other than the five whitespace characters is a byte the library does not read
+            'dash comment, a control character after the dashes' => ["--\x01 why\nDROP TABLE t", ImplicitCommit::UNJUDGED_BYTES],
+            'dash comment, a vertical tab after the dashes' => ["--\v why\nDROP TABLE t", 'DROP'],
+            'tab, vertical tab, form feed and carriage return between the keywords' => ["CREATE\t\v\f\rTABLE t (id INT)", 'CREATE'],
             'dash comment at the very end' => ['DROP TABLE t --', 'DROP'],
             'versioned comment never closed' => ['/*!50700 DROP TABLE t', ImplicitCommit::UNJUDGED],
             'executable comment with a comment inside' => ['/*!50100 CREATE /* x */ TABLE t (id INT) */', ImplicitCommit::UNJUDGED],
@@ -151,6 +155,36 @@ class ImplicitCommitStatementsTest extends TestCase
             'versioned comment after the statement after the for' => ['SET STATEMENT a = 1 FOR SELECT 1 /*!50700 , 2 */', null],
             'versioned comment after ddl after the for' => ['SET STATEMENT a = 1 FOR DROP TABLE /*!40000 IF EXISTS */ t', 'SET STATEMENT ... FOR DROP'],
             'versioned comment between the keywords after the for' => ['SET STATEMENT a = 1 FOR DROP /*!50700 TEMPORARY */ TABLE t', ImplicitCommit::UNJUDGED],
+            // a byte from 0x80 on or a control character before the leading keywords are decided is not judged: how
+            // MariaDB reads it depends on the charset - under latin1 0xA0 separates words like a space (measured)
+            'latin1 no-break space between the keywords' => ["CREATE\xA0TABLE t (id INT)", ImplicitCommit::UNJUDGED_BYTES],
+            'latin1 no-break space first' => ["\xA0CREATE TABLE t (id INT)", ImplicitCommit::UNJUDGED_BYTES],
+            'latin1 no-break space after the dashes' => ["--\xA0x\nCREATE TABLE t (id INT)", ImplicitCommit::UNJUDGED_BYTES],
+            'utf-8 no-break space between the keywords' => ["CREATE\xC2\xA0TABLE t (id INT)", ImplicitCommit::UNJUDGED_BYTES],
+            '0x85 between the keywords' => ["CREATE\x85TABLE t (id INT)", ImplicitCommit::UNJUDGED_BYTES],
+            'a control character between the keywords' => ["CREATE\x01TABLE t (id INT)", ImplicitCommit::UNJUDGED_BYTES],
+            'the delete character between the keywords' => ["DROP\x7FTABLE t", ImplicitCommit::UNJUDGED_BYTES],
+            'no-break space between temporary and table' => ["CREATE TEMPORARY\xA0TABLE t (id INT)", ImplicitCommit::UNJUDGED_BYTES],
+            'no-break space between drop and temporary' => ["DROP\xA0TEMPORARY TABLE t", ImplicitCommit::UNJUDGED_BYTES],
+            'no-break space between analyze and table' => ["ANALYZE\xA0TABLE t", ImplicitCommit::UNJUDGED_BYTES],
+            'nul in a leading hash comment' => ["# x\x00\nDROP TABLE t", ImplicitCommit::UNJUDGED_BYTES],
+            // also in a comment or a string before them, also before a statement that commits nothing (fail-closed)
+            'non-ascii in a leading block comment' => ['/* Größe */ DROP TABLE t', ImplicitCommit::UNJUDGED_BYTES],
+            'non-ascii in a leading dash comment before a select' => ["-- Prüfung\nSELECT 1", ImplicitCommit::UNJUDGED_BYTES],
+            'non-ascii in a value before the for' => ["SET STATEMENT lc_messages = 'ü' FOR SELECT 1", ImplicitCommit::UNJUDGED_BYTES],
+            // whichever comes first decides the answer
+            'an executable comment, then the byte' => ["/*!50700 \xA0*/ DROP TABLE t", ImplicitCommit::UNJUDGED],
+            'the byte, then an executable comment' => ["\xA0/*!50700 */ DROP TABLE t", ImplicitCommit::UNJUDGED_BYTES],
+            // after that point any byte is left alone: a keyword is ASCII, a word the byte would continue is none
+            'non-ascii in a string after select' => ["SELECT 'ü'", null],
+            'non-ascii name after select' => ['SELECT ü FROM t', null],
+            'non-ascii value of an insert' => ["INSERT INTO t (a) VALUES ('ü')", null],
+            'non-ascii name of a created table' => ['CREATE TABLE ü (id INT)', 'CREATE'],
+            'non-ascii name of a temporary table' => ['CREATE TEMPORARY TABLE ü (id INT)', null],
+            'no-break space after create temporary table' => ["CREATE TEMPORARY TABLE\xA0t (id INT)", null],
+            'non-ascii name of locked tables' => ['LOCK TABLES ü WRITE', 'LOCK'],
+            'a control character after drop table' => ["DROP TABLE t\x01", 'DROP'],
+            'non-ascii after the statement after the for' => ['SET STATEMENT a = 1 FOR CREATE TABLE ü (id INT)', 'SET STATEMENT ... FOR CREATE'],
             // not executable: a /*! inside a block comment, a string or a name is text; /*M without ! is a block comment
             'a versioned comment inside a block comment' => ['/* see /*!50700 */ CREATE TABLE t (id INT)', 'CREATE'],
             'a versioned comment inside a string' => ["SELECT '/*!50700 x */' FROM t", null],
@@ -223,5 +257,31 @@ class ImplicitCommitStatementsTest extends TestCase
     public function testTheLeadingKeywordsDecide(string $sql, ?string $expected): void
     {
         $this->assertSame($expected, ImplicitCommit::of($sql));
+    }
+
+    /**
+     * The answer depends on no locale: the ctype tables of the locales differ for the bytes from
+     * 0x80 on (on macOS ctype_space() takes 0xA0 for a space under a UTF-8 LC_CTYPE, not under "C"
+     * or ISO8859-1; measured), and the candidates before read whitespace with it. Every statement is
+     * judged the same under every locale of the list the machine has, "C" always among them.
+     */
+    public function testNoLocaleChangesTheAnswer(): void
+    {
+        $before = setlocale(LC_CTYPE, '0');
+        $ran = [];
+        try {
+            foreach (['C', 'de_DE.ISO8859-1', 'de_DE.ISO-8859-1', 'en_US.ISO8859-1', 'de_DE.UTF-8', 'C.UTF-8'] as $locale) {
+                if (setlocale(LC_CTYPE, $locale) === false) {
+                    continue;
+                }
+                $ran[] = $locale;
+                foreach (self::statements() as $name => [$sql, $expected]) {
+                    $this->assertSame($expected, ImplicitCommit::of($sql), $locale . ': ' . $name);
+                }
+            }
+        } finally {
+            setlocale(LC_CTYPE, $before === false ? 'C' : $before);
+        }
+        $this->assertContains('C', $ran);
     }
 }

@@ -403,6 +403,17 @@ abstract class AbstractDriver implements DatabaseInterface
                     statement: $implicitCommit
                 );
             }
+            if ($implicitCommit === ImplicitCommit::UNJUDGED_BYTES) {
+                throw new ImplicitCommitException(
+                    debugMessage: sprintf(
+                        'Not sent: a byte beyond ASCII (from 0x80 on) or a control character other than tab, line feed, vertical tab, form feed and carriage return stands before '
+                        . 'the statement\'s leading keywords are decided, and how MariaDB reads it depends on the connection\'s charset (under latin1 0xA0 separates words like a space): '
+                        . 'it may commit the open transaction implicitly. The transaction is still open. Write the statement in ASCII up to its leading keywords, or run it outside of transactions. | SQL: %s',
+                        $sql
+                    ),
+                    statement: $implicitCommit
+                );
+            }
             if ($implicitCommit !== null) {
                 throw new ImplicitCommitException(
                     debugMessage: sprintf(
