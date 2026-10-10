@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [3.2.0] - 2026-10-10
+
+Louder instead of quieter - a minor release, because several things that went through without a word now throw, each where what went through was wrong: a statement that commits implicitly inside a transaction, a locking read outside of one, transaction control from inside a listener, `reconnect()` over an open transaction, builder clauses the builder's `insert()` would have dropped, a dotted key in a column => value array. Each throws a typed exception with a static message before anything is sent; what a caller changes is under "Upgrading from 3.1.2". Besides: the 3.1.2 regressions (a manual transaction a DDL statement ended, error 2014, `having()` with a selected expression), the option `redactParameters`, `#[\SensitiveParameter]` on every value parameter, the whole API on `DatabaseInterface`, PHPStan at level max.
+
 ### Added
 - `ImplicitCommitException` (a `QueryException`, `$statement` with the leading keywords) and `AbstractDriver::implicitCommitOf(string $sql): ?string` - the keywords of a statement that commits implicitly, `null` by default; `MariaDbDriver` names MariaDB's (see "Changed").
 - `LockOutsideTransactionException` (a `QueryException`): a locking read outside of a transaction (see "Changed").
@@ -24,15 +28,47 @@
 - CI: the job that runs the `innodb_rollback_on_timeout` test checks for a Docker socket first; on a runner without one (Gitea's job containers) it ends green with a notice, and GitHub's hosted runner, which has one, runs the test (on `main` since 3.1.2, not in a release before).
 - Documentation: `DatabaseInterface` has a head comment, and its commit refusal names every state the driver holds after the question right after a failure - a lock wait timeout under `innodb_rollback_on_timeout` with autocommit off too, a DDL statement on raw PDO - instead of "with autocommit on" (re-review R-8); an `error` hook that writes to the database needs its own connection after every such finding, not after a deadlock alone (R-7); TLS (none unless a certificate option is set - measured against 12.3, which offers it), the charsets the quoting is meant for (not `big5`, `cp932`, `gbk`, `gb18030`, `sjis`), `findAll()` without a limit, a JSON `null` that reads like the string `"null"` (with the `JSON_TYPE()` way to tell them apart); `SECURITY.md` supports the latest release line alone and names transport and charset. Every test class has a head comment.
 
-### Security
-- The parameters of the library's methods that take values - `query()`, `execute()`, the CRUD methods, `updateMultiple()`, the builder's conditions, values and writes, `Database::raw()`'s bindings, the named-lock methods - are marked `#[\SensitiveParameter]`: with `zend.exception_ignore_args` off, the traces of the library's exceptions show a `SensitiveParameterValue` instead of passwords, tokens and personal data (before, 9 frames of a failed insert carried them). Independent of `redactParameters`; the previous `PDOException` of a failed statement still has PDO's own `execute()` frame with the values unless that option is on.
-- `redactParameters` (see "Added") for applications whose logs or error trackers take the hook payloads or the exceptions as they are.
-
 ### Fixed
 - The builder's comparison of `select()` aliases (for the output names of `distinct()->count()` and the entries a grouped `count()` keeps) saw ASCII letters only and took a trailing newline for the end: `raw('COUNT(*) AS zähler')` was dropped from a grouped `count()`, whose `having('zähler', ...)` then failed on the server, and two entries `as ä` were no conflict. It reads letters of any script and the very end now, as the quoting of the entries does since 3.1.2.
 - **Regression of 3.1.2:** `having('COUNT(*)', ...)` was refused also where a `select()` entry `Database::raw('COUNT(*)')` carries that name - MariaDB resolves the quoted name to that output column, and 3.1.1 returned the right rows. The refusal now comes only without such an entry (compared without case; an aliased entry is named by its alias), and when the query is built rather than in `having()` (the `select()` may come after it). The 3.1.2 entry under "Fixed" described it as wrong input throughout.
 - **Regression of 3.1.2:** error 2014 (a statement sent while an unbuffered result is still open, `ATTR_USE_BUFFERED_QUERY` off) inside a transaction the library began was remembered as a failure that may have ended the transaction: the question to the server right after it failed the same way, the transaction was held as "could not be asked", and the statement sent again after closing the cursor was refused - the end `lost`, where 3.1.1 committed. The client refuses such a statement before anything reaches the server: it is no longer remembered, nothing is asked, and the transaction goes on.
 - **Regression of 3.1.2:** a manual transaction (`beginTransaction()`) that the server ended behind the library's back - a DDL statement that went through committed it, raw PDO ended it - could not be ended: `rollback()` sent a `ROLLBACK`, PDO answered "There is no active transaction", and the library went on holding the transaction (`currentTransaction()` its number, `inTransaction()` false) and refusing every statement, `releaseNamedLock()` included - a named lock taken around the transaction leaked until the connection ended. `rollback()` now ends that state: nothing is sent, no `transaction.rollback` listener runs, and `transaction.end` reports `lost` with a `TransactionException` `Transaction ended outside this library` as error (the failed statement as its previous, where there is one); the connection works again. After a failing DDL statement or a lock wait timeout under `innodb_rollback_on_timeout` `rollback()` already did so - but the README's pattern asked `inTransaction()` alone, which is `false` there, and skipped it. The pattern now asks `currentTransaction() !== null || inTransaction()` (README, Transactions and Named Locks); the refusal of a statement in that state names `rollback()` as the way out.
+
+### Security
+- The parameters of the library's methods that take values - `query()`, `execute()`, the CRUD methods, `updateMultiple()`, the builder's conditions, values and writes, `Database::raw()`'s bindings, the named-lock methods - are marked `#[\SensitiveParameter]`: with `zend.exception_ignore_args` off, the traces of the library's exceptions show a `SensitiveParameterValue` instead of passwords, tokens and personal data (before, 9 frames of a failed insert carried them). Independent of `redactParameters`; the previous `PDOException` of a failed statement still has PDO's own `execute()` frame with the values unless that option is on.
+- `redactParameters` (see "Added") for applications whose logs or error trackers take the hook payloads or the exceptions as they are.
+
+### Upgrading from 3.1.2
+
+| 3.1.2 | 3.2 |
+|---|---|
+| a statement that commits implicitly (`CREATE`, `ALTER`, `DROP`, `RENAME`, `TRUNCATE`, `LOCK TABLES`, `ANALYZE`/`OPTIMIZE`/`REPAIR TABLE`, `GRANT`, ...) sent with `query()`/`execute()` inside a transaction the library began | `ImplicitCommitException`, nothing sent, the transaction stays open: send it before `beginTransaction()`/`transaction()` or after the end - it would have committed the transaction anyway. Temporary tables are not affected; outside a transaction nothing changes |
+| `lockForUpdate()`/`sharedLock()` with `get()`, `first()`, `exists()` or an aggregate outside a transaction | `LockOutsideTransactionException`: put the read and the writes that rely on it into `transaction()`; a read that needs no lock drops the lock call. With autocommit switched off, begin the transaction explicitly |
+| `beginTransaction()`, `commit()`, `rollback()`, `transaction()` - or `updateMultiple()` outside a transaction - from inside a listener of the same driver (any event) | `ListenerTransactionException`, nothing done; inside a `transaction.commit` listener it joins the `CommitHookException`, inside a `transaction.begin` listener it fails the begin. Use a second connection for the listener's transaction, or note the work in the listener and do it after the operation returns |
+| `reconnect()` while a transaction begun through the library is open | `TransactionOpenException`, nothing changes: end the transaction first, or `reconnect(dropTransaction: true)` to give it up as before (`lost`) |
+| the builder's `insert()` after `where()`, a join, `groupBy()`/`having()`, `orderBy()`, `limit()`/`offset()`, `distinct()` or a lock | `QueryException` `Insert failed`: start from a fresh `table()`; an insert under a condition is `insertWhen()` |
+| a key with a dot in a column => value array (`['users.role' => ...]`) | `QueryException`: the plain column name |
+| `having('COUNT(*)', ...)` without a `select()` entry of that name | still a `QueryException`, now when the query is built (`get()`, `count()`, `toSql()`, ...), not in `having()`; with `select(Database::raw('COUNT(*)'))` it works again (as in 3.1.1) |
+| a class that implements `DatabaseInterface` itself | add `insertWhen()`, `insertWhenReturning()`, `upsert()`, `upsertReturning()`, `insertIgnore()`, `updateMultiple()`, `lastInsertId()`, `utcNow()` and the parameter of `reconnect(bool $dropNamedLocks = false, bool $dropTransaction = false)` |
+| `InternalMethods` as a type or in `instanceof` | `DatabaseInterface` |
+| a subclass of `AbstractDriver` or `MariaDbDriver` that overrides `reconnect()` | take the parameter - `reconnect(bool $dropNamedLocks = false, bool $dropTransaction = false): void` - and pass it on |
+| a subclass that declares `implicitCommitOf()` or `listenerRunning()` of its own | it now overrides the library's method (or clashes with its signature): rename it |
+| `CommitFailedException::settle()` called from outside the class | private: only the driver settles an outcome (a test binds a closure to the class, see "Changed") |
+| `CommitHookException::$failures` read for the ends of transactions commit listeners began through the driver | such transactions are refused (see above): `$failures` holds the commit listeners' failures, then those of the committed transaction's end |
+| bound values read from the arguments of a library exception's trace | they are `SensitiveParameterValue` objects (`getValue()` gives the value); `serialize()` of such an exception fails while `zend.exception_ignore_args` is off ("Serialization of 'SensitiveParameterValue' is not allowed" - a failed connection's already failed on its Closure) |
+
+Nothing changes for a caller that does none of this: `redactParameters` is off by default, every public method keeps its name, its parameters (one is added) and its return values.
+
+### Deferred
+
+Not in this release, planned as one wave for 4.0 with a full consumer test - each simplifies the driver, and each is where the hard cases of the past sat:
+
+- the non-exception error modes: `PDO::ERRMODE_EXCEPTION` enforced, the handling of `ERRMODE_WARNING`/`ERRMODE_SILENT` (and of error handlers that throw from inside a PDO call) removed;
+- re-entry from inside PDO calls (an error handler that calls back into the driver) no longer tracked;
+- transactions begun on raw PDO (`getPdo()->beginTransaction()`) no longer followed by the library;
+- one driver instead of the abstraction (`AbstractDriver` + `MariaDbDriver`);
+- a `socket` option for the local Unix socket (today `host => 'localhost'`);
+- also noted: an empty `database` refused (SemVer), `options` added to the defaults instead of replacing them, the unsupported charsets refused instead of documented.
 
 ## [3.1.2] - 2026-10-09
 
@@ -491,7 +527,8 @@ What can break code that ran on 1.4:
 - **CI**: GitHub Actions with PHP 8.2-8.5, MySQL 8.0/8.4, MariaDB 10.11/11.4, PostgreSQL 15/16/17.
 - **Quality**: PHPStan level 9, PHP-CS-Fixer (PSR-12).
 
-[Unreleased]: https://github.com/sodaho/pdo-wrapper/compare/v3.1.2...HEAD
+[Unreleased]: https://github.com/sodaho/pdo-wrapper/compare/v3.2.0...HEAD
+[3.2.0]: https://github.com/sodaho/pdo-wrapper/compare/v3.1.2...v3.2.0
 [3.1.2]: https://github.com/sodaho/pdo-wrapper/compare/v3.1.1...v3.1.2
 [3.1.1]: https://github.com/sodaho/pdo-wrapper/compare/v3.1.0...v3.1.1
 [3.1.0]: https://github.com/sodaho/pdo-wrapper/compare/v3.0.0...v3.1.0
