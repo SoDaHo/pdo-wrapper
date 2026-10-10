@@ -11,9 +11,9 @@ use Sodaho\PdoWrapper\Driver\ImplicitCommit;
 /**
  * Which statements the MariaDB driver takes for ones that commit implicitly, without a database:
  * the list of the MariaDB documentation and what was measured besides, read from the leading
- * keywords past whitespace and comments, versioned executable comments both ways - not the
- * statements that steer transactions themselves, not the TEMPORARY tables, not what a procedure or
- * a compound statement runs inside.
+ * keywords past whitespace and comments - an executable comment before they are decided is not
+ * judged (UNJUDGED) -, not the statements that steer transactions themselves, not the TEMPORARY
+ * tables, not what a procedure or a compound statement runs inside.
  */
 class ImplicitCommitStatementsTest extends TestCase
 {
@@ -84,50 +84,68 @@ class ImplicitCommitStatementsTest extends TestCase
             'hash comment' => ["# why\nDROP TABLE t", 'DROP'],
             'dash comment, a control character after the dashes' => ["--\x01 why\nDROP TABLE t", 'DROP'],
             'dash comment at the very end' => ['DROP TABLE t --', 'DROP'],
-            'versioned comment never closed' => ['/*!50700 DROP TABLE t', 'DROP'],
-            'executable comment with a comment inside' => ['/*!50100 CREATE /* x */ TABLE t (id INT) */', 'CREATE'],
+            'versioned comment never closed' => ['/*!50700 DROP TABLE t', ImplicitCommit::UNJUDGED],
+            'executable comment with a comment inside' => ['/*!50100 CREATE /* x */ TABLE t (id INT) */', ImplicitCommit::UNJUDGED],
             'set statement, a closing parenthesis too many' => ['SET STATEMENT x = 1) FOR DROP TABLE t', 'SET STATEMENT ... FOR DROP'],
             'set statement, a backslash in a quoted name' => ['SET STATEMENT x = `a\\` FOR DROP TABLE t', 'SET STATEMENT ... FOR DROP'],
-            'executable comment' => ['/*!50100 CREATE TABLE t (id INT) */', 'CREATE'],
-            'executable comment of MariaDB' => ['/*M!100100 ALTER TABLE t ADD c INT */', 'ALTER'],
-            'empty executable comment first' => ['/*!*/ DROP TABLE t', 'DROP'],
+            'executable comment' => ['/*!50100 CREATE TABLE t (id INT) */', ImplicitCommit::UNJUDGED],
+            'executable comment of MariaDB' => ['/*M!100100 ALTER TABLE t ADD c INT */', ImplicitCommit::UNJUDGED],
+            'empty executable comment first' => ['/*!*/ DROP TABLE t', ImplicitCommit::UNJUDGED],
             'set statement for ddl' => ['SET STATEMENT max_statement_time = 1 FOR CREATE TABLE t (id INT)', 'SET STATEMENT ... FOR CREATE'],
             'set statement, the word in a value' => ["SET STATEMENT lc_messages = 'for' FOR DROP TABLE t", 'SET STATEMENT ... FOR DROP'],
             'set statement, a comment before the statement' => ['SET STATEMENT max_statement_time = 1 FOR /* why */ DROP TABLE t', 'SET STATEMENT ... FOR DROP'],
-            // versioned executable comments: both readings, one that commits decides
-            'versioned temporary, MySQL version' => ['CREATE /*!50700 TEMPORARY */ TABLE t (id INT)', 'CREATE'],
-            'versioned temporary, old version' => ['CREATE /*!40000 TEMPORARY */ TABLE t (id INT)', 'CREATE'],
-            'versioned temporary of MariaDB' => ['CREATE /*M!100100 TEMPORARY */ TABLE t (id INT)', 'CREATE'],
-            'versioned drop temporary' => ['DROP /*!50700 TEMPORARY */ TABLE t', 'DROP'],
-            'versioned or replace temporary' => ['CREATE OR REPLACE /*!50700 TEMPORARY */ TABLE t (id INT)', 'CREATE'],
-            'versioned ddl alone' => ['/*!50700 DROP TABLE t */', 'DROP'],
-            'versioned ddl after a select' => ['SELECT 1 /*!50700 , 2 */', null],
-            // each versioned comment both ways, independently of the others: MariaDB runs its own up to the
-            // server's version and ignores MySQL's from 5.7 on - all on and all off would both read nothing here
-            'mixed versioned comments, create' => ['/*M!100100 CREATE */ /*!50700 TEMPORARY */ TABLE t (id INT)', 'CREATE'],
-            'mixed versioned comments, drop' => ['/*M!100100 DROP */ /*!50700 TEMPORARY */ TABLE t', 'DROP'],
-            'mixed versioned comments, the other way round' => ['/*!50700 DROP */ /*M!100100 TEMPORARY */ TABLE t', 'DROP'],
-            'mixed versioned comments, set statement' => ['SET STATEMENT a = 1 /*M!100100 FOR DROP */ /*!50700 TEMPORARY */ TABLE t', 'SET STATEMENT ... FOR DROP'],
-            // a versioned comment the server skips is skipped with one level of comments inside it, as MariaDB's
-            // lexer skips it (consume_comment(1)): the closer of the comment inside does not end it
-            'a comment inside a skipped versioned comment' => ['/*!50700 /* nested */ SELECT */ CREATE TABLE t (id INT)', 'CREATE'],
-            'a comment inside a skipped versioned comment, a hash comment first' => ["# lead\n/*!50700 /* nested */ SELECT */ CREATE TABLE t (id INT)", 'CREATE'],
-            'a comment inside a skipped versioned comment, a dash comment first' => ["-- lead\n/*!50700 /* nested */ SELECT */ CREATE TABLE t (id INT)", 'CREATE'],
-            'a short comment inside a skipped versioned comment' => ['/*!50700 /*x*/ SELECT 1 */ CREATE TABLE t (id INT)', 'CREATE'],
-            'a comment inside a MariaDB comment beyond the version' => ['/*M!999999 /* x */ SELECT */ DROP TABLE t', 'DROP'],
-            'two comments inside a skipped versioned comment' => ['/*!50700 /* a */ SELECT /* b */ SELECT */ CREATE TABLE t (id INT)', 'CREATE'],
-            'a comment inside that opens with /*/' => ['/*!50700 /*/ SELECT */ SELECT */ CREATE TABLE t (id INT)', 'CREATE'],
-            'a versioned comment inside a skipped versioned comment' => ['/*!50700 /*!50700 SELECT */ SELECT */ DROP TABLE t', 'DROP'],
-            // one level only: inside the inner comment a /* is text, its first closer ends it
-            'two levels inside a skipped versioned comment' => ['/*!50700 /* a /* b */ SELECT */ CREATE TABLE t (id INT) */', 'CREATE'],
-            'a comment inside a skipped versioned comment, never closed' => ['/*!50700 /* x SELECT 1', null],
+            // an executable comment - with a version or without - before the leading keywords are decided is not
+            // judged: refused unjudged, whatever MariaDB runs of it (that depends on its version and on how its
+            // lexer nests comments: the mixed and the nested comments below create a base table, measured)
+            'versioned comment first' => ['/*!50700 DROP TABLE t */', ImplicitCommit::UNJUDGED],
+            'versioned comment of MariaDB first' => ['/*M!100100 CREATE TABLE t (id INT) */', ImplicitCommit::UNJUDGED],
+            'versioned comment after a block comment' => ['/* why */ /*!50700 SELECT */ DROP TABLE t', ImplicitCommit::UNJUDGED],
+            'versioned comment after a hash and a dash comment' => ["# lead\n-- lead\n/*!50700 SELECT */ DROP TABLE t", ImplicitCommit::UNJUDGED],
+            'versioned temporary, MySQL version' => ['CREATE /*!50700 TEMPORARY */ TABLE t (id INT)', ImplicitCommit::UNJUDGED],
+            'versioned temporary, old version' => ['CREATE /*!40000 TEMPORARY */ TABLE t (id INT)', ImplicitCommit::UNJUDGED],
+            'versioned temporary of MariaDB' => ['CREATE /*M!100100 TEMPORARY */ TABLE t (id INT)', ImplicitCommit::UNJUDGED],
+            'unversioned temporary' => ['CREATE /*!TEMPORARY */ TABLE t (id INT)', ImplicitCommit::UNJUDGED],
+            'unversioned temporary of MariaDB' => ['CREATE /*M! TEMPORARY */ TABLE t (id INT)', ImplicitCommit::UNJUDGED],
+            'versioned drop temporary' => ['DROP /*!50700 TEMPORARY */ TABLE t', ImplicitCommit::UNJUDGED],
+            'versioned or replace temporary' => ['CREATE OR REPLACE /*!50700 TEMPORARY */ TABLE t (id INT)', ImplicitCommit::UNJUDGED],
+            'versioned comment between create and or' => ['CREATE /*!50700 OR */ REPLACE TABLE t (id INT)', ImplicitCommit::UNJUDGED],
+            'versioned analyze table' => ['ANALYZE /*M!100100 TABLE */ t', ImplicitCommit::UNJUDGED],
+            'versioned analyze local table' => ['ANALYZE LOCAL /*!50700 TABLE */ t', ImplicitCommit::UNJUDGED],
+            'versioned load index' => ['LOAD /*M!100100 INDEX */ INTO CACHE t', ImplicitCommit::UNJUDGED],
+            'versioned start slave' => ['START /*!50700 SLAVE */', ImplicitCommit::UNJUDGED],
+            'versioned set password' => ["SET /*M!100100 PASSWORD */ = PASSWORD('x')", ImplicitCommit::UNJUDGED],
+            'versioned set default role' => ['SET DEFAULT /*!50700 ROLE */ NONE', ImplicitCommit::UNJUDGED],
+            'versioned set statement' => ['SET /*!50700 STATEMENT */ a = 1 FOR DROP TABLE t', ImplicitCommit::UNJUDGED],
+            'mixed versioned comments' => ['/*M!100100 CREATE */ /*!50700 TEMPORARY */ TABLE t (id INT)', ImplicitCommit::UNJUDGED],
+            'a comment inside a versioned comment' => ['/*!50700 /* nested */ SELECT */ CREATE TABLE t (id INT)', ImplicitCommit::UNJUDGED],
+            'a versioned comment inside an executable one' => ['/*M!100100 CREATE /*!50700 /* a */ TEMPORARY */ TABLE t (id INT) */', ImplicitCommit::UNJUDGED],
+            'a versioned comment before the for' => ['SET STATEMENT a = 1 /*!50700 , b = 2 */ FOR SELECT 1', ImplicitCommit::UNJUDGED],
+            'a versioned comment around the for' => ['SET STATEMENT a = 1 /*M!100100 FOR DROP */ TABLE t', ImplicitCommit::UNJUDGED],
+            'a versioned comment right after the for' => ['SET STATEMENT a = 1 FOR /*!50700 CREATE TABLE t (id INT) */', ImplicitCommit::UNJUDGED],
+            'a versioned comment never closed' => ['/*!50700 /* x SELECT 1', ImplicitCommit::UNJUDGED],
+            'only a versioned comment' => ['/*!50700 */', ImplicitCommit::UNJUDGED],
+            // one after that point cannot change the leading keywords: left alone, the statement judged by them
+            'versioned comment after a select' => ['SELECT 1 /*!50700 , 2 */', null],
+            'versioned hint after select' => ['SELECT /*!40001 SQL_NO_CACHE */ * FROM t', null],
+            'versioned comment after insert' => ['INSERT /*!50700 IGNORE */ INTO t (a) VALUES (1)', null],
             'a comment inside a versioned comment after the decision' => ['SELECT 1 /*!50700 /* x */ , 2 */', null],
-            // a comment after the point a reading is decided at is not read the other way: any number of them
             'many versioned comments after the decision' => ['SELECT 1' . str_repeat(' /*!50700 , 2 */', 40), null],
             'many versioned comments after a temporary table' => ['CREATE TEMPORARY TABLE t (id INT' . str_repeat(' /*!50700 , c INT */', 40) . ')', null],
-            // before it, at most 2^8 readings are judged; more counts as a statement that commits (fail-closed)
-            'eight versioned comments before the for' => ['SET STATEMENT a = 1' . str_repeat(' /*!50700 , b = 2 */', 8) . ' FOR SELECT 1', null],
-            'nine versioned comments before the for' => ['SET STATEMENT a = 1' . str_repeat(' /*!50700 , b = 2 */', 9) . ' FOR SELECT 1', ImplicitCommit::UNJUDGED],
+            'versioned comment after create table' => ['CREATE TABLE t (id INT) /*!50100 ENGINE = InnoDB */', 'CREATE'],
+            'versioned comment after drop table' => ['DROP TABLE /*!40000 IF EXISTS */ t', 'DROP'],
+            'versioned comment after create or replace table' => ['CREATE OR REPLACE TABLE /*!50700 t */ (id INT)', 'CREATE'],
+            'versioned comment after alter' => ['ALTER /*!50700 ONLINE */ TABLE t ADD c INT', 'ALTER'],
+            'versioned comment after analyze select' => ['ANALYZE SELECT /*!50700 1 */', null],
+            'versioned comment after set a variable' => ['SET @x = /*!50700 1 */ 2', null],
+            'versioned comment after the statement after the for' => ['SET STATEMENT a = 1 FOR SELECT 1 /*!50700 , 2 */', null],
+            'versioned comment after ddl after the for' => ['SET STATEMENT a = 1 FOR DROP TABLE /*!40000 IF EXISTS */ t', 'SET STATEMENT ... FOR DROP'],
+            'versioned comment between the keywords after the for' => ['SET STATEMENT a = 1 FOR DROP /*!50700 TEMPORARY */ TABLE t', ImplicitCommit::UNJUDGED],
+            // not executable: a /*! inside a block comment, a string or a name is text; /*M without ! is a block comment
+            'a versioned comment inside a block comment' => ['/* see /*!50700 */ CREATE TABLE t (id INT)', 'CREATE'],
+            'a versioned comment inside a string' => ["SELECT '/*!50700 x */' FROM t", null],
+            'a block comment that starts with M' => ['/*M CREATE */ DROP TABLE t', 'DROP'],
+            // the backslash readings stay: a /*! in a string with backslash escapes is code without them
+            'a versioned comment after a backslash ending the string' => ["SET STATEMENT a = '\\' /*!50700 FOR DROP TABLE t */ '", ImplicitCommit::UNJUDGED],
             // strings without backslash escapes (NO_BACKSLASH_ESCAPES): the FOR after the string counts too
             'set statement, a backslash ending the string' => ["SET STATEMENT sql_mode = '\\' FOR DROP TABLE t -- '", 'SET STATEMENT ... FOR DROP'],
             // and the price of that: a backslash-escaped quote reads as the end of the string as well (fail-closed)
@@ -136,8 +154,6 @@ class ImplicitCommitStatementsTest extends TestCase
             'create temporary table' => ['CREATE TEMPORARY TABLE t (id INT)', null],
             'create temporary, a comment between' => ['CREATE /* scratch */ TEMPORARY TABLE t (id INT)', null],
             'create or replace temporary' => ['CREATE OR REPLACE TEMPORARY TABLE t (id INT)', null],
-            'unversioned temporary' => ['CREATE /*!TEMPORARY */ TABLE t (id INT)', null],
-            'unversioned temporary of MariaDB' => ['CREATE /*M! TEMPORARY */ TABLE t (id INT)', null],
             'set role' => ['SET ROLE r', null],
             'checksum table' => ['CHECKSUM TABLE t', null],
             'drop temporary table' => ['DROP TEMPORARY TABLE t', null],

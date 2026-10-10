@@ -393,6 +393,16 @@ abstract class AbstractDriver implements DatabaseInterface
             // A statement that commits implicitly (DDL on MariaDB) would end this transaction before it runs,
             // also when it then fails, and what follows would run in autocommit: refused, the transaction stays
             $implicitCommit = $this->implicitCommitOf($sql);
+            if ($implicitCommit === ImplicitCommit::UNJUDGED) {
+                throw new ImplicitCommitException(
+                    debugMessage: sprintf(
+                        'Not sent: an executable comment (/*!...*/, /*M!...*/) stands before the statement\'s leading keywords are decided, and what MariaDB runs of it is not judged: '
+                        . 'it may commit the open transaction implicitly. The transaction is still open. Write the statement without such a comment, or run it outside of transactions. | SQL: %s',
+                        $sql
+                    ),
+                    statement: $implicitCommit
+                );
+            }
             if ($implicitCommit !== null) {
                 throw new ImplicitCommitException(
                     debugMessage: sprintf(

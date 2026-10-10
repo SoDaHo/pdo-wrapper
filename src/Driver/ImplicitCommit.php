@@ -29,22 +29,21 @@ namespace Sodaho\PdoWrapper\Driver;
  * (BEGIN NOT ATOMIC) - is not seen.
  *
  * The statement is split into words, quoted strings and names, and single characters; whitespace
- * and comments (`#`, `-- `, `/* *\/`) separate them. An executable comment counts as SQL, as
- * MariaDB runs it - but one with a version (`/*!50700 ...*\/`, `/*M!100100 ...*\/`) runs on some
- * servers and not on others (MariaDB ignores the MySQL versions from 5.7 on and runs its own up to
- * the server's version): each is read both ways, with its content and without, independently of
- * the others - `/*M!100100 CREATE *\/ /*!50700 TEMPORARY *\/ TABLE` is a CREATE TABLE on MariaDB -,
- * and the statement commits implicitly when one of the readings does. Without its content it is
- * skipped as MariaDB skips it: one level of comments inside it, up to the closer after them -
- * `/*!50700 /* x *\/ SELECT *\/ CREATE TABLE` is a CREATE TABLE on MariaDB (skippedEnd()). A TEMPORARY inside such a
- * comment exempts nothing, then. Only a comment that comes before the point a reading was decided
- * at is read the other way as well: one after it cannot change that reading. A statement whose
- * versioned comments before that point allow more than MAX_READINGS readings is not judged further
- * and counts as one that commits ("VERSIONED COMMENTS"): fail-closed. Strings are read with
- * backslash escapes and without (NO_BACKSLASH_ESCAPES, a setting of the session) as well. For
- * `SET STATEMENT ... FOR <statement>` the statement after the first FOR outside of strings,
- * comments and parentheses decides. Unknown statements and anything that does not start with a
- * keyword commit nothing.
+ * and comments (`#`, `-- `, `/* *\/` up to its first closer) separate them. An executable comment
+ * (`/*!...*\/`, `/*M!...*\/`, with a version or without) is not read at all: where one stands before
+ * the leading keywords are decided - before the first keyword, between the keywords that decide
+ * (`CREATE /*!50700 TEMPORARY *\/ TABLE`, `ANALYZE /*M!100100 TABLE *\/ t`), before the statement
+ * after the FOR of SET STATEMENT -, the statement is not judged and counts as one that commits
+ * (UNJUDGED): fail-closed. Such comments are what mysqldump writes, no application builds its
+ * statements with them; which of them MariaDB runs depends on its version and on how its lexer
+ * nests comments, and rebuilding that grammar here was attack surface without a use (decided
+ * 2026-10-10, after the reviews of three candidates in a row turned on its readings). One
+ * after that point cannot change the leading keywords and is left alone (`SELECT 1 /*!50700 , 2 *\/`,
+ * `SELECT /*!40001 SQL_NO_CACHE *\/ ...`). Strings are read with backslash escapes and without
+ * (NO_BACKSLASH_ESCAPES, a setting of the session): a statement is refused when one of the two
+ * readings commits. For `SET STATEMENT ... FOR <statement>` the statement after the first FOR
+ * outside of strings, comments and parentheses decides. Unknown statements and anything that does
+ * not start with a keyword commit nothing.
  *
  * @internal The MariaDB driver's answer to AbstractDriver::implicitCommitOf()
  */
@@ -56,29 +55,24 @@ final class ImplicitCommit
         'REPAIR', 'RESET', 'REVOKE', 'SHUTDOWN', 'TRUNCATE', 'UNINSTALL', 'UNLOCK',
     ];
 
-    /** How many keywords are read at most: enough for CREATE OR REPLACE TEMPORARY */
-    private const KEYWORDS = 4;
-
-    /**
-     * How many readings of one statement are judged at most: 2^8, eight versioned comments before
-     * the point it is decided at - seven when the statement holds a backslash, its strings are read
-     * both ways as well. More is no statement anybody writes
-     */
-    private const MAX_READINGS = 256;
-
-    /** What of() answers for a statement whose readings are too many to judge */
+    /** What of() answers for a statement with an executable comment before its leading keywords are decided */
     public const UNJUDGED = 'VERSIONED COMMENTS';
 
     /**
      * The leading keywords of a statement that commits implicitly ("CREATE", "SET PASSWORD",
-     * "START SLAVE"), upper case, or null for one that does not - in no reading of it.
-     * UNJUDGED for a statement whose versioned comments allow more readings than are judged.
+     * "START SLAVE"), upper case, or null for one that does not - with backslash escapes in its
+     * strings and without. UNJUDGED for a statement with an executable comment before its leading
+     * keywords are decided.
      */
     public static function of(string $sql): ?string
     {
-        $readings = 0;
         foreach (str_contains($sql, '\\') ? [true, false] : [true] as $backslashes) {
-            $kind = self::readingsFrom($sql, [], $backslashes, $readings);
+            [$tokens, $executableComment] = self::tokens($sql, $backslashes);
+            [$kind, $read] = self::classify($tokens);
+            // The answer depends on a token after the last one read: the comment, or what comes after it
+            if ($executableComment && $read > count($tokens)) {
+                return self::UNJUDGED;
+            }
             if ($kind !== null) {
                 return $kind;
             }
@@ -88,39 +82,9 @@ final class ImplicitCommit
     }
 
     /**
-     * Depth first through the ways the versioned comments may run, from the reading in which they
-     * run as $runs says and every one met beyond it runs: what the first reading that commits
-     * implicitly commits, or null. That reading is read again with one of its comments switched
-     * off - those before it as in that reading - for each comment it met, beyond $runs, before the
-     * point it was decided at: a comment after that point changes only what comes after it, and the
-     * reading cannot change. UNJUDGED once more than MAX_READINGS readings were read.
-     *
-     * @param list<bool> $runs
-     * @param int $readings How many readings of the statement were read so far
-     */
-    private static function readingsFrom(string $sql, array $runs, bool $backslashes, int &$readings): ?string
-    {
-        if (++$readings > self::MAX_READINGS) {
-            return self::UNJUDGED;
-        }
-        [$tokens, $comments] = self::tokens($sql, $runs, $backslashes);
-        [$kind, $decidedBy] = self::classify($tokens);
-        foreach ($comments as $comment => $tokensBefore) {
-            if ($kind !== null || $tokensBefore >= $decidedBy) {
-                break; // decided, or this comment and every later one come after the point it was decided at
-            }
-            if ($comment >= count($runs)) { // one the reading did not take from $runs: it ran
-                $kind = self::readingsFrom($sql, [...$runs, ...array_fill(0, $comment - count($runs), true), false], $backslashes, $readings);
-            }
-        }
-
-        return $kind;
-    }
-
-    /**
-     * Classify one reading: the leading keywords, and for SET STATEMENT the statement after its FOR.
-     * Also how many of the tokens decided it: the tokens after them could not change it - or one more
-     * than there are, when it ran out of tokens (one more could).
+     * Classify the statement: the leading keywords, and for SET STATEMENT the statement after its
+     * FOR. Also how many of the tokens the answer depends on - one more than there are when it
+     * looked past the last one (where a further token could change it).
      *
      * @param list<string> $tokens
      *
@@ -128,47 +92,92 @@ final class ImplicitCommit
      */
     private static function classify(array $tokens): array
     {
-        $words = [];
-        $decidedBy = count($tokens) + 1;
-        foreach ($tokens as $at => $token) {
-            if (count($words) === self::KEYWORDS || preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/D', $token) !== 1) {
-                $decidedBy = $at + 1;
-
-                break;
-            }
-            $words[] = strtoupper($token);
+        $read = 0;
+        $first = self::word($tokens, 0, $read);
+        if ($first === 'SET' && self::word($tokens, 1, $read) === 'STATEMENT') {
+            return self::statementAfterFor($tokens);
         }
-        if ($words === []) {
-            return [null, $decidedBy];
-        }
-        [$first, $second, $third, $fourth] = array_pad($words, self::KEYWORDS, '');
-        if ($first === 'SET' && $second === 'STATEMENT') {
-            [$kind, $forDecidedBy] = self::statementAfterFor($tokens);
-
-            return [$kind, max($decidedBy, $forDecidedBy)];
-        }
-
-        return [match (true) {
+        // Each arm reads only the keywords its answer depends on: SELECT is decided by its first word
+        $kind = match (true) {
             in_array($first, self::ALWAYS, true) => $first,
-            // CREATE TEMPORARY TABLE and DROP TEMPORARY TABLE commit nothing; every other CREATE and DROP does
-            $first === 'CREATE' => $second === 'TEMPORARY' || ($second === 'OR' && $third === 'REPLACE' && $fourth === 'TEMPORARY') ? null : 'CREATE',
-            $first === 'DROP' => $second === 'TEMPORARY' ? null : 'DROP',
+            // CREATE [OR REPLACE] TEMPORARY TABLE and DROP TEMPORARY TABLE commit nothing; every other CREATE and DROP does
+            $first === 'CREATE' => self::createsATemporaryTable($tokens, $read) ? null : 'CREATE',
+            $first === 'DROP' => self::word($tokens, 1, $read) === 'TEMPORARY' ? null : 'DROP',
             // ANALYZE [LOCAL | NO_WRITE_TO_BINLOG] TABLE[S] maintains a table and commits; every other ANALYZE
             // runs a statement and reports on it (SELECT, WITH, VALUES, a query in parentheses, ...): nothing
-            $first === 'ANALYZE' => in_array($second, ['TABLE', 'TABLES'], true)
-                || (in_array($second, ['LOCAL', 'NO_WRITE_TO_BINLOG'], true) && in_array($third, ['TABLE', 'TABLES'], true)) ? 'ANALYZE' : null,
-            $first === 'LOAD' => $second === 'INDEX' ? 'LOAD INDEX' : null,
-            ($first === 'START' || $first === 'STOP') && in_array($second, ['SLAVE', 'REPLICA', 'ALL'], true) => $first . ' ' . $second,
-            $first === 'SET' && $second === 'PASSWORD' => 'SET PASSWORD',
-            $first === 'SET' && $second === 'DEFAULT' && $third === 'ROLE' => 'SET DEFAULT ROLE',
+            $first === 'ANALYZE' => self::analyzesATable($tokens, $read) ? 'ANALYZE' : null,
+            $first === 'LOAD' => self::word($tokens, 1, $read) === 'INDEX' ? 'LOAD INDEX' : null,
+            $first === 'START', $first === 'STOP' => self::replication($first, $tokens, $read),
+            $first === 'SET' => match (self::word($tokens, 1, $read)) {
+                'PASSWORD' => 'SET PASSWORD',
+                'DEFAULT' => self::word($tokens, 2, $read) === 'ROLE' ? 'SET DEFAULT ROLE' : null,
+                default => null,
+            },
             default => null,
-        }, $decidedBy];
+        };
+
+        return [$kind, $read];
+    }
+
+    /**
+     * The token at $at as a keyword, upper case - or '' for one that is no word (a string, a
+     * character) and for one beyond the last. $read counts the tokens read so far, that one included.
+     *
+     * @param list<string> $tokens
+     */
+    private static function word(array $tokens, int $at, int &$read): string
+    {
+        $read = max($read, $at + 1);
+        $token = $tokens[$at] ?? '';
+
+        return preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/D', $token) === 1 ? strtoupper($token) : '';
+    }
+
+    /**
+     * Whether a CREATE creates a temporary table: CREATE TEMPORARY, CREATE OR REPLACE TEMPORARY.
+     *
+     * @param list<string> $tokens
+     */
+    private static function createsATemporaryTable(array $tokens, int &$read): bool
+    {
+        $second = self::word($tokens, 1, $read);
+
+        return $second === 'TEMPORARY'
+            || ($second === 'OR' && self::word($tokens, 2, $read) === 'REPLACE' && self::word($tokens, 3, $read) === 'TEMPORARY');
+    }
+
+    /**
+     * Whether an ANALYZE maintains a table: ANALYZE [LOCAL | NO_WRITE_TO_BINLOG] TABLE or TABLES.
+     *
+     * @param list<string> $tokens
+     */
+    private static function analyzesATable(array $tokens, int &$read): bool
+    {
+        $second = self::word($tokens, 1, $read);
+        if (in_array($second, ['TABLE', 'TABLES'], true)) {
+            return true;
+        }
+
+        return in_array($second, ['LOCAL', 'NO_WRITE_TO_BINLOG'], true) && in_array(self::word($tokens, 2, $read), ['TABLE', 'TABLES'], true);
+    }
+
+    /**
+     * START or STOP of the replication (SLAVE, REPLICA, ALL SLAVES) - "START SLAVE" -, or null: START
+     * TRANSACTION is transaction control, the caller's.
+     *
+     * @param list<string> $tokens
+     */
+    private static function replication(string $first, array $tokens, int &$read): ?string
+    {
+        $second = self::word($tokens, 1, $read);
+
+        return in_array($second, ['SLAVE', 'REPLICA', 'ALL'], true) ? $first . ' ' . $second : null;
     }
 
     /**
      * For SET STATEMENT ... FOR <statement>: what the statement after the first FOR commits - the
      * first FOR word token outside of parentheses (strings and comments are no words here) -, and
-     * how many of the tokens decided it (see classify()).
+     * how many of the tokens the answer depends on (see classify()).
      *
      * @param list<string> $tokens The whole statement, SET STATEMENT first
      *
@@ -184,9 +193,9 @@ final class ImplicitCommit
                 $depth = max(0, $depth - 1);
             } elseif ($depth === 0 && strtoupper($token) === 'FOR') {
                 $after = $offset + 3; // SET, STATEMENT, the tokens up to FOR, FOR itself
-                [$inner, $decidedBy] = self::classify(array_slice($tokens, $after));
+                [$inner, $read] = self::classify(array_slice($tokens, $after));
 
-                return [$inner === null ? null : 'SET STATEMENT ... FOR ' . $inner, $after + $decidedBy];
+                return [$inner === null ? null : 'SET STATEMENT ... FOR ' . $inner, $after + $read];
             }
         }
 
@@ -194,23 +203,18 @@ final class ImplicitCommit
     }
 
     /**
-     * Split the statement into tokens: words (letters, digits, `_`, `$`, any byte from 0x80 on), a
-     * quoted string or name as one token, every other character as one. Whitespace and comments
-     * separate tokens and leave none. An executable comment's opener and closer leave none either:
-     * its content is read on - unless it has a version and $runs says it does not run, then the
-     * whole comment is dropped, as far as the server skips it (skippedEnd()). A comment or string
-     * that is never closed runs to the end.
+     * Split the statement into tokens, up to its first executable comment: words (letters, digits,
+     * `_`, `$`, any byte from 0x80 on), a quoted string or name as one token, every other character
+     * as one. Whitespace and comments separate tokens and leave none; a block comment ends at its
+     * first closer, as MariaDB ends one (a `/*!` inside it is text). A comment or string that is
+     * never closed runs to the end.
      *
-     * @param list<bool> $runs Whether each versioned comment runs, in the order they are met; one met beyond the list runs
-     *
-     * @return array{list<string>, list<int>} The tokens, and for each versioned comment met how many tokens came before it
+     * @return array{list<string>, bool} The tokens, and whether an executable comment stopped the split
      */
-    private static function tokens(string $sql, array $runs, bool $backslashes): array
+    private static function tokens(string $sql, bool $backslashes): array
     {
         $tokens = [];
-        $comments = [];
         $length = strlen($sql);
-        $inExecutable = false;
         $at = 0;
         while ($at < $length) {
             $char = $sql[$at];
@@ -219,21 +223,8 @@ final class ImplicitCommit
             } elseif ($char === '#' || ($char === '-' && substr($sql, $at, 2) === '--' && ($at + 2 === $length || ctype_space($sql[$at + 2]) || ctype_cntrl($sql[$at + 2])))) {
                 $end = strpos($sql, "\n", $at);
                 $at = $end === false ? $length : $end + 1;
-            } elseif (preg_match('/\G\/\*(M?)!(\d*)/', $sql, $match, 0, $at) === 1) {
-                $skipped = false;
-                if ($match[2] !== '') {
-                    $skipped = !($runs[count($comments)] ?? true);
-                    $comments[] = count($tokens);
-                }
-                if ($skipped) {
-                    $at = self::skippedEnd($sql, $at + strlen($match[0])); // the server does not run it: a comment
-                } else {
-                    $inExecutable = true;
-                    $at += strlen($match[0]);
-                }
-            } elseif ($char === '*' && $inExecutable && substr($sql, $at, 2) === '*/') {
-                $inExecutable = false;
-                $at += 2;
+            } elseif (preg_match('/\G\/\*M?!/', $sql, $match, 0, $at) === 1) {
+                return [$tokens, true]; // what MariaDB runs of it is not judged here
             } elseif ($char === '/' && substr($sql, $at, 2) === '/*') {
                 $close = strpos($sql, '*/', $at + 2);
                 $at = $close === false ? $length : $close + 2;
@@ -250,38 +241,7 @@ final class ImplicitCommit
             }
         }
 
-        return [$tokens, $comments];
-    }
-
-    /**
-     * Where a versioned comment the server does not run ends - the offset after its closer, or the
-     * end -, its content starting at $from. MariaDB skips such a comment with one level of comments
-     * inside it (consume_comment(1) in sql_lex.cc, the same in 10.11, 11.4 and 12.3): a `/*` that
-     * comes before the next closer - a versioned one too - opens a comment that ends at its own first
-     * closer, and the next closer outside of those ends the skipped one. One level only: inside such
-     * an inner comment a `/*` is text. Ended at its first closer instead, a skipped comment let
-     * `/*!50700 /* x *\/ SELECT *\/ CREATE TABLE` be read as a SELECT, while MariaDB skips up to the
-     * second closer and runs the CREATE TABLE.
-     */
-    private static function skippedEnd(string $sql, int $from): int
-    {
-        $at = $from;
-        while (true) {
-            $close = strpos($sql, '*/', $at);
-            if ($close === false) {
-                return strlen($sql);
-            }
-            $open = strpos($sql, '/*', $at);
-            if ($open === false || $close < $open) {
-                return $close + 2;
-            }
-            // A comment inside: up to its own first closer - searched from after its `/*`, so that `/*/` does not close it
-            $inner = strpos($sql, '*/', $open + 2);
-            if ($inner === false) {
-                return strlen($sql);
-            }
-            $at = $inner + 2;
-        }
+        return [$tokens, false];
     }
 
     /**

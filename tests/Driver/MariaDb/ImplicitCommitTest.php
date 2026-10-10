@@ -6,6 +6,7 @@ namespace Sodaho\PdoWrapper\Tests\Driver\MariaDb;
 
 use RuntimeException;
 use Sodaho\PdoWrapper\DatabaseInterface;
+use Sodaho\PdoWrapper\Driver\ImplicitCommit;
 use Sodaho\PdoWrapper\Exception\ImplicitCommitException;
 use Sodaho\PdoWrapper\Tests\Contract\TransactionEnd\TransactionEndTestCase;
 
@@ -101,8 +102,8 @@ class ImplicitCommitTest extends TransactionEndTestCase
     }
 
     /**
-     * Comments before the statement do not hide it - an executable comment's content is SQL -, and
-     * the other kinds are refused as well: TRUNCATE, LOCK TABLES, an account statement.
+     * Comments before the statement do not hide it - an executable comment there is refused
+     * unjudged -, and the other kinds are refused as well: TRUNCATE, LOCK TABLES, an account statement.
      */
     public function testCommentsDoNotHideTheStatementAndTheOtherKindsAreRefused(): void
     {
@@ -110,7 +111,7 @@ class ImplicitCommitTest extends TransactionEndTestCase
         foreach ([
             '/* a note */ DROP TABLE ' . self::TABLE => 'DROP',
             "-- a note\nTRUNCATE TABLE " . self::TABLE => 'TRUNCATE',
-            '/*!50100 ALTER TABLE ' . self::TABLE . ' ADD c INT */' => 'ALTER',
+            '/*!50100 ALTER TABLE ' . self::TABLE . ' ADD c INT */' => ImplicitCommit::UNJUDGED,
             'LOCK TABLES ' . self::TABLE . ' WRITE' => 'LOCK',
             "GRANT SELECT ON nothing.* TO 'pdo_wrapper_nobody'" => 'GRANT',
         ] as $sql => $statement) {
