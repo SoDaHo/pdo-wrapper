@@ -21,6 +21,7 @@ use Sodaho\PdoWrapper\Exception\NamedLockReentryException;
 use Sodaho\PdoWrapper\Exception\NamedLocksHeldException;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Exception\TransactionException;
+use Sodaho\PdoWrapper\Exception\TransactionOpenException;
 use Sodaho\PdoWrapper\Exception\UniqueViolationException;
 use Sodaho\PdoWrapper\InternalMethods;
 use Sodaho\PdoWrapper\Query\FloatText;
@@ -2285,6 +2286,15 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      * statement's failure may be remembered for the new transaction, and the old statement with
      * it, until that transaction ends (a documented limit).
      *
+     * A transaction begun through this driver that is still open (currentTransaction() is not
+     * null) would go with the old session - nothing of it committed - and what the caller does next
+     * would run in autocommit on the new connection: reconnect() refuses with a
+     * TransactionOpenException and nothing changes, unless $dropTransaction gives it up knowingly
+     * (its end is then 'lost', as above). Only this driver's bookkeeping decides, never PDO's
+     * report: after the end - a chained transaction PDO reports, a state that cannot be read, a
+     * 'lost' told while the transaction may still be open, a transaction begun on raw PDO -
+     * reconnect() is the way out and needs no option.
+     *
      * Named locks taken with namedLock() go with the old session: while this driver holds one
      * (heldNamedLocks()), reconnect() refuses with a NamedLocksHeldException and nothing changes.
      * Release them first, or pass $dropNamedLocks to give them up knowingly - on a connection that
@@ -2297,11 +2307,13 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
      * nothing has changed.
      *
      * @param bool $dropNamedLocks Give up the named locks this driver holds, with the old session
+     * @param bool $dropTransaction Give up the open transaction begun through this driver, with the old session: its end is told as 'lost'
      *
      * @throws NamedLocksHeldException When this driver holds named locks and $dropNamedLocks is false (nothing has changed)
+     * @throws TransactionOpenException When a transaction begun through this driver is open and $dropTransaction is false (nothing has changed)
      * @throws ConnectionException When called after a named-lock statement ran, before its method returned (from a listener), the new connection cannot be opened (the old one stays), the driver was not created with its connection settings (a custom driver that sets $pdo itself), or the connection is persistent
      */
-    public function reconnect(bool $dropNamedLocks = false): void
+    public function reconnect(bool $dropNamedLocks = false, bool $dropTransaction = false): void
     {
         if ($this->lockStatementsRunning > 0) {
             // A 'query' listener of a named-lock statement that ran: its answer and what was recorded belong to that session
@@ -2321,6 +2333,18 @@ abstract class AbstractDriver implements DatabaseInterface, InternalMethods
                     implode(', ', array_map(static fn (string $name): string => '"' . $name . '"', $names))
                 ),
                 lockNames: $names
+            );
+        }
+
+        // By the library's bookkeeping alone - a transaction begun through this driver whose end is still
+        // owed -, never by PDO's report: after the end (told 'lost' while it may still be open, an unreadable
+        // state, a transaction begun on raw PDO) reconnect() is the way out and must stay one
+        if ($this->transactionBegun && !$dropTransaction) {
+            throw new TransactionOpenException(
+                debugMessage: sprintf(
+                    'reconnect() would discard transaction %d, begun through this driver and still open: nothing of it would be committed, and what follows would run in autocommit on the new connection. End it first (commit() or rollback()), or call reconnect(dropTransaction: true) to give it up knowingly (its end is then told as lost).',
+                    $this->transactionsBegun
+                )
             );
         }
 

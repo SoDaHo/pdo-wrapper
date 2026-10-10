@@ -65,17 +65,21 @@ interface DatabaseInterface
      * Discard the connection and continue on a new one, opened with the settings the driver was
      * created with: the new connection first, then a ROLLBACK on the old one, then the swap. A
      * transaction whose end was still owed ends as 'lost'. While named locks taken with namedLock()
-     * are held, nothing happens unless $dropNamedLocks gives them up; after a named-lock statement
-     * ran, before its method returned (a 'query' listener of it calls this), nothing happens either.
-     * See Driver\AbstractDriver::reconnect() for what goes with the old session and what may still
+     * are held, nothing happens unless $dropNamedLocks gives them up; while a transaction begun
+     * through this library is open (currentTransaction() is not null), nothing happens unless
+     * $dropTransaction gives it up; after a named-lock statement ran, before its method returned (a
+     * 'query' listener of it calls this), nothing happens either. See
+     * Driver\AbstractDriver::reconnect() for what goes with the old session and what may still
      * hold it.
      *
      * @param bool $dropNamedLocks Give up the named locks this driver holds, with the old session
+     * @param bool $dropTransaction Give up the open transaction begun through this library, with the old session: its end is told as 'lost'
      *
      * @throws Exception\NamedLocksHeldException When named locks are held and $dropNamedLocks is false (nothing has changed)
+     * @throws Exception\TransactionOpenException When a transaction begun through this library is open and $dropTransaction is false (nothing has changed)
      * @throws Exception\ConnectionException When called after a named-lock statement ran, before its method returned, the new connection cannot be opened (the old one stays), the driver was not created with its connection settings, or the connection is persistent
      */
-    public function reconnect(bool $dropNamedLocks = false): void;
+    public function reconnect(bool $dropNamedLocks = false, bool $dropTransaction = false): void;
 
     /**
      * Take a named lock (GET_LOCK()), held by this connection until releaseNamedLock() or the end of

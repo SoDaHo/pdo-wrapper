@@ -60,7 +60,7 @@ class ReconnectTest extends ContractTestCase
             $this->db->query('SELECT * FROM ' . self::TABLE . ' WHERE id = 1 FOR UPDATE');
             $held = $hold ? $this->db->getPdo() : null;
 
-            $this->db->reconnect();
+            $this->db->reconnect(dropTransaction: true);
 
             $this->assertSame(1, $this->observer->update(self::TABLE, ['name' => $case], ['id' => 1]), $case . ': no lock wait');
             if ($held !== null) {

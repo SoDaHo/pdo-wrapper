@@ -126,7 +126,7 @@ class ReconnectTest extends ContractTestCase
         $this->db->beginTransaction();
         $this->db->insert(self::TABLE, ['id' => 1, 'name' => 'discarded']);
 
-        $this->db->reconnect();
+        $this->db->reconnect(dropTransaction: true);
 
         $this->assertSame(['begin 1', 'end lost 1'], $this->events);
         $this->assertSame(1, $this->ends[0]['depth']);
@@ -171,7 +171,7 @@ class ReconnectTest extends ContractTestCase
         $this->db->beginTransaction();
         $this->db->getPdo()->rollBack();
 
-        $this->db->reconnect();
+        $this->db->reconnect(dropTransaction: true);
 
         $this->assertSame(['begin 1', 'end lost 1'], $this->events);
         $this->db->transaction(static fn (): null => null);
@@ -227,7 +227,7 @@ class ReconnectTest extends ContractTestCase
         RefusingPdo::$refuseFrom = RefusingPdo::$made + 1;
 
         try {
-            $this->db->reconnect();
+            $this->db->reconnect(dropTransaction: true);
             $this->fail('Expected ConnectionException');
         } catch (ConnectionException $e) {
             $this->assertSame('Database connection failed', $e->getMessage());
@@ -293,14 +293,14 @@ class ReconnectTest extends ContractTestCase
         try {
             $this->db->transaction(function (): void {
                 $this->db->insert(self::TABLE, ['id' => 1, 'name' => 'discarded']);
-                $this->db->reconnect();
+                $this->db->reconnect(dropTransaction: true);
             });
             $this->fail('Expected CommitFailedException');
         } catch (CommitFailedException $e) {
             $this->assertSame('lost', $e->outcome);
         }
 
-        $this->assertSame(['begin 1', 'end lost 1'], $this->events, 'one end, told by reconnect()');
+        $this->assertSame(['begin 1', 'end lost 1'], $this->events, 'one end, told by reconnect(dropTransaction: true)');
         $this->assertFalse($this->db->inTransaction());
         $this->assertSame([], $this->visible());
     }
@@ -337,7 +337,7 @@ class ReconnectTest extends ContractTestCase
         $this->db->on('transaction.begin', function () use (&$once): void {
             if ($once) {
                 $once = false;
-                $this->db->reconnect();
+                $this->db->reconnect(dropTransaction: true);
             }
         });
 
@@ -387,7 +387,7 @@ class ReconnectTest extends ContractTestCase
             $this->db->rollback();
         };
 
-        $this->db->reconnect();
+        $this->db->reconnect(dropTransaction: true);
 
         $this->assertSame(['begin 1', 'rollback 1', 'end rolled_back 1'], $this->events, 'one end, told by the handler');
         $this->assertFalse($this->db->inTransaction());
@@ -408,7 +408,7 @@ class ReconnectTest extends ContractTestCase
             $this->db->beginTransaction();
         };
 
-        $this->db->reconnect();
+        $this->db->reconnect(dropTransaction: true);
 
         $this->assertSame(['begin 1', 'rollback 1', 'end rolled_back 1', 'begin 2', 'end lost 2'], $this->events);
         $this->assertFalse($this->db->inTransaction());
@@ -441,13 +441,13 @@ class ReconnectTest extends ContractTestCase
     {
         $this->db->beginTransaction();
         $this->scenarioPdo()->duringRollBack = function (): void {
-            $this->db->reconnect();
+            $this->db->reconnect(dropTransaction: true);
             $this->db->beginTransaction();
         };
 
-        $this->db->reconnect();
+        $this->db->reconnect(dropTransaction: true);
 
-        $this->assertSame(['begin 1', 'end lost 1', 'begin 2'], $this->events, 'one end for the first, told by the inner reconnect()');
+        $this->assertSame(['begin 1', 'end lost 1', 'begin 2'], $this->events, 'one end for the first, told by the inner reconnect(dropTransaction: true)');
         $this->assertTrue($this->db->inTransaction(), "the handler's transaction is still open on its connection");
         $this->db->insert(self::TABLE, ['id' => 1, 'name' => 'kept']);
         $this->db->commit();
@@ -490,7 +490,7 @@ class ReconnectTest extends ContractTestCase
             $alive[] = $old->get() !== null;
         });
 
-        $this->db->reconnect();
+        $this->db->reconnect(dropTransaction: true);
 
         $this->assertSame([false], $alive);
     }
@@ -526,7 +526,7 @@ class ReconnectTest extends ContractTestCase
                     }
                 })();
 
-                $this->db->reconnect();
+                $this->db->reconnect(dropTransaction: true);
 
                 $this->assertNull($old->get(), $case);
             }
@@ -546,12 +546,12 @@ class ReconnectTest extends ContractTestCase
         $old = $this->scenarioPdo();
         $old->failRollBackAlways = true;
         $old->duringInTransaction = function (): void {
-            $this->db->reconnect();
+            $this->db->reconnect(dropTransaction: true);
             $this->db->beginTransaction();
         };
         unset($old);
 
-        $this->db->reconnect();
+        $this->db->reconnect(dropTransaction: true);
 
         $this->assertSame(['begin 1', 'end lost 1', 'begin 2'], $this->events);
         $this->assertTrue($this->db->inTransaction(), "the handler's transaction on its connection");
@@ -571,7 +571,7 @@ class ReconnectTest extends ContractTestCase
         $db->beginTransaction();
 
         try {
-            $db->reconnect();
+            $db->reconnect(dropTransaction: true);
             $this->fail('Expected ConnectionException');
         } catch (ConnectionException $e) {
             $this->assertSame('Database connection failed', $e->getMessage());
