@@ -51,11 +51,11 @@ class Database
      *
      * @param array{driver?: string|null, host?: string|null, database?: string|null, username?: string|null, password?: string|null, port?: int|string, charset?: string, options?: array<int, mixed>, pdoClass?: class-string<PDO>|null, redactParameters?: bool} $config
      *
-     * @throws ConnectionException When no or an unknown driver is named, a required value is missing, or the connection fails
+     * @throws ConnectionException When no or an unknown driver is named ('driver' no string included), a required value is missing or has the wrong type, or the connection fails
      */
     public static function connect(#[\SensitiveParameter] array $config): MariaDbDriver
     {
-        $driver = strtolower(trim($config['driver'] ?? ''));
+        $driver = strtolower(trim(self::driverName($config['driver'] ?? null)));
 
         return match ($driver) {
             'mariadb' => self::mariadb($config),
@@ -74,6 +74,25 @@ class Database
                     : sprintf('Unknown database driver "%s": use mariadb', $driver)
             ),
         };
+    }
+
+    /**
+     * The configured driver name as the string it must be ('' where it is not set), or a
+     * ConnectionException naming the key: an array or an object would end in a TypeError, an int be
+     * read as a name nobody configured. Never the value in the message.
+     *
+     * @throws ConnectionException When the value is neither a string nor null
+     */
+    private static function driverName(mixed $driver): string
+    {
+        if ($driver !== null && !is_string($driver)) {
+            throw new ConnectionException(
+                message: 'Database connection failed',
+                debugMessage: 'Invalid config value "driver": expected a string (mariadb)'
+            );
+        }
+
+        return $driver ?? '';
     }
 
     /**

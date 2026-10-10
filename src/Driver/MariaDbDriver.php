@@ -75,20 +75,24 @@ class MariaDbDriver extends AbstractDriver
      *
      * @param array{host?: string|null, database?: string|null, username?: string|null, password?: string|null, port?: int|string, charset?: string, options?: array<int, mixed>, pdoClass?: class-string<PDO>|null, redactParameters?: bool} $config
      *
-     * @throws ConnectionException When required config is missing, 'pdoClass' names no class that extends PDO, 'redactParameters' is no boolean, 'options' turn ATTR_STRINGIFY_FETCHES or ATTR_MULTI_STATEMENTS on or name ATTR_STATEMENT_CLASS, the connection fails, or the server is no MariaDB 10.11 or later, the client no mysqlnd or ATTR_ORACLE_NULLS not NULL_NATURAL, or completion_type cannot be set to NO_CHAIN
+     * @throws ConnectionException When required config is missing, a value has the wrong type ('host', 'database', 'username', 'password' and 'charset' no string, 'options' no array of PDO attributes), 'pdoClass' names no class that extends PDO, 'redactParameters' is no boolean, 'options' turn ATTR_STRINGIFY_FETCHES or ATTR_MULTI_STATEMENTS on or name ATTR_STATEMENT_CLASS, the connection fails, or the server is no MariaDB 10.11 or later, the client no mysqlnd or ATTR_ORACLE_NULLS not NULL_NATURAL, or completion_type cannot be set to NO_CHAIN
      * @throws \Throwable What a 'pdoClass', or an error handler under a non-exception error mode, throws while the connection opens besides a PDOException: unchanged
      */
     public function __construct(#[\SensitiveParameter] array $config)
     {
-        $host = $config['host'] ?? null;
-        $database = $config['database'] ?? null;
-        $username = $config['username'] ?? null;
-        $password = $config['password'] ?? null;
+        // Every value by its type first, before anything is cast, built into the DSN or merged: code
+        // without static analysis passes what it has, and a wrong type is a ConnectionException that
+        // names the key - not a TypeError, and not a value cast into something nobody configured
+        $host = self::validText('host', $config['host'] ?? null);
+        $database = self::validText('database', $config['database'] ?? null);
+        $username = self::validText('username', $config['username'] ?? null);
+        $password = self::validText('password', $config['password'] ?? null);
         $port = self::validPort($config['port'] ?? 3306);
         $pdoClass = self::validPdoClass($config['pdoClass'] ?? PDO::class);
         // A key that is present is checked as it is: null switches nothing off without a word
         $redactParameters = self::validSwitch('redactParameters', array_key_exists('redactParameters', $config) ? $config['redactParameters'] : false);
-        $charset = $config['charset'] ?? 'utf8mb4';
+        $charset = self::validText('charset', $config['charset'] ?? null) ?? 'utf8mb4';
+        $configured = self::validOptions($config['options'] ?? null);
 
         // Empty counts as missing: pdo_mysql would take an empty host for the local socket, an empty
         // database for none (named locks then prefixed with ":" alone) and an empty user for an
@@ -103,7 +107,7 @@ class MariaDbDriver extends AbstractDriver
         // A ";" would append further DSN keys and could redirect the connection, credentials included;
         // NUL would truncate the DSN and drop the keys after it. pdo_mysql splits on ";" only.
         foreach (['host' => $host, 'database' => $database, 'charset' => $charset] as $key => $value) {
-            if (str_contains((string) $value, ';') || str_contains((string) $value, "\0")) {
+            if (str_contains($value, ';') || str_contains($value, "\0")) {
                 throw new ConnectionException(
                     message: 'Database connection failed',
                     debugMessage: sprintf('Invalid character in config value "%s"', $key)
@@ -127,7 +131,7 @@ class MariaDbDriver extends AbstractDriver
             \Pdo\Mysql::ATTR_MULTI_STATEMENTS => false,
         ];
 
-        $options = array_replace($defaultOptions, $config['options'] ?? []);
+        $options = array_replace($defaultOptions, $configured);
         if (!in_array($options[PDO::ATTR_STRINGIFY_FETCHES], [false, 0], true)) {
             throw new ConnectionException(
                 message: 'Database connection failed',
@@ -171,6 +175,58 @@ class MariaDbDriver extends AbstractDriver
 
             return $pdo;
         }, $redactParameters);
+    }
+
+    /**
+     * A configured text as the string it must be, or null where it is not set, or a
+     * ConnectionException: an int would be cast into the DSN, an array or an object end in a
+     * TypeError - neither what the configuration meant. The message names the key, never the value.
+     *
+     * @throws ConnectionException When the value is neither a string nor null
+     */
+    private static function validText(string $key, #[\SensitiveParameter] mixed $value): ?string
+    {
+        if ($value !== null && !is_string($value)) {
+            throw new ConnectionException(
+                message: 'Database connection failed',
+                debugMessage: sprintf('Invalid config value "%s": expected a string', $key)
+            );
+        }
+
+        return $value;
+    }
+
+    /**
+     * The configured PDO options as the array of attributes they must be (none where not set), or a
+     * ConnectionException: anything else would end in a TypeError where they are merged with the
+     * defaults, and an attribute that is no integer is one PDO ignores without a word. The message
+     * names the key, never the value.
+     *
+     * @throws ConnectionException When the value is neither an array with integer keys nor null
+     *
+     * @return array<int, mixed>
+     */
+    private static function validOptions(#[\SensitiveParameter] mixed $options): array
+    {
+        if ($options === null) {
+            return [];
+        }
+        if (is_array($options)) {
+            $valid = [];
+            foreach ($options as $attribute => $value) {
+                if (is_int($attribute)) {
+                    $valid[$attribute] = $value;
+                }
+            }
+            if (count($valid) === count($options)) {
+                return $valid;
+            }
+        }
+
+        throw new ConnectionException(
+            message: 'Database connection failed',
+            debugMessage: 'Invalid config value "options": expected an array of PDO attributes (PDO::ATTR_* => value)'
+        );
     }
 
     /**

@@ -190,6 +190,58 @@ class MariaDbDriverTest extends TestCase
         }
     }
 
+    /**
+     * In a config array a value can be of any type. One that is not what its key takes - no string
+     * for a text, no array of PDO attributes for the options, no string for the driver's name - is
+     * refused before anything is cast, built or tried, by every factory: a ConnectionException that
+     * names the key and never the value, not a TypeError and not an int cast into the DSN. null
+     * stays "not set": the default for charset and options.
+     */
+    public function testAValueOfTheWrongTypeIsRefusedByItsKey(): void
+    {
+        $base = ['host' => '127.0.0.1', 'port' => 59994, 'database' => 'app', 'username' => self::NOBODY, 'password' => 'x', 'pdoClass' => DsnRefusingPdo::class];
+        $text = 'expected a string';
+        $options = 'expected an array of PDO attributes (PDO::ATTR_* => value)';
+        foreach ([
+            ['host', 7, $text], ['host', ['127.0.0.1'], $text], ['database', 1.5, $text], ['username', 7, $text],
+            ['password', 4711, $text], ['password', new \stdClass(), $text], ['charset', ['utf8mb4'], $text],
+            ['options', 'bad', $options], ['options', 5, $options], ['options', ['ATTR_TIMEOUT' => 5], $options],
+        ] as [$key, $value, $expected]) {
+            foreach ([
+                'new MariaDbDriver()' => static fn (): mixed => Untyped::create(MariaDbDriver::class, [$key => $value] + $base),
+                'connect()' => static fn (): mixed => Untyped::call(Database::connect(...), ['driver' => 'mariadb', $key => $value] + $base),
+            ] as $how => $call) {
+                DsnRefusingPdo::$dsn = null;
+                try {
+                    $call();
+                    $this->fail("Expected ConnectionException: {$key}, {$how}");
+                } catch (ConnectionException $e) {
+                    $this->assertSame('Database connection failed', $e->getMessage());
+                    $this->assertSame(sprintf('Invalid config value "%s": %s', $key, $expected), $e->getDebugMessage(), "{$key}, {$how}");
+                    $this->assertNull($e->getPrevious(), "{$key}, {$how}: nothing was tried");
+                    $this->assertNull(DsnRefusingPdo::$dsn, "{$key}, {$how}: no DSN was built");
+                }
+            }
+        }
+
+        foreach ([[], 7, new \stdClass()] as $driver) {
+            try {
+                Untyped::call(Database::connect(...), ['driver' => $driver] + $base);
+                $this->fail('Expected ConnectionException: driver ' . get_debug_type($driver));
+            } catch (ConnectionException $e) {
+                $this->assertSame('Invalid config value "driver": expected a string (mariadb)', $e->getDebugMessage());
+            }
+        }
+
+        try {
+            Untyped::create(MariaDbDriver::class, ['charset' => null, 'options' => null] + $base);
+            $this->fail('Expected ConnectionException: nothing listens on the port');
+        } catch (ConnectionException $e) {
+            $this->assertStringStartsWith('MariaDB connection to 127.0.0.1:59994 failed', (string) $e->getDebugMessage());
+            $this->assertSame('mysql:host=127.0.0.1;port=59994;dbname=app;charset=utf8mb4', DsnRefusingPdo::$dsn, 'null is the default');
+        }
+    }
+
     public function testExceptionHasDebugMessage(): void
     {
         try {
