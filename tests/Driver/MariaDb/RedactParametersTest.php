@@ -246,6 +246,30 @@ class RedactParametersTest extends TestCase
         }
     }
 
+    /**
+     * A named-lock answer no method understands - here the very name the statement bound, delivered
+     * by a statement class that echoes its first value - is shown by its type alone with the option:
+     * no debug message of the four methods carries it. namedLock() took the lock and counts it, the
+     * release runs last and frees it on the server.
+     */
+    public function testWithTheOptionAnAnswerNotUnderstoodIsShownByItsTypeAlone(): void
+    {
+        $db = Database::mariadb(TestEnvironment::mariadb() + StatementClassPdo::config(BindingEchoStatement::class) + ['redactParameters' => true]);
+
+        foreach ([
+            'namedLock' => static fn (): bool => $db->namedLock(self::SECRET),
+            'isNamedLockHeld' => static fn (): bool => $db->isNamedLockHeld(self::SECRET),
+            'namedLockHolder' => static fn (): ?int => $db->namedLockHolder(self::SECRET),
+            'releaseNamedLock' => static fn (): bool => $db->releaseNamedLock(self::SECRET),
+        ] as $method => $call) {
+            $e = $this->failWith($call);
+            $this->assertStringStartsWith($method . '(): ', (string) $e->getDebugMessage());
+            $this->assertStringContainsString(' answered string for the lock (name redacted), ', (string) $e->getDebugMessage(), $method);
+            $this->assertNoSecretIn($e);
+        }
+        $this->assertSame([], $db->heldNamedLocks(), 'the release ran');
+    }
+
     public function testTheOptionMustBeABoolean(): void
     {
         foreach (['yes', 1, 'false', null] as $value) {

@@ -2768,12 +2768,22 @@ abstract class AbstractDriver implements DatabaseInterface
                 '%s(): %s answered %s for %s, none of %s: the answer is not understood (a statement class of the connection\'s delivers another type). %s',
                 $method,
                 $function,
-                is_scalar($answer) ? var_export($answer, true) : get_debug_type($answer),
+                $this->shownAnswer($answer),
                 $this->shownLockName($name),
                 $expected,
                 $consequence
             )
         );
+    }
+
+    /**
+     * A named-lock answer no method understands, as a debug message shows it: a scalar as its value
+     * (var_export()), anything else by its type - and with redactParameters every answer by its type
+     * alone: a statement class of the caller's may deliver anything, the bound name among it.
+     */
+    private function shownAnswer(#[\SensitiveParameter] mixed $answer): string
+    {
+        return !$this->redactParameters && is_scalar($answer) ? var_export($answer, true) : get_debug_type($answer);
     }
 
     /**
@@ -2840,7 +2850,7 @@ abstract class AbstractDriver implements DatabaseInterface
         if ($holder !== null && !is_int($holder)) {
             throw new QueryException(
                 message: 'Query failed',
-                debugMessage: sprintf('namedLockHolder(): IS_USED_LOCK() answered %s for %s, neither a connection id nor NULL', var_export($holder, true), $this->shownLockName($name))
+                debugMessage: sprintf('namedLockHolder(): IS_USED_LOCK() answered %s for %s, neither a connection id nor NULL', $this->shownAnswer($holder), $this->shownLockName($name))
             );
         }
 
