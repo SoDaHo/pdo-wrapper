@@ -168,14 +168,16 @@ interface DatabaseInterface
      * end behind this library's back is told as 'lost' first). A transaction begun through this
      * library that PDO no longer reports (ended by the server or on raw PDO) is told as
      * 'transaction.end' 'lost' first - except after a MariaDB deadlock or a 1020: then
-     * beginTransaction() refuses, and rollback() tells that end. Called from inside a listener that
-     * runs in the middle of a transaction - a transaction.begin, transaction.commit or transaction.rollback listener, or a statement listener (query.before, query, error) entered inside a transaction -, it refuses and begins nothing, and so do commit() and rollback(): such a
-     * listener that needs a transaction uses a connection of its own. A transaction.end listener
-     * (the transaction has ended) and a statement listener outside of a transaction may run one of
-     * their own, with its own number and end; transaction.end listeners that each begin one whose
-     * end runs them again are stopped after 32 levels with a LogicException.
+     * beginTransaction() refuses, and rollback() tells that end. Called from inside a listener of
+     * this library other than a transaction.end listener (query.before, query, error - in the middle
+     * of the caller's statement -, transaction.begin, transaction.commit, transaction.rollback - in
+     * the middle of the caller's transaction), it refuses and begins nothing, and so do commit() and
+     * rollback(): such a listener that needs a transaction uses a connection of its own. A
+     * transaction.end listener (the transaction has ended) may run one of its own, with its own
+     * number and end; transaction.end listeners that each begin one whose end runs them again are
+     * stopped after 32 levels with a LogicException.
      *
-     * @throws Exception\ListenerTransactionException When called from inside such a listener (nothing is begun)
+     * @throws Exception\ListenerTransactionException When called from inside a listener of this library other than a transaction.end listener (nothing is begun)
      * @throws \LogicException When 32 transaction.end listeners run one inside the other (nothing is begun)
      * @throws Exception\TransactionException When the transaction cannot be started (including PDO reporting the failure without throwing), when a transaction begun through this library was rolled back by the server (a deadlock or a 1020) and has not been ended with rollback() yet, a listener threw a PDOException, or a listener ended the transaction it was told about
      * @throws \Throwable Re-throws any other exception of a 'transaction.begin' listener
@@ -198,7 +200,7 @@ interface DatabaseInterface
      * failed or refused commit of a transaction PDO no longer reports, see below).
      *
      * Every TransactionException the commit itself throws is an Exception\CommitFailedException -
-     * but for the refusal inside a listener that runs in a transaction, an
+     * but for the refusal inside a listener (all but transaction.end), an
      * Exception\ListenerTransactionException, where nothing is tried;
      * its $outcome is 'lost' when the commit told the end itself (PDO reported no transaction any
      * more: nothing could end it afterwards), and null otherwise: after a commit() you call
@@ -227,7 +229,7 @@ interface DatabaseInterface
      * at once, as every failed commit after which PDO reports none; where the answer was lost on the
      * way, the rollback fails as on every lost connection. See Traits\HasHooks.
      *
-     * @throws Exception\ListenerTransactionException When called from inside a listener that runs in the middle of a transaction (see beginTransaction(); nothing is sent)
+     * @throws Exception\ListenerTransactionException When called from inside a listener of this library other than a transaction.end listener (nothing is sent)
      * @throws Exception\CommitFailedException When the commit itself failed (it may or may not have taken effect), or was refused because the server had already ended the transaction - rolled back, or committed implicitly by a DDL statement on raw PDO: no promise either way; only $outcome 'rolled_back' says that nothing is committed. A TransactionException
      * @throws Exception\CommitHookException When committed, but a transaction.commit or transaction.end listener failed, the connection state after a commit listener could not be verified, or the connection is in a new, chained transaction
      */
@@ -260,7 +262,7 @@ interface DatabaseInterface
      * after the ROLLBACK (completion_type=CHAIN, not supported), that is reported as
      * TransactionException after the listeners ran, unless a rollback listener threw.
      *
-     * @throws Exception\ListenerTransactionException When called from inside a listener that runs in the middle of a transaction (see beginTransaction(); nothing is sent)
+     * @throws Exception\ListenerTransactionException When called from inside a listener of this library other than a transaction.end listener (nothing is sent)
      * @throws Exception\TransactionException On failure, when the connection is in a new, chained transaction afterwards, or when a transaction.end listener failed after a confirmed rollback and no rollback listener did (the first failure; all of them reach the 'error' hook)
      * @throws \Throwable Re-throws a rollback listener's exception
      */
