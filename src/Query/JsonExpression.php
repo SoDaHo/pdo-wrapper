@@ -74,13 +74,15 @@ final class JsonExpression extends RawExpression
     }
 
     /**
-     * The expression as a select() entry named $alias: `<the expression> AS `alias``.
+     * The expression as a select() entry named $alias: `<the expression> AS `alias``. Letters of
+     * any script count, as for the builder's aliases (u; an alias that is no valid UTF-8 is refused):
+     * without it `zähler` was refused (Daybreak review of the eighth candidate, also in 3.1.2).
      *
      * @throws QueryException When the alias is not a name of letters, digits and underscores
      */
     public function as(string $alias): RawExpression
     {
-        if (preg_match('/^\w+$/D', $alias) !== 1) {
+        if (preg_match('/^\w+$/uD', $alias) !== 1) {
             throw new QueryException(
                 message: 'Query failed',
                 debugMessage: sprintf('Invalid alias "%s" for a JSON value: use letters, digits and underscores', $alias)

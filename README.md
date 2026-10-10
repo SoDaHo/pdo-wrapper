@@ -498,7 +498,7 @@ $revenue   = $db->table('orders')->distinct()->sum('amount');                   
 
 ### JSON Values
 
-`Database::json($column, $path)` is a value inside a JSON column, as text - ``JSON_UNQUOTE(JSON_EXTRACT(`payload`, '$.net'))`` - for `where*()`, `select()` (named with `->as()`), `groupBy()` and `orderBy()`; `->orColumn('ip')` falls back to a column where the document has no value (``COALESCE(..., `ip`)``):
+`Database::json($column, $path)` is a value inside a JSON column, as text - ``JSON_UNQUOTE(JSON_EXTRACT(`payload`, '$.net'))`` - for `where*()`, `select()` (named with `->as()`: letters of any script, digits and underscores), `groupBy()` and `orderBy()`; `->orColumn('ip')` falls back to a column where the document has no value (``COALESCE(..., `ip`)``):
 
 ```php
 use Sodaho\PdoWrapper\Database;

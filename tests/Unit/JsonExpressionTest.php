@@ -50,6 +50,9 @@ class JsonExpressionTest extends TestCase
     public function testAsNamesTheExpressionForSelect(): void
     {
         $this->assertSame("JSON_UNQUOTE(JSON_EXTRACT(`payload`, '$.net')) AS `net`", (string) Database::json('payload', '$.net')->as('net'));
+        // letters of any script, as for the builder's aliases (the eighth candidate refused them)
+        $this->assertSame("JSON_UNQUOTE(JSON_EXTRACT(`payload`, '$.n')) AS `zähler`", (string) Database::json('payload', '$.n')->as('zähler'));
+        $this->assertSame("JSON_UNQUOTE(JSON_EXTRACT(`payload`, '$.n')) AS `Ä`", (string) Database::json('payload', '$.n')->as('Ä'));
         $this->assertSame("COALESCE(JSON_UNQUOTE(JSON_EXTRACT(`payload`, '$.net')), `ip`) AS `Net_2`", (string) Database::json('payload', '$.net')->orColumn('ip')->as('Net_2'));
     }
 
@@ -94,7 +97,7 @@ class JsonExpressionTest extends TestCase
 
     public function testAnAliasOfAnotherFormIsRefused(): void
     {
-        foreach (['', 'a b', 'a`b', "a\n", 'net.x'] as $alias) {
+        foreach (['', 'a b', 'a`b', "a\n", 'net.x', "zähler\n", 'ä b', "\xFF"] as $alias) {
             try {
                 Database::json('payload', '$.net')->as($alias);
                 $this->fail('Expected QueryException: ' . var_export($alias, true));
