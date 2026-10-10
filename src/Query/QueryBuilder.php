@@ -1158,7 +1158,7 @@ class QueryBuilder
      *
      * @return array<string, mixed>|null The row, or null when the condition was false
      */
-    public function insertWhenReturning(#[\SensitiveParameter] array $data, string $condition, #[\SensitiveParameter] array $bindings = [], #[\SensitiveParameter] array $update = [], array $columns = ['*']): ?array
+    public function insertWhenReturning(#[\SensitiveParameter] array $data, string $condition, #[\SensitiveParameter] array $bindings = [], #[\SensitiveParameter] array $update = [], #[\SensitiveParameter] array $columns = ['*']): ?array
     {
         $this->refuseClauses('insertWhenReturning', 'takes its condition as an argument');
 
@@ -1219,7 +1219,7 @@ class QueryBuilder
      *
      * @return array<string, mixed> The row
      */
-    public function upsertReturning(#[\SensitiveParameter] array $row, #[\SensitiveParameter] array $update, array $columns = ['*']): array
+    public function upsertReturning(#[\SensitiveParameter] array $row, #[\SensitiveParameter] array $update, #[\SensitiveParameter] array $columns = ['*']): array
     {
         $this->refuseClauses('upsertReturning', 'inserts or changes one row');
 

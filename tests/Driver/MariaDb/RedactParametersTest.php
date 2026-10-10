@@ -156,6 +156,42 @@ class RedactParametersTest extends TestCase
         $this->assertNoSecretInTrace($duplicate, withPrevious: false);
     }
 
+    /**
+     * The MariaDB driver's own insertIgnore(), upsert() and insertWhen() are frames of every trace
+     * that goes through them: their arguments are SensitiveParameterValue objects, with the option
+     * or without. A value they refuse to bind leaves the statement unsent; with the option the
+     * database's message about a value they sent (an incorrect integer) is replaced as well.
+     */
+    public function testTheDriversOwnMethodsKeepTheValuesOutOfTheirFrames(): void
+    {
+        foreach ([false, true] as $redact) {
+            [$db] = $this->driver($redact);
+            $refused = [
+                'insertIgnore' => static fn () => $db->insertIgnore(self::TABLE, ['id' => 5, 'email' => self::SECRET, 'n' => []]),
+                'upsert' => static fn () => $db->upsert(self::TABLE, ['id' => 6, 'email' => self::SECRET], ['n' => []]),
+                'insertWhen' => static fn () => $db->insertWhen(self::TABLE, ['id' => 7, 'email' => self::SECRET], '1 = ?', [[]]),
+            ];
+            foreach ($refused as $method => $call) {
+                $e = $this->failWith($call);
+                $frames = array_values(array_filter($e->getTrace(), static fn (array $frame): bool => ($frame['class'] ?? null) === MariaDbDriver::class && $frame['function'] === $method));
+                $this->assertCount(1, $frames, "{$method}: the driver's own frame");
+                $this->assertInstanceOf(SensitiveParameterValue::class, $frames[0]['args'][1] ?? null, "{$method}: its data");
+                $this->assertNoSecretInTrace($e);
+            }
+            if ($redact) {
+                foreach ([
+                    'insertIgnore' => static fn () => $db->insertIgnore(self::TABLE, ['id' => 8, 'email' => 'x@example.test', 'n' => self::SECRET]),
+                    'upsert' => static fn () => $db->upsert(self::TABLE, ['id' => 1, 'email' => 'y@example.test'], ['n' => self::SECRET]),
+                ] as $method => $call) {
+                    $e = $this->failWith($call);
+                    $this->assertSame(1366, $e->driverCode, $method);
+                    $this->assertNoSecretIn($e);
+                }
+            }
+        }
+        $this->assertSame([1], array_column(Database::mariadb(TestEnvironment::mariadb())->findAll(self::TABLE), 'id'), 'nothing was written');
+    }
+
     public function testTheOptionMustBeABoolean(): void
     {
         foreach (['yes', 1, 'false', null] as $value) {

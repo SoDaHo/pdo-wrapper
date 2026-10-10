@@ -13,18 +13,20 @@ use ReflectionUnionType;
 use Sodaho\PdoWrapper\Database;
 use Sodaho\PdoWrapper\DatabaseInterface;
 use Sodaho\PdoWrapper\Driver\AbstractDriver;
+use Sodaho\PdoWrapper\Driver\MariaDbDriver;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Query\QueryBuilder;
 use Sodaho\PdoWrapper\Query\RawExpression;
 use Throwable;
 
 /**
- * Every public parameter that may carry a value - an array, mixed, a number, a RawExpression with
- * its bindings - is #[\SensitiveParameter] in the API (DatabaseInterface and the driver that
- * implements it, QueryBuilder, Database::raw()/escapeLike(), RawExpression): with
- * zend.exception_ignore_args off a trace shows a SensitiveParameterValue in its place. Pinned by
- * reflection, so that a new or changed signature cannot drop it unnoticed, and by the traces of
- * inputs the library refuses before anything is sent.
+ * Every public and protected parameter that may carry a value - an array, mixed, a number, a
+ * RawExpression with its bindings, a named lock's name - is #[\SensitiveParameter] in the API
+ * (DatabaseInterface, AbstractDriver with its protected helpers, the MariaDB driver's overrides,
+ * QueryBuilder, Database, RawExpression): with zend.exception_ignore_args off a trace shows a
+ * SensitiveParameterValue in its place. Pinned by reflection, so that a new or changed signature
+ * cannot drop it unnoticed, and by the traces of inputs the library refuses before anything is
+ * sent (the driver's own trace test is tests/Driver/MariaDb/RedactParametersTest).
  */
 class SensitiveParametersTest extends TestCase
 {
@@ -32,29 +34,31 @@ class SensitiveParametersTest extends TestCase
 
     /** Parameters of those types that carry names, not values */
     private const NO_VALUES = [
-        'insertWhenReturning.columns', // the columns to return
-        'upsertReturning.columns',
         'raw.value', // the SQL of the expression, developer code; its bindings are values
         '__construct.value',
+        'lastInsertId.name', // the name of a sequence (MariaDB's PDO ignores it)
+        'validPort.port', // the port and the PDO class of the configuration, as the caller wrote them: what a failed connection is debugged with
+        'validPdoClass.class',
     ];
 
     /**
+     * Every public and protected method of the API's classes - an override of the MariaDB driver
+     * and a protected helper of the driver are frames of the traces as much as the public methods
+     * are - and the value parameters among their parameters.
+     *
      * @return iterable<string, array{ReflectionParameter}>
      */
     public static function valueParameters(): iterable
     {
         $methods = [];
-        foreach ([DatabaseInterface::class, AbstractDriver::class, QueryBuilder::class] as $class) {
-            foreach (new \ReflectionClass($class)->getMethods(ReflectionMethod::IS_PUBLIC) as $method) {
-                if ($class === AbstractDriver::class && !method_exists(DatabaseInterface::class, $method->getName())) {
-                    continue; // the driver's own methods beyond the interface are covered where they belong
+        foreach ([DatabaseInterface::class, AbstractDriver::class, MariaDbDriver::class, QueryBuilder::class, Database::class, RawExpression::class] as $class) {
+            foreach (new \ReflectionClass($class)->getMethods(ReflectionMethod::IS_PUBLIC | ReflectionMethod::IS_PROTECTED) as $method) {
+                if ($method->getDeclaringClass()->getName() !== $class) {
+                    continue; // read where it is declared
                 }
                 $methods[] = $method;
             }
         }
-        $methods[] = new ReflectionMethod(Database::class, 'raw');
-        $methods[] = new ReflectionMethod(Database::class, 'escapeLike');
-        $methods[] = new ReflectionMethod(RawExpression::class, '__construct');
 
         foreach ($methods as $method) {
             foreach ($method->getParameters() as $parameter) {
@@ -69,8 +73,8 @@ class SensitiveParametersTest extends TestCase
 
     private static function mayCarryAValue(?ReflectionType $type, string $name): bool
     {
-        if (in_array($name, ['value', 'pattern'], true)) {
-            return true;
+        if (in_array($name, ['value', 'pattern', 'name'], true)) {
+            return true; // a value as a string: escapeLike()'s, a LIKE pattern, a named lock's name
         }
         $types = $type instanceof ReflectionUnionType ? $type->getTypes() : [$type];
         foreach ($types as $one) {
@@ -89,7 +93,7 @@ class SensitiveParametersTest extends TestCase
     }
 
     /**
-     * @return iterable<string, array{\Closure(QueryBuilder): mixed}>
+     * @return iterable<string, array{\Closure(QueryBuilder, DatabaseInterface): mixed}>
      */
     public static function refusedInputs(): iterable
     {
@@ -101,22 +105,27 @@ class SensitiveParametersTest extends TestCase
         yield 'having() with a bound raw column' => [static fn (QueryBuilder $q): mixed => $q->having(Database::raw('SUM(?)', [self::MARKER]), '>', 1)];
         yield 'groupBy() with a bound raw expression' => [static fn (QueryBuilder $q): mixed => $q->groupBy(Database::raw('LEFT(token, ?)', [self::MARKER]))];
         yield 'orderBy() with a bound raw expression' => [static fn (QueryBuilder $q): mixed => $q->orderBy(Database::raw('FIELD(token, ?)', [self::MARKER]))];
+        $returning = [Database::raw('? AS x', [self::MARKER])];
+        yield 'insertWhenReturning() with a bound raw column' => [static fn (QueryBuilder $q, DatabaseInterface $db): mixed => $db->insertWhenReturning('t', ['a' => 1], '1 = 1', [], [], $returning)];
+        yield 'upsertReturning() with a bound raw column' => [static fn (QueryBuilder $q, DatabaseInterface $db): mixed => $db->upsertReturning('t', ['a' => 1], ['a' => 2], $returning)];
+        yield 'the builder\'s insertWhenReturning() with a bound raw column' => [static fn (QueryBuilder $q): mixed => $q->insertWhenReturning(['a' => 1], '1 = 1', [], [], $returning)];
+        yield 'the builder\'s upsertReturning() with a bound raw column' => [static fn (QueryBuilder $q): mixed => $q->upsertReturning(['a' => 1], ['a' => 2], $returning)];
     }
 
     /**
      * An input the library refuses before anything is sent: the value appears in no frame of the
      * exception's trace (nor of a previous one), with the arguments in the trace.
      *
-     * @param \Closure(QueryBuilder): mixed $refused
+     * @param \Closure(QueryBuilder, DatabaseInterface): mixed $refused
      */
     #[\PHPUnit\Framework\Attributes\DataProvider('refusedInputs')]
     public function testARefusedInputLeavesNoValueInTheTrace(\Closure $refused): void
     {
-        $query = new class () extends AbstractDriver {
-        }->table('t');
+        $db = new class () extends AbstractDriver {
+        };
         $ignoreArgs = ini_set('zend.exception_ignore_args', '0');
         try {
-            $refused($query);
+            $refused($db->table('t'), $db);
             $this->fail('Expected QueryException');
         } catch (QueryException $e) {
             $traces = '';

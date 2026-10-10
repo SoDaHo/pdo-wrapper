@@ -547,7 +547,7 @@ interface DatabaseInterface
      *
      * @return array<string, mixed>|null The row, or null when the condition was false
      */
-    public function insertWhenReturning(string $table, #[\SensitiveParameter] array $data, string $condition, #[\SensitiveParameter] array $bindings = [], #[\SensitiveParameter] array $update = [], array $columns = ['*']): ?array;
+    public function insertWhenReturning(string $table, #[\SensitiveParameter] array $data, string $condition, #[\SensitiveParameter] array $bindings = [], #[\SensitiveParameter] array $update = [], #[\SensitiveParameter] array $columns = ['*']): ?array;
 
     /**
      * Insert a row, or change the row it collides with: `INSERT INTO table (...) VALUES (...)
@@ -591,7 +591,7 @@ interface DatabaseInterface
      *
      * @return array<string, mixed> The row
      */
-    public function upsertReturning(string $table, #[\SensitiveParameter] array $row, #[\SensitiveParameter] array $update, array $columns = ['*']): array;
+    public function upsertReturning(string $table, #[\SensitiveParameter] array $row, #[\SensitiveParameter] array $update, #[\SensitiveParameter] array $columns = ['*']): array;
 
     /**
      * Insert a row unless it collides with an existing one: on a duplicate of ANY unique key or

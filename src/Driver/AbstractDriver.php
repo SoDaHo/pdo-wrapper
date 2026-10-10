@@ -3075,7 +3075,7 @@ abstract class AbstractDriver implements DatabaseInterface
      *
      * @return array<string, mixed>|null The row, or null when the condition was false
      */
-    public function insertWhenReturning(string $table, #[\SensitiveParameter] array $data, string $condition, #[\SensitiveParameter] array $bindings = [], #[\SensitiveParameter] array $update = [], array $columns = ['*']): ?array
+    public function insertWhenReturning(string $table, #[\SensitiveParameter] array $data, string $condition, #[\SensitiveParameter] array $bindings = [], #[\SensitiveParameter] array $update = [], #[\SensitiveParameter] array $columns = ['*']): ?array
     {
         [$sql, $params] = $this->conditionalInsert('insertWhenReturning', $table, $data, $condition, $bindings, $update);
 
@@ -3112,7 +3112,7 @@ abstract class AbstractDriver implements DatabaseInterface
      *
      * @return array<string, mixed> The row
      */
-    public function upsertReturning(string $table, #[\SensitiveParameter] array $row, #[\SensitiveParameter] array $update, array $columns = ['*']): array
+    public function upsertReturning(string $table, #[\SensitiveParameter] array $row, #[\SensitiveParameter] array $update, #[\SensitiveParameter] array $columns = ['*']): array
     {
         [$sql, $params] = $this->upsertStatement('upsertReturning', $table, $row, $update);
         $returned = $this->returnedRow($sql . $this->returningClause('upsertReturning', $columns), $params);
@@ -3220,7 +3220,7 @@ abstract class AbstractDriver implements DatabaseInterface
      *
      * @throws QueryException When $columns is empty or holds an expression with bindings
      */
-    private function returningClause(string $method, array $columns): string
+    private function returningClause(string $method, #[\SensitiveParameter] array $columns): string
     {
         if ($columns === []) {
             throw new QueryException(
