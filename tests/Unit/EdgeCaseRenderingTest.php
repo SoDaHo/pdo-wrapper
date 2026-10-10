@@ -126,10 +126,10 @@ class EdgeCaseRenderingTest extends TestCase
 
     /**
      * An operator that is no string is refused by its type, never cast and never read as one: an
-     * int, an object whose __toString() says "=" (3.1.2 cast it and took it), and objects of the
-     * classes Like and Is of the global namespace, whose type names read like operators - the
-     * eighth candidate took them for LIKE and IS, and an equality became a pattern match (Astra
-     * review). The message is static, the type only in the debug message; nothing is added.
+     * int, an object whose __toString() says "=" (3.1.2 cast it and took it), and an object of the
+     * class Like of the global namespace, whose type name reads like an operator - a check that
+     * read the type's name took it for LIKE, and an equality became a pattern match. The message
+     * is static, the type only in the debug message; nothing is added.
      */
     public function testAnOperatorThatIsNoStringIsRefusedByItsType(): void
     {
@@ -140,7 +140,7 @@ class EdgeCaseRenderingTest extends TestCase
                 return '=';
             }
         };
-        $operators = [[new \Like(), 'Like'], [new \Is(), 'Is'], [1, 'int'], [1.5, 'float'], [true, 'bool'], [['='], 'array'], [$equals, 'class@anonymous']];
+        $operators = [[new \Like(), 'Like'], [1, 'int'], [1.5, 'float'], [true, 'bool'], [['='], 'array'], [$equals, 'class@anonymous']];
         foreach ($operators as [$operator, $type]) {
             $query = $this->table('users');
             try {
