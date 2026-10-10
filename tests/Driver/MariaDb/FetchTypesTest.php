@@ -8,6 +8,7 @@ use PDO;
 use Sodaho\PdoWrapper\Database;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Tests\Contract\ContractTestCase;
+use Sodaho\PdoWrapper\Tests\Support\StatementClassPdo;
 
 /**
  * The PHP type each column type arrives as - the library's promise, the same on every supported
@@ -84,7 +85,7 @@ class FetchTypesTest extends ContractTestCase
      */
     public function testSumAndAvgRefuseATypeMariaDbDoesNotDeliver(): void
     {
-        $db = $this->connect(['options' => [PDO::ATTR_STATEMENT_CLASS => [IntegerDeliveringStatement::class]]]);
+        $db = $this->connect(StatementClassPdo::config(IntegerDeliveringStatement::class));
 
         foreach (['sum' => static fn (): mixed => $db->table('fetch_types')->sum('i'), 'avg' => static fn (): mixed => $db->table('fetch_types')->where('i', 1)->avg('small')] as $method => $call) {
             try {
@@ -98,7 +99,7 @@ class FetchTypesTest extends ContractTestCase
         $this->assertNull($db->table('fetch_types')->where('i', 0)->sum('i'), 'null still means no value');
 
         // A row whose value is false is a value, not "no row": it meets the same check
-        $db = $this->connect(['options' => [PDO::ATTR_STATEMENT_CLASS => [FalseValueStatement::class]]]);
+        $db = $this->connect(StatementClassPdo::config(FalseValueStatement::class));
         try {
             $db->table('fetch_types')->sum('i');
             $this->fail('Expected QueryException: false');
@@ -116,7 +117,7 @@ class FetchTypesTest extends ContractTestCase
     {
         $this->assertSame(0, $this->db->table('fetch_types')->having(Database::raw('COUNT(*)'), '>', 1000)->count(), 'no row: none to count');
 
-        $db = $this->connect(['options' => [PDO::ATTR_STATEMENT_CLASS => [FalseValueStatement::class]]]);
+        $db = $this->connect(StatementClassPdo::config(FalseValueStatement::class));
         try {
             $db->table('fetch_types')->count();
             $this->fail('Expected QueryException: false');

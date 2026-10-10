@@ -10,13 +10,14 @@ use Sodaho\PdoWrapper\Database;
 use Sodaho\PdoWrapper\Exception\ConnectionException;
 use Sodaho\PdoWrapper\Exception\ConnectionRefusal;
 use Sodaho\PdoWrapper\Tests\Contract\ContractTestCase;
+use Sodaho\PdoWrapper\Tests\Support\StatementClassPdo;
 use Sodaho\PdoWrapper\Tests\Support\TestEnvironment;
 
 /**
  * What the driver refuses when the connection opens - the same at reconnect(): a server that is
  * no MariaDB 10.11 or later, a client that is no mysqlnd, an option that would turn every fetched
- * value into a string, and a connection that turns NULL and '' into each other. The versions are
- * replayed (ReportedVersionPdo).
+ * value into a string, multi-statements or a statement class among the options, and a connection
+ * that turns NULL and '' into each other. The versions are replayed (ReportedVersionPdo).
  */
 class ConnectionCheckTest extends ContractTestCase
 {
@@ -141,6 +142,33 @@ class ConnectionCheckTest extends ContractTestCase
             $db = $this->connect(['options' => [\Pdo\Mysql::ATTR_MULTI_STATEMENTS => $off]]);
             $this->assertSame(1, $db->query('SELECT 1 AS one')->fetchColumn());
         }
+    }
+
+    /**
+     * ATTR_STATEMENT_CLASS would decide what the library reads back - a statement class whose
+     * fetchColumn() delivers '1' made a named lock that was taken count as not taken: refused
+     * before anything is tried, whatever the value, PDO's own class included. A PDO class of the
+     * caller's that sets one is the caller's code and goes through (StatementClassPdo).
+     */
+    public function testAnOptionThatNamesAStatementClassIsRefused(): void
+    {
+        foreach ([[StringColumnStatement::class], [\PDOStatement::class], null] as $class) {
+            try {
+                $this->connect(['options' => [PDO::ATTR_STATEMENT_CLASS => $class]]);
+                $this->fail('Expected ConnectionException for ' . var_export($class, true));
+            } catch (ConnectionException $e) {
+                $this->assertSame('Database connection failed', $e->getMessage());
+                $this->assertSame(
+                    'The option ATTR_STATEMENT_CLASS would hand every answer the library reads back - whether a named lock was taken, the value of an aggregate - to a statement class of its own. A PDO class of yours (pdoClass) that sets one is your code and trusted like it.',
+                    $e->getDebugMessage()
+                );
+                $this->assertNull($e->getPrevious(), 'nothing was tried');
+                $this->assertNull($e->refusal, 'a refused configuration, not a refused connection');
+            }
+        }
+
+        $db = $this->connect(StatementClassPdo::config(StringColumnStatement::class));
+        $this->assertSame('7', $db->query('SELECT 1')->fetchColumn(), 'the PDO class of the caller\'s set it');
     }
 
     /**

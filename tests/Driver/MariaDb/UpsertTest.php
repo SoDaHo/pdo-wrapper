@@ -10,6 +10,7 @@ use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Exception\UniqueViolationException;
 use Sodaho\PdoWrapper\Tests\Contract\ContractTestCase;
 use Sodaho\PdoWrapper\Tests\Support\Recorder;
+use Sodaho\PdoWrapper\Tests\Support\StatementClassPdo;
 
 /**
  * upsert() and insertWhen() with an update on MariaDB: the statements and their params in SQL
@@ -124,7 +125,7 @@ class UpsertTest extends ContractTestCase
      */
     public function testUpsertReturningWithoutARowBackThrows(): void
     {
-        $db = $this->connect(['options' => [PDO::ATTR_STATEMENT_CLASS => [NoRowStatement::class]]]);
+        $db = $this->connect(StatementClassPdo::config(NoRowStatement::class));
 
         try {
             $db->table('counters')->upsertReturning(['name' => 'a', 'n' => 1], ['n' => 2], ['id']);

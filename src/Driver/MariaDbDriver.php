@@ -69,11 +69,13 @@ class MariaDbDriver extends AbstractDriver
      * carry a second statement - one the library does not judge (it reads a statement's start to
      * refuse one that commits implicitly inside a transaction). ATTR_MULTI_STATEMENTS as anything
      * but false (or 0) among the options is refused; a migration that sends a whole file in one call
-     * uses a PDO connection of its own.
+     * uses a PDO connection of its own. So is ATTR_STATEMENT_CLASS, whatever its value: a statement
+     * class of its own would decide what the library reads back (whether a named lock was taken, the
+     * value of an aggregate); a PDO class of the caller's ('pdoClass') that sets one is the caller's code.
      *
      * @param array{host?: string|null, database?: string|null, username?: string|null, password?: string|null, port?: int|string, charset?: string, options?: array<int, mixed>, pdoClass?: class-string<PDO>|null, redactParameters?: bool} $config
      *
-     * @throws ConnectionException When required config is missing, 'pdoClass' names no class that extends PDO, 'redactParameters' is no boolean, 'options' turn ATTR_STRINGIFY_FETCHES or ATTR_MULTI_STATEMENTS on, the connection fails, or the server is no MariaDB 10.11 or later, the client no mysqlnd or ATTR_ORACLE_NULLS not NULL_NATURAL, or completion_type cannot be set to NO_CHAIN
+     * @throws ConnectionException When required config is missing, 'pdoClass' names no class that extends PDO, 'redactParameters' is no boolean, 'options' turn ATTR_STRINGIFY_FETCHES or ATTR_MULTI_STATEMENTS on or name ATTR_STATEMENT_CLASS, the connection fails, or the server is no MariaDB 10.11 or later, the client no mysqlnd or ATTR_ORACLE_NULLS not NULL_NATURAL, or completion_type cannot be set to NO_CHAIN
      * @throws \Throwable What a 'pdoClass', or an error handler under a non-exception error mode, throws while the connection opens besides a PDOException: unchanged
      */
     public function __construct(#[\SensitiveParameter] array $config)
@@ -136,6 +138,14 @@ class MariaDbDriver extends AbstractDriver
             throw new ConnectionException(
                 message: 'Database connection failed',
                 debugMessage: 'The option ATTR_MULTI_STATEMENTS would let one string carry several statements: the library judges a statement by its start (it refuses one that commits implicitly inside a transaction), and the statements after the first would pass unseen. Send a migration that needs them on a PDO connection of your own.'
+            );
+        }
+        // Any value, the default included: no statement class is needed, and one of its own decides what the
+        // library reads back - whether a named lock was taken, what an aggregate is - from its fetchColumn()
+        if (array_key_exists(PDO::ATTR_STATEMENT_CLASS, $options)) {
+            throw new ConnectionException(
+                message: 'Database connection failed',
+                debugMessage: 'The option ATTR_STATEMENT_CLASS would hand every answer the library reads back - whether a named lock was taken, the value of an aggregate - to a statement class of its own. A PDO class of yours (pdoClass) that sets one is your code and trusted like it.'
             );
         }
 

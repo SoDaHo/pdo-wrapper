@@ -17,6 +17,7 @@ use Sodaho\PdoWrapper\Exception\NamedLockReentryException;
 use Sodaho\PdoWrapper\Exception\NamedLocksHeldException;
 use Sodaho\PdoWrapper\Exception\QueryException;
 use Sodaho\PdoWrapper\Tests\Contract\ContractTestCase;
+use Sodaho\PdoWrapper\Tests\Support\StatementClassPdo;
 use Sodaho\PdoWrapper\Tests\Support\TestEnvironment;
 use Throwable;
 
@@ -51,7 +52,7 @@ class NamedLockTest extends ContractTestCase
     }
 
     /**
-     * @param array{options?: array<int, mixed>} $extra
+     * @param array{pdoClass?: class-string<PDO>, options?: array<int, mixed>} $extra
      */
     private function mariaDb(array $extra = []): MariaDbDriver
     {
@@ -367,7 +368,7 @@ class NamedLockTest extends ContractTestCase
     public function testAnAnswerAboutACountedName(): void
     {
         NullColumnStatement::$null = false;
-        $db = $this->mariaDb(['options' => [PDO::ATTR_STATEMENT_CLASS => [NullColumnStatement::class]]]);
+        $db = $this->mariaDb(StatementClassPdo::config(NullColumnStatement::class));
         $this->assertTrue($db->namedLock('job'));
         NullColumnStatement::$null = true;
         try {
@@ -395,7 +396,7 @@ class NamedLockTest extends ContractTestCase
     {
         foreach (['throws' => 'pdo', 'returns false' => 'false'] as $case => $mode) {
             UnreadableColumnStatement::$mode = $mode;
-            $db = $this->mariaDb(['options' => [PDO::ATTR_STATEMENT_CLASS => [UnreadableColumnStatement::class]]]);
+            $db = $this->mariaDb(StatementClassPdo::config(UnreadableColumnStatement::class));
             foreach (['namedLock' => fn (): mixed => $db->namedLock('job'), 'isNamedLockHeld' => fn (): mixed => $db->isNamedLockHeld('job'), 'namedLockHolder' => fn (): mixed => $db->namedLockHolder('job'), 'releaseNamedLock' => fn (): mixed => $db->releaseNamedLock('job')] as $method => $call) {
                 try {
                     $call();
@@ -424,7 +425,7 @@ class NamedLockTest extends ContractTestCase
     public function testAnErrorHandlersExceptionOutOfTheReadPassesUnchanged(): void
     {
         UnreadableColumnStatement::$mode = 'other';
-        $db = $this->mariaDb(['options' => [PDO::ATTR_STATEMENT_CLASS => [UnreadableColumnStatement::class]]]);
+        $db = $this->mariaDb(StatementClassPdo::config(UnreadableColumnStatement::class));
 
         try {
             $db->namedLock('job');
@@ -870,7 +871,7 @@ class NamedLockTest extends ContractTestCase
      */
     public function testANamedLockHolderThatIsNoNumberIsAnError(): void
     {
-        $db = $this->mariaDb(['options' => [PDO::ATTR_STATEMENT_CLASS => [StringColumnStatement::class]]]);
+        $db = $this->mariaDb(StatementClassPdo::config(StringColumnStatement::class));
 
         try {
             $db->namedLockHolder('job');
@@ -916,7 +917,7 @@ class NamedLockTest extends ContractTestCase
      */
     public function testANullAnswerIsAnError(): void
     {
-        $db = $this->mariaDb(['options' => [PDO::ATTR_STATEMENT_CLASS => [NullColumnStatement::class]]]);
+        $db = $this->mariaDb(StatementClassPdo::config(NullColumnStatement::class));
 
         try {
             $db->namedLock('job');
