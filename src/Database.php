@@ -34,7 +34,7 @@ class Database
      *
      * @param array{host?: string|null, database?: string|null, username?: string|null, password?: string|null, port?: int|string, charset?: string, options?: array<int, mixed>, pdoClass?: class-string<PDO>|null, redactParameters?: bool} $config
      *
-     * @throws Exception\ConnectionException When a required value is missing or the connection fails
+     * @throws Exception\ConnectionException When a key is unknown ('driver' included: that is connect()'s), a required value is missing or the connection fails
      */
     public static function mariadb(#[\SensitiveParameter] array $config): MariaDbDriver
     {
@@ -44,18 +44,19 @@ class Database
     /**
      * Create a connection for the driver named in the config.
      *
-     * 'mariadb' delegates to mariadb() with the same config keys. The library supports MariaDB only
+     * 'mariadb' delegates to mariadb() with the other config keys ('driver' taken away). The library supports MariaDB only
      * since 3.0: 'mysql' (the name of the driver before) and the removed drivers 'pgsql',
      * 'postgres', 'postgresql' and 'sqlite' throw, saying so. Nothing is read from the
      * environment: use fromEnv() for that.
      *
      * @param array{driver?: string|null, host?: string|null, database?: string|null, username?: string|null, password?: string|null, port?: int|string, charset?: string, options?: array<int, mixed>, pdoClass?: class-string<PDO>|null, redactParameters?: bool} $config
      *
-     * @throws ConnectionException When no or an unknown driver is named ('driver' no string included), a required value is missing or has the wrong type, or the connection fails
+     * @throws ConnectionException When no or an unknown driver is named ('driver' no string included), a key is unknown, a required value is missing or has the wrong type, or the connection fails
      */
     public static function connect(#[\SensitiveParameter] array $config): MariaDbDriver
     {
         $driver = strtolower(trim(self::driverName($config['driver'] ?? null)));
+        unset($config['driver']); // the driver's key: MariaDbDriver refuses every key it does not take
 
         return match ($driver) {
             'mariadb' => self::mariadb($config),
@@ -112,7 +113,7 @@ class Database
      *
      * @param array{driver?: string|null, host?: string|null, database?: string|null, username?: string|null, password?: string|null, port?: int|string, charset?: string, options?: array<int, mixed>, pdoClass?: class-string<PDO>|null, redactParameters?: bool} $overrides
      *
-     * @throws ConnectionException When no or an unknown driver is named, a required value is missing, or the connection fails
+     * @throws ConnectionException When no or an unknown driver is named, a key of $overrides is unknown, a required value is missing, or the connection fails
      */
     public static function fromEnv(#[\SensitiveParameter] array $overrides = []): MariaDbDriver
     {

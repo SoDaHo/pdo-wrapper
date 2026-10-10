@@ -39,13 +39,17 @@ class MariaDbDriver extends AbstractDriver
     /** True when the connection was opened with the driver's ATTR_FOUND_ROWS option: the server then counts matched rows, not changed ones */
     private bool $countsFoundRows = false;
 
+    /** The keys of the config: anything else is refused, a misspelt key would switch nothing on */
+    private const CONFIG_KEYS = ['host', 'database', 'username', 'password', 'port', 'charset', 'options', 'pdoClass', 'redactParameters'];
+
     /** What a named lock's name is prefixed with on the server: the configured database and ":"; null when that database name holds a ":" itself (see namedLockPrefix()) */
     private ?string $lockPrefix = null;
 
     /**
      * Create a MariaDB database connection.
      *
-     * Config keys:
+     * Config keys - any other key is refused with a ConnectionException that names it, before
+     * anything else (a misspelt 'redactParamters' would otherwise switch nothing on, without a word):
      * - host: MariaDB server hostname (required, not empty)
      * - database: Database name (required, not empty)
      * - username: Database username (required, not empty)
@@ -75,11 +79,25 @@ class MariaDbDriver extends AbstractDriver
      *
      * @param array{host?: string|null, database?: string|null, username?: string|null, password?: string|null, port?: int|string, charset?: string, options?: array<int, mixed>, pdoClass?: class-string<PDO>|null, redactParameters?: bool} $config
      *
-     * @throws ConnectionException When required config is missing, a value has the wrong type ('host', 'database', 'username', 'password' and 'charset' no string, 'options' no array of PDO attributes), 'pdoClass' names no class that extends PDO, 'redactParameters' is no boolean, 'options' turn ATTR_STRINGIFY_FETCHES or ATTR_MULTI_STATEMENTS on or name ATTR_STATEMENT_CLASS, the connection fails, or the server is no MariaDB 10.11 or later, the client no mysqlnd or ATTR_ORACLE_NULLS not NULL_NATURAL, or completion_type cannot be set to NO_CHAIN
+     * @throws ConnectionException When a key is none of the above (a misspelt one, 'driver'), required config is missing, a value has the wrong type ('host', 'database', 'username', 'password' and 'charset' no string, 'options' no array of PDO attributes), 'pdoClass' names no class that extends PDO, 'redactParameters' is no boolean, 'options' turn ATTR_STRINGIFY_FETCHES or ATTR_MULTI_STATEMENTS on or name ATTR_STATEMENT_CLASS, the connection fails, or the server is no MariaDB 10.11 or later, the client no mysqlnd or ATTR_ORACLE_NULLS not NULL_NATURAL, or completion_type cannot be set to NO_CHAIN
      * @throws \Throwable What a 'pdoClass', or an error handler under a non-exception error mode, throws while the connection opens besides a PDOException: unchanged
      */
     public function __construct(#[\SensitiveParameter] array $config)
     {
+        // A key that is none of these is refused before anything else: a misspelt one would be ignored
+        // without a word - 'redactParamters' => true connected without the redaction it asked for
+        $unknown = array_diff(array_map(strval(...), array_keys($config)), self::CONFIG_KEYS);
+        if ($unknown !== []) {
+            throw new ConnectionException(
+                message: 'Database connection failed',
+                debugMessage: sprintf(
+                    'Unknown config key "%s": the keys are %s (Database::connect() and fromEnv() take driver as well)',
+                    implode('", "', $unknown),
+                    implode(', ', self::CONFIG_KEYS)
+                )
+            );
+        }
+
         // Every value by its type first, before anything is cast, built into the DSN or merged: code
         // without static analysis passes what it has, and a wrong type is a ConnectionException that
         // names the key - not a TypeError, and not a value cast into something nobody configured
