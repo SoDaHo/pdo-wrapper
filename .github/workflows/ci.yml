@@ -89,8 +89,22 @@ jobs:
           done
           echo "MariaDB not ready"; exit 1
 
+      # The LOAD ... LOCAL tests of ImplicitCommitMeasuredTest skip on a server that does not allow LOCAL: switched
+      # on here (a dynamic setting), and the file is run once more below with --fail-on-skipped
+      - name: Allow LOAD ... LOCAL
+        run: mysql -h mariadb -uroot -proot -e "SET GLOBAL local_infile = 1"
+
       - name: Run all tests
         run: vendor/bin/phpunit --no-coverage
+        env:
+          MARIADB_HOST: mariadb
+          MARIADB_PORT: 3306
+          MARIADB_DATABASE: pdo_wrapper_test
+          MARIADB_USERNAME: root
+          MARIADB_PASSWORD: root
+
+      - name: Run the measured implicit-commit tests, none skipped
+        run: vendor/bin/phpunit --no-coverage --fail-on-skipped tests/Driver/MariaDb/ImplicitCommitMeasuredTest.php
         env:
           MARIADB_HOST: mariadb
           MARIADB_PORT: 3306
@@ -232,6 +246,18 @@ jobs:
             sleep 1
           done
           echo "MariaDB not ready"; exit 1
+
+      - name: Allow LOAD ... LOCAL
+        run: mysql -h mariadb -uroot -proot -e "SET GLOBAL local_infile = 1"
+
+      - name: Run the measured implicit-commit tests, none skipped
+        run: vendor/bin/phpunit --no-coverage --fail-on-skipped tests/Driver/MariaDb/ImplicitCommitMeasuredTest.php
+        env:
+          MARIADB_HOST: mariadb
+          MARIADB_PORT: 3306
+          MARIADB_DATABASE: pdo_wrapper_test
+          MARIADB_USERNAME: root
+          MARIADB_PASSWORD: root
 
       - name: Run all tests with coverage
         run: vendor/bin/phpunit --coverage-clover clover.xml
