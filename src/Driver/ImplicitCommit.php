@@ -30,12 +30,18 @@ namespace Sodaho\PdoWrapper\Driver;
  * The statement is split into words, quoted strings and names, and single characters; whitespace
  * and comments (`#`, `-- `, `/* *\/`) separate them. An executable comment counts as SQL, as
  * MariaDB runs it - but one with a version (`/*!50700 ...*\/`, `/*M!100100 ...*\/`) runs on some
- * servers and not on others (MariaDB ignores the MySQL versions from 5.7 on): it is read both
- * ways, with its content and without, and the statement commits implicitly when one of the
- * readings does. A TEMPORARY inside such a comment exempts nothing, then. Strings are read with
- * backslash escapes and without (NO_BACKSLASH_ESCAPES) as well. For `SET STATEMENT ... FOR
- * <statement>` the statement after the first FOR outside of strings, comments and parentheses
- * decides. Unknown statements and anything that does not start with a keyword commit nothing.
+ * servers and not on others (MariaDB ignores the MySQL versions from 5.7 on and runs its own up to
+ * the server's version): each is read both ways, with its content and without, independently of
+ * the others - `/*M!100100 CREATE *\/ /*!50700 TEMPORARY *\/ TABLE` is a CREATE TABLE on MariaDB -,
+ * and the statement commits implicitly when one of the readings does. A TEMPORARY inside such a
+ * comment exempts nothing, then. Only a comment that comes before the point a reading was decided
+ * at is read the other way as well: one after it cannot change that reading. A statement whose
+ * versioned comments before that point allow more than MAX_READINGS readings is not judged further
+ * and counts as one that commits ("VERSIONED COMMENTS"): fail-closed. Strings are read with
+ * backslash escapes and without (NO_BACKSLASH_ESCAPES, a setting of the session) as well. For
+ * `SET STATEMENT ... FOR <statement>` the statement after the first FOR outside of strings,
+ * comments and parentheses decides. Unknown statements and anything that does not start with a
+ * keyword commit nothing.
  *
  * @internal The MariaDB driver's answer to AbstractDriver::implicitCommitOf()
  */
@@ -51,13 +57,24 @@ final class ImplicitCommit
     private const KEYWORDS = 4;
 
     /**
+     * How many readings of one statement are judged at most: 2^8 for eight versioned comments
+     * before the point it is decided at - more is no statement anybody writes
+     */
+    private const MAX_READINGS = 256;
+
+    /** What of() answers for a statement whose readings are too many to judge */
+    public const UNJUDGED = 'VERSIONED COMMENTS';
+
+    /**
      * The leading keywords of a statement that commits implicitly ("CREATE", "SET PASSWORD",
      * "START SLAVE"), upper case, or null for one that does not - in no reading of it.
+     * UNJUDGED for a statement whose versioned comments allow more readings than are judged.
      */
     public static function of(string $sql): ?string
     {
-        foreach (self::readings($sql) as $tokens) {
-            $kind = self::classify($tokens);
+        $readings = 0;
+        foreach (str_contains($sql, '\\') ? [true, false] : [true] as $backslashes) {
+            $kind = self::readingsFrom($sql, [], $backslashes, $readings);
             if ($kind !== null) {
                 return $kind;
             }
@@ -67,44 +84,67 @@ final class ImplicitCommit
     }
 
     /**
-     * The token lists the statement may be: versioned executable comments with their content and
-     * without, strings with backslash escapes and without. The second of each is read only where
-     * the statement could differ (it holds a comment opener or a backslash).
+     * Depth first through the ways the versioned comments may run, from the reading in which they
+     * run as $runs says and every one met beyond it runs: what the first reading that commits
+     * implicitly commits, or null. That reading is read again with one of its comments switched
+     * off - those before it as in that reading - for each comment it met, beyond $runs, before the
+     * point it was decided at: a comment after that point changes only what comes after it, and the
+     * reading cannot change. UNJUDGED once more than MAX_READINGS readings were read.
      *
-     * @return list<list<string>>
+     * @param list<bool> $runs
+     * @param int $readings How many readings of the statement were read so far
      */
-    private static function readings(string $sql): array
+    private static function readingsFrom(string $sql, array $runs, bool $backslashes, int &$readings): ?string
     {
-        $readings = [];
-        foreach (str_contains($sql, '/*') ? [true, false] : [true] as $versioned) {
-            foreach (str_contains($sql, '\\') ? [true, false] : [true] as $backslashes) {
-                $readings[] = self::tokens($sql, $versioned, $backslashes);
+        if (++$readings > self::MAX_READINGS) {
+            return self::UNJUDGED;
+        }
+        [$tokens, $comments] = self::tokens($sql, $runs, $backslashes);
+        [$kind, $decidedBy] = self::classify($tokens);
+        foreach ($comments as $comment => $tokensBefore) {
+            if ($kind !== null || $tokensBefore >= $decidedBy) {
+                break; // decided, or this comment and every later one come after the point it was decided at
+            }
+            if ($comment >= count($runs)) { // one the reading did not take from $runs: it ran
+                $kind = self::readingsFrom($sql, [...$runs, ...array_fill(0, $comment - count($runs), true), false], $backslashes, $readings);
             }
         }
 
-        return $readings;
+        return $kind;
     }
 
     /**
      * Classify one reading: the leading keywords, and for SET STATEMENT the statement after its FOR.
+     * Also how many of the tokens decided it: the tokens after them could not change it - or one more
+     * than there are, when it ran out of tokens (one more could).
      *
      * @param list<string> $tokens
+     *
+     * @return array{?string, int}
      */
-    private static function classify(array $tokens): ?string
+    private static function classify(array $tokens): array
     {
         $words = [];
-        foreach ($tokens as $token) {
+        $decidedBy = count($tokens) + 1;
+        foreach ($tokens as $at => $token) {
             if (count($words) === self::KEYWORDS || preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/D', $token) !== 1) {
+                $decidedBy = $at + 1;
+
                 break;
             }
             $words[] = strtoupper($token);
         }
         if ($words === []) {
-            return null;
+            return [null, $decidedBy];
         }
         [$first, $second, $third, $fourth] = array_pad($words, self::KEYWORDS, '');
+        if ($first === 'SET' && $second === 'STATEMENT') {
+            [$kind, $forDecidedBy] = self::statementAfterFor($tokens);
 
-        return match (true) {
+            return [$kind, max($decidedBy, $forDecidedBy)];
+        }
+
+        return [match (true) {
             in_array($first, self::ALWAYS, true) => $first,
             // CREATE TEMPORARY TABLE and DROP TEMPORARY TABLE commit nothing; every other CREATE and DROP does
             $first === 'CREATE' => $second === 'TEMPORARY' || ($second === 'OR' && $third === 'REPLACE' && $fourth === 'TEMPORARY') ? null : 'CREATE',
@@ -117,47 +157,54 @@ final class ImplicitCommit
             ($first === 'START' || $first === 'STOP') && in_array($second, ['SLAVE', 'REPLICA', 'ALL'], true) => $first . ' ' . $second,
             $first === 'SET' && $second === 'PASSWORD' => 'SET PASSWORD',
             $first === 'SET' && $second === 'DEFAULT' && $third === 'ROLE' => 'SET DEFAULT ROLE',
-            $first === 'SET' && $second === 'STATEMENT' => self::statementAfterFor(array_slice($tokens, 2)),
             default => null,
-        };
+        }, $decidedBy];
     }
 
     /**
      * For SET STATEMENT ... FOR <statement>: what the statement after the first FOR commits - the
-     * first FOR word token outside of parentheses (strings and comments are no words here).
+     * first FOR word token outside of parentheses (strings and comments are no words here) -, and
+     * how many of the tokens decided it (see classify()).
      *
-     * @param list<string> $tokens What follows SET STATEMENT
+     * @param list<string> $tokens The whole statement, SET STATEMENT first
+     *
+     * @return array{?string, int}
      */
-    private static function statementAfterFor(array $tokens): ?string
+    private static function statementAfterFor(array $tokens): array
     {
         $depth = 0;
-        foreach ($tokens as $at => $token) {
+        foreach (array_slice($tokens, 2) as $offset => $token) {
             if ($token === '(') {
                 $depth++;
             } elseif ($token === ')') {
                 $depth = max(0, $depth - 1);
             } elseif ($depth === 0 && strtoupper($token) === 'FOR') {
-                $inner = self::classify(array_slice($tokens, $at + 1));
+                $after = $offset + 3; // SET, STATEMENT, the tokens up to FOR, FOR itself
+                [$inner, $decidedBy] = self::classify(array_slice($tokens, $after));
 
-                return $inner === null ? null : 'SET STATEMENT ... FOR ' . $inner;
+                return [$inner === null ? null : 'SET STATEMENT ... FOR ' . $inner, $after + $decidedBy];
             }
         }
 
-        return null;
+        return [null, count($tokens) + 1];
     }
 
     /**
      * Split the statement into tokens: words (letters, digits, `_`, `$`, any byte from 0x80 on), a
      * quoted string or name as one token, every other character as one. Whitespace and comments
      * separate tokens and leave none. An executable comment's opener and closer leave none either:
-     * its content is read on - unless it has a version and $versioned is false, then the whole
-     * comment is dropped. A comment or string that is never closed runs to the end.
+     * its content is read on - unless it has a version and $runs says it does not run, then the
+     * whole comment is dropped up to its first closer, as the server skips it. A comment or string
+     * that is never closed runs to the end.
      *
-     * @return list<string>
+     * @param list<bool> $runs Whether each versioned comment runs, in the order they are met; one met beyond the list runs
+     *
+     * @return array{list<string>, list<int>} The tokens, and for each versioned comment met how many tokens came before it
      */
-    private static function tokens(string $sql, bool $versioned, bool $backslashes): array
+    private static function tokens(string $sql, array $runs, bool $backslashes): array
     {
         $tokens = [];
+        $comments = [];
         $length = strlen($sql);
         $inExecutable = false;
         $at = 0;
@@ -170,7 +217,12 @@ final class ImplicitCommit
                 $at = $end === false ? $length : $end + 1;
             } elseif (preg_match('/\G\/\*(M?)!(\d*)/', $sql, $match, 0, $at) === 1) {
                 $close = strpos($sql, '*/', $at + strlen($match[0]));
-                if ($match[2] !== '' && !$versioned) {
+                $skipped = false;
+                if ($match[2] !== '') {
+                    $skipped = !($runs[count($comments)] ?? true);
+                    $comments[] = count($tokens);
+                }
+                if ($skipped) {
                     $at = $close === false ? $length : $close + 2; // the server does not run it: a comment
                 } else {
                     $inExecutable = true;
@@ -195,7 +247,7 @@ final class ImplicitCommit
             }
         }
 
-        return $tokens;
+        return [$tokens, $comments];
     }
 
     /**

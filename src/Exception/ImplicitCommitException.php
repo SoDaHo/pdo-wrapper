@@ -17,12 +17,14 @@ use Throwable;
  * A QueryException, so existing catch blocks keep working; catch this class to tell the refusal
  * apart without reading the message. Run such a statement outside of transactions. No database
  * failure stands behind it: $sqlState and $driverCode are null. $statement names its leading
- * keywords ("CREATE", "LOCK"), never a value.
+ * keywords ("CREATE", "LOCK"), never a value - or "VERSIONED COMMENTS" for a statement whose
+ * versioned executable comments allow more readings than are judged (fail-closed, see
+ * Driver\ImplicitCommit).
  */
 class ImplicitCommitException extends QueryException
 {
     /**
-     * @param string $statement The leading keywords that commit implicitly, upper case
+     * @param string $statement The leading keywords that commit implicitly, upper case ("VERSIONED COMMENTS": too many readings to judge)
      */
     public function __construct(
         string $message = 'Query refused: the statement would commit the transaction implicitly',

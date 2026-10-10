@@ -102,6 +102,18 @@ class ImplicitCommitStatementsTest extends TestCase
             'versioned or replace temporary' => ['CREATE OR REPLACE /*!50700 TEMPORARY */ TABLE t (id INT)', 'CREATE'],
             'versioned ddl alone' => ['/*!50700 DROP TABLE t */', 'DROP'],
             'versioned ddl after a select' => ['SELECT 1 /*!50700 , 2 */', null],
+            // each versioned comment both ways, independently of the others: MariaDB runs its own up to the
+            // server's version and ignores MySQL's from 5.7 on - all on and all off would both read nothing here
+            'mixed versioned comments, create' => ['/*M!100100 CREATE */ /*!50700 TEMPORARY */ TABLE t (id INT)', 'CREATE'],
+            'mixed versioned comments, drop' => ['/*M!100100 DROP */ /*!50700 TEMPORARY */ TABLE t', 'DROP'],
+            'mixed versioned comments, the other way round' => ['/*!50700 DROP */ /*M!100100 TEMPORARY */ TABLE t', 'DROP'],
+            'mixed versioned comments, set statement' => ['SET STATEMENT a = 1 /*M!100100 FOR DROP */ /*!50700 TEMPORARY */ TABLE t', 'SET STATEMENT ... FOR DROP'],
+            // a comment after the point a reading is decided at is not read the other way: any number of them
+            'many versioned comments after the decision' => ['SELECT 1' . str_repeat(' /*!50700 , 2 */', 40), null],
+            'many versioned comments after a temporary table' => ['CREATE TEMPORARY TABLE t (id INT' . str_repeat(' /*!50700 , c INT */', 40) . ')', null],
+            // before it, at most 2^8 readings are judged; more counts as a statement that commits (fail-closed)
+            'eight versioned comments before the for' => ['SET STATEMENT a = 1' . str_repeat(' /*!50700 , b = 2 */', 8) . ' FOR SELECT 1', null],
+            'nine versioned comments before the for' => ['SET STATEMENT a = 1' . str_repeat(' /*!50700 , b = 2 */', 9) . ' FOR SELECT 1', ImplicitCommit::UNJUDGED],
             // strings without backslash escapes (NO_BACKSLASH_ESCAPES): the FOR after the string counts too
             'set statement, a backslash ending the string' => ["SET STATEMENT sql_mode = '\\' FOR DROP TABLE t -- '", 'SET STATEMENT ... FOR DROP'],
             // and the price of that: a backslash-escaped quote reads as the end of the string as well (fail-closed)
