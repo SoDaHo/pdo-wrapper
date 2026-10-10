@@ -107,8 +107,9 @@ Not in this release, planned as one wave for 4.0 with a full consumer test - eac
 - the non-exception error modes: `PDO::ERRMODE_EXCEPTION` enforced, the handling of `ERRMODE_WARNING`/`ERRMODE_SILENT` (and of error handlers that throw from inside a PDO call) removed;
 - re-entry from inside PDO calls (an error handler that calls back into the driver) no longer tracked;
 - transactions begun on raw PDO (`getPdo()->beginTransaction()`) no longer followed by the library;
-- one driver instead of the abstraction (`AbstractDriver` + `MariaDbDriver`);
+- the driver abstraction stays (so that other engines can return); only the paths listed above are candidates for removal;
 - a `socket` option for the local Unix socket (today `host => 'localhost'`);
+- `releaseNamedLock()` after an answer it does not understand (a statement class of the caller's delivered another type): holding the name - `reconnect()` refused until it is released, fail-closed - instead of giving it up as after an answer that cannot be read; a change of the documented contract, so not in 3.2;
 - after a transaction the library began ended behind its back, `beginTransaction()` (and with it a helper's `transaction()`) refusing as after a deadlock ("call rollback() first") instead of telling that end `lost` and beginning anew - documented in 3.2 as the helper pattern `currentTransaction() !== null || inTransaction()` (README, Transactions; Opus review of the fourth candidate);
 - also noted: the charsets the quoting does not support (`big5`, `cp932`, `gbk`, `gb18030`, `sjis`) refused instead of documented; open question: whether a connection without a default database (`database => ''`, refused since 3.1.2) becomes allowed again.
 
