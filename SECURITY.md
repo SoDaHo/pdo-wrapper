@@ -36,7 +36,8 @@ Likewise outside the library's reach, and documented in the README:
   parameters are `#[\SensitiveParameter]` in every trace.
 - **PDO options.** `options` replace the secure defaults (native prepared statements, exceptions).
   Switching to emulated prepares or a runtime `SET NAMES` is the application's decision and risk.
-  Multi-statements cannot be switched on (since 3.2): `ATTR_MULTI_STATEMENTS` is refused.
+  Multi-statements cannot be switched on (since 3.2): `ATTR_MULTI_STATEMENTS` is refused, and so is
+  `ATTR_STATEMENT_CLASS`, which would decide what the library reads back (a named lock taken, an aggregate).
 - **Transport and charset.** The library sets no TLS option: a connection across a network the
   application does not control needs `Pdo\Mysql::ATTR_SSL_CA` and `ATTR_SSL_VERIFY_SERVER_CERT` among the
   `options`. The quoting of names assumes an ASCII-safe charset (`utf8mb4`, the default); `big5`, `cp932`,

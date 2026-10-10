@@ -972,7 +972,7 @@ Every exception of the library carries what the database said in `$sqlState` and
 
 **Refusals with a class of their own** - each a subclass of what the method throws anyway, so an existing `catch` keeps seeing it; `getMessage()` is static, and `$sqlState`/`$driverCode` are `null` (nothing was sent):
 
-- `ImplicitCommitException` (a `QueryException`): a statement that would commit the open transaction implicitly, inside a transaction the library began (see [Transactions](#transactions)); `$statement` names its leading keywords (`CREATE`, `LOCK`).
+- `ImplicitCommitException` (a `QueryException`): a statement that would commit the open transaction implicitly, inside a transaction the library began (see [Transactions](#transactions)); `$statement` names its leading keywords (`CREATE`, `LOCK`) - or `VERSIONED COMMENTS` for a statement whose versioned comments allow more readings than are judged.
 - `LockOutsideTransactionException` (a `QueryException`): a locking read outside of a transaction (see [Row Locks](#row-locks)).
 - `ListenerTransactionException` (a `TransactionException`): transaction control from inside a hook that may not steer a transaction - `beginTransaction()`, `commit()` or `rollback()` from a hook other than a `transaction.end` hook, `transaction()` or `updateMultiple()` from a `transaction.begin`, `transaction.commit` or `transaction.rollback` hook, from a statement hook entered inside a transaction or from a hook of a custom event (see [Hooks](#hooks)).
 - `NamedLockReentryException` (a `QueryException`): `namedLock()` for a lock this connection holds already (see [Named Locks](#named-locks)).

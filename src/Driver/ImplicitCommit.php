@@ -58,8 +58,9 @@ final class ImplicitCommit
     private const KEYWORDS = 4;
 
     /**
-     * How many readings of one statement are judged at most: 2^8 for eight versioned comments
-     * before the point it is decided at - more is no statement anybody writes
+     * How many readings of one statement are judged at most: 2^8, eight versioned comments before
+     * the point it is decided at - seven when the statement holds a backslash, its strings are read
+     * both ways as well. More is no statement anybody writes
      */
     private const MAX_READINGS = 256;
 
