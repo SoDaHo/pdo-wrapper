@@ -1,6 +1,6 @@
 {
   "name": "sodaho/pdo-wrapper",
-  "description": "A lightweight PDO wrapper with fluent query builder and CRUD methods for MariaDB",
+  "description": "PDO wrapper for MariaDB with a query builder, CRUD methods, transactions and named locks",
   "keywords": ["mariadb", "php", "crud", "database", "pdo", "query-builder", "pdo-wrapper"],
   "type": "library",
   "license": "MIT",

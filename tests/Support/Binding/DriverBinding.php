@@ -15,7 +15,7 @@ use Sodaho\PdoWrapper\Driver\AbstractDriver;
  * passes tests/Contract with it; nothing in those tests names an engine or writes DDL itself.
  *
  * The PHP types of the values are part of the contract (the library pins them, see the README,
- * "What Comes Back"): a driver delivers `id`, `key`, `int` and `bigint` as int, `double` as float,
+ * Configuration): a driver delivers `id`, `key`, `int` and `bigint` as int, `double` as float,
  * `decimal` as a string with its 4 decimal places, `timestamp` as a string 'YYYY-MM-DD HH:MM:SS',
  * `text` and `blob` as string, NULL as null; `COUNT()` as int, `MIN()`/`MAX()` in the type of
  * their column. What differs between databases - `SUM()`/`AVG()`, error codes - comes from the

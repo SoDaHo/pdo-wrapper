@@ -11,7 +11,7 @@ use Sodaho\PdoWrapper\Tests\Contract\ContractTestCase;
 /**
  * getMessage() of the library's exceptions never carries the SQL or a bound value: it is the
  * channel an application shows or logs without thinking. Values reach getDebugMessage(), the
- * hook payloads and the previous exception only (see README, "Parameters are secrets").
+ * hook payloads and the previous exception only (README, Security).
  */
 class ExceptionMessageTest extends ContractTestCase
 {
