@@ -190,6 +190,62 @@ class RedactParametersTest extends TestCase
     }
 
     /**
+     * An 'error' listener's PDOException - its own statement on raw PDO, failed over a duplicate of a
+     * bound secret - replaces the exception of the statement it was told about (documented). With the
+     * option a RedactedPdoException with the codes is thrown in its place, at both points that tell
+     * 'error': a value that cannot be bound (nothing sent) and a failed statement (Daybreak review of
+     * the ninth candidate: both let it through unredacted). Without the option the listener's own
+     * exception passes unchanged, as before.
+     */
+    public function testAnErrorListenersPdoExceptionIsReplacedWithTheOption(): void
+    {
+        $insert = 'INSERT INTO ' . self::TABLE . ' (id, email) VALUES (?, ?)';
+        foreach ([true, false] as $redact) {
+            foreach ([
+                'a value that cannot be bound' => static fn (DatabaseInterface $db): mixed => $db->query('SELECT id FROM ' . self::TABLE . ' WHERE email = ?', [[]]),
+                'a failed statement' => static fn (DatabaseInterface $db): mixed => $db->query($insert, [2, self::SECRET]),
+            ] as $case => $call) {
+                $case .= $redact ? ', with the option' : ', without the option';
+                [$db, $payloads] = $this->driver($redact);
+                /** @var PDOException|null $thrown */
+                $thrown = null;
+                $armed = true;
+                $db->on('error', static function () use ($db, $insert, &$armed, &$thrown): void {
+                    if ($armed) {
+                        $armed = false;
+                        try {
+                            $db->getPdo()->prepare($insert)->execute([9, self::SECRET]);
+                        } catch (PDOException $e) {
+                            $thrown = $e;
+
+                            throw $e;
+                        }
+                    }
+                });
+
+                try {
+                    $call($db);
+                    $this->fail('Expected PDOException: ' . $case);
+                } catch (PDOException $e) {
+                    $this->assertInstanceOf(PDOException::class, $thrown, $case . ': the listener threw');
+                    $this->assertSame(['23000', 1062], [$e->getCode(), $e->errorInfo[1] ?? null], $case . ': the codes are kept');
+                    if ($redact) {
+                        $this->assertInstanceOf(RedactedPdoException::class, $e, $case);
+                        $this->assertNoSecretIn($e);
+                        foreach ($payloads as $payload) {
+                            $this->assertNoSecretInValue($payload, $case . ': ' . (string) $payload['event']);
+                        }
+                    } else {
+                        $this->assertSame($thrown, $e, $case . ': the listener\'s own exception');
+                        $this->assertStringContainsString(self::SECRET, $e->getMessage(), $case . ': documented, "Parameters are secrets"');
+                    }
+                }
+            }
+        }
+        $this->assertSame([1], array_column(Database::mariadb(TestEnvironment::mariadb())->findAll(self::TABLE), 'id'), 'nothing was written');
+    }
+
+    /**
      * Without the option the database's message reaches the debug message, the previous exception
      * and the 'error' payload (documented: "Parameters are secrets") - the trace arguments of the
      * library's methods never.

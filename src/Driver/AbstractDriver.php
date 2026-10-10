@@ -317,7 +317,7 @@ abstract class AbstractDriver implements DatabaseInterface
      *
      * @throws ImplicitCommitException When the statement would commit the open transaction begun through this driver implicitly (nothing is sent)
      * @throws QueryException On query failure (a UniqueViolationException for a duplicate key), on a parameter that cannot be bound, or when a 'query.before' or 'query' hook threw a PDOException
-     * @throws Throwable What a 'query.before', 'query' or 'error' hook throws otherwise, and what an error handler throws that is not about a PDO failure: both pass unchanged
+     * @throws Throwable What a 'query.before', 'query' or 'error' hook throws otherwise, and what an error handler throws that is not about a PDO failure: both pass unchanged (an 'error' hook's PDOException with redactParameters as a RedactedPdoException)
      *
      * @return PDOStatement Executed statement
      */
@@ -429,14 +429,20 @@ abstract class AbstractDriver implements DatabaseInterface
 
         $unbindable = $this->unbindableParameter($params);
         if ($unbindable !== null) {
-            $this->triggerFromQuery('error', [
-                'sql' => $sql,
-                'params' => $this->shownParams($params),
-                'error' => $unbindable,
-                'code' => 0,
-                'sqlState' => null, // nothing was sent: no database failure stands behind it
-                'driverCode' => null,
-            ]);
+            try {
+                $this->triggerFromQuery('error', [
+                    'sql' => $sql,
+                    'params' => $this->shownParams($params),
+                    'error' => $unbindable,
+                    'code' => 0,
+                    'sqlState' => null, // nothing was sent: no database failure stands behind it
+                    'driverCode' => null,
+                ]);
+            } catch (PDOException $listenerFailure) {
+                // It replaces the refusal: under redactParameters without the database's message, as from
+                // the other listeners - its own statement on raw PDO may quote a value (Daybreak, ninth candidate)
+                throw $this->withoutValues($listenerFailure);
+            }
 
             throw new QueryException(
                 message: 'Query failed',
@@ -521,14 +527,20 @@ abstract class AbstractDriver implements DatabaseInterface
         $e = $this->withoutValues($e);
         $this->noteStatementFailure($e);
         [$sqlState, $driverCode] = Codes::behind($e); // what the exception below will carry
-        $this->triggerFromQuery('error', [
-            'sql' => $sql,
-            'params' => $this->shownParams($params),
-            'error' => $e->getMessage(),
-            'code' => $e->getCode(),
-            'sqlState' => $sqlState,
-            'driverCode' => $driverCode,
-        ]);
+        try {
+            $this->triggerFromQuery('error', [
+                'sql' => $sql,
+                'params' => $this->shownParams($params),
+                'error' => $e->getMessage(),
+                'code' => $e->getCode(),
+                'sqlState' => $sqlState,
+                'driverCode' => $driverCode,
+            ]);
+        } catch (PDOException $listenerFailure) {
+            // It replaces the failed statement's exception: under redactParameters without the database's
+            // message, as from the other listeners - its own statement on raw PDO may quote a value
+            throw $this->withoutValues($listenerFailure);
+        }
 
         $debugMessage = sprintf('%s | SQL: %s | Params: %s', $e->getMessage(), $sql, $this->encodeParams($params));
 
